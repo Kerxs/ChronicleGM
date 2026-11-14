@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口的最小权限：核心 IPC、文件选择对话框（导入导出），以及自研标题栏需要的窗口操作（拖动、最小化、最大化、关闭）；自动更新由程序内部的命令完成（不对页面开放更新插件）。不开放文件系统读写、Shell 等插件。",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "core:window:allow-internal-toggle-maximize"
+  ]
+}

@@ -1,0 +1,24 @@
+下午8:25:41 模拟云端服务: http://10.13.6.200:49617/v1
+下午8:25:49 ✓ 「获取模型列表」带 Key 读到模型: ["mock-chat","mock-image","mock-tts"]
+下午8:25:49 ✓ 非本机地址显示隐私开关（默认不勾选）: 
+下午8:25:56 ✓ 保存为云端对话服务：需要 Key、Key 已存在凭据管理器、不在本机: {"needs_key":true,"has_key":true,"loopback":false}
+下午8:25:56 ✓ 添加后自动测试：对话 ✓: {"chat":true,"streaming":true,"json_schema":false,"vision":true,"context_length":null,"tested_at":1794659150664,"notes":["JSON schema：返回的不是纯 JSON：红"]}
+下午8:25:56 未允许发送内容时用它生成（默认路由可能不是它，仅记录）: start_generation：invalid args `task` for command `start_generation`: unknown variant `seed_world`, expected one of `outline`, `expand_chapter`, `npcs`, `regenerate`, `extend`, `world_seed`, `expand_node`, `rewrite_node`, `plot_from_script`, `plot_branches`
+下午8:25:56 ✓ 没允许发送战役内容时，不朗读、明确报错，也没有发出请求: voice_speak：「模拟云端 语音」是云端服务，还没有允许发送战役内容（在「模型服务」里打开该服务的「允许发送战役内容」）
+下午8:25:56 ✓ 语音状态显示为云端: {"cloud":true,"base":"http://10.13.6.200:49617/v1"}
+下午8:25:56 ✓ 旁白：云端返回 mp3，交给界面的是 audio/mpeg: data:audio/mpeg;base64,SUQzBAA
+下午8:25:56 ✓ 请求带 Key、模型、旁白声音、mp3；没有 Breeze 专有的 seed，也没有声音描述: {"input":"雾港的钟声响了。","response_format":"mp3","model":"mock-tts","voice":"narrator-voice"}
+下午8:25:56 ✓ 找到一个人物用来测试 NPC 声音: 01M7AYQHTEMDAW5VMT612FK801
+下午8:25:56 ✓ NPC 从声音列表里固定选一个（两句话同一个声音）: ["v-a","v-a"]
+下午8:25:56 ✓ 同样内容第二次来自缓存: 
+下午8:25:56 ✓ 语音服务「重新测试」：合成测试 ✓: {"chat":true,"streaming":false,"json_schema":false,"vision":false,"context_length":null,"tested_at":1794659156707,"notes":[]}
+下午8:25:56 ✓ 语音 / 生图服务不会被设成默认（对话）路由: [["default","local"],["tts","01M7D0B0P2DR94PS73A8Q0DVFH"]]
+下午8:25:56 ✓ 生图：没允许发送时报错、不发请求: generate_image：「模拟云端 生图」是云端服务，还没有允许发送内容（在「模型服务」里打开该服务的「允许发送战役内容」）
+下午8:25:56 ✓ 生图服务「重新测试」：只查 Key 与模型列表，不生成图片: ["生图服务只检查了 API Key 与模型列表；真正生成一张图要在节点的「图片」页签里点「AI 生成图片」（会计费）"]
+下午8:26:03 ✓ 描述按节点设定预填: 城市「雾港」的场景。
+下午8:26:07 ✓ 生图请求：带 Key、模型、默认尺寸、描述: {"model":"mock-image","prompt":"城市「雾港」的场景。\n奇幻插画风格，细腻光影。\n画面中不要出","n":1,"size":"1024x1536"}
+下午8:26:07 ✓ 显示预览与服务改写后的描述: 
+下午8:26:11 ✓ 确认后才保存到节点（图片数 +1）: 1 → 2
+下午8:26:14 ✓ 控制台没有错误: []
+下午8:26:14 清理: 删除了 3 个测试服务配置及其 Key
+下午8:26:14 结果: 20 项通过，0 项失败；模拟服务共收到 11 个请求，其中无 Key 或 Key 错误的 0 个

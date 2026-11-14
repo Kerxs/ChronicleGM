@@ -1,0 +1,4 @@
+第1次 一起启动（先 Breeze 再 llama） 显存 7697 {"gen_tps":19.5,"prompt_tps":47.3,"n":263} {"gen_tps":19.6,"prompt_tps":71.9,"n":263}
+第1次 Breeze 运行中只重启 llama 显存 7704 {"gen_tps":19.6,"prompt_tps":46.1,"n":263} {"gen_tps":19.5,"prompt_tps":71.5,"n":263}
+第2次 一起启动（先 Breeze 再 llama） 显存 7696 {"gen_tps":19.5,"prompt_tps":46.3,"n":263} {"gen_tps":19.5,"prompt_tps":72,"n":263}
+第2次 Breeze 运行中只重启 llama 显存 7700 {"gen_tps":19.6,"prompt_tps":45.6,"n":263} {"gen_tps":19.6,"prompt_tps":71,"n":263}

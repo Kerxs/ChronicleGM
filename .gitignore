@@ -1,0 +1,16 @@
+# 构建产物与依赖
+target/
+node_modules/
+dist/
+src-tauri/gen/
+
+# 签名私钥（不在仓库里；放在仓库外）
+*.key
+*.key.pub
+
+# 含有本机用户名（数据目录路径）的旧截图，只保留在本机
+docs/ui-redesign/
+docs/img/
+docs/launch-and-images/*.png
+docs/image-input/*.png
+!docs/image-input/test-map.png

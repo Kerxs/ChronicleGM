@@ -1,0 +1,4 @@
+[env]
+# ts-rs：前端类型生成到 ui/src/bindings；64 位整数在 JSON 中按 number 处理。
+TS_RS_EXPORT_DIR = { value = "ui/src/bindings", relative = true }
+TS_RS_LARGE_INT = "number"

@@ -1,0 +1,21 @@
+[package]
+name = "chronicle-runtime"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "AI 任务调度、模型进程托管与资源监控"
+
+[dependencies]
+chronicle-llm = { version = "0.0.1", path = "../llm" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sysinfo = "0.40.3"
+thiserror = "2.0.21"
+ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
+ureq = "3.5.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

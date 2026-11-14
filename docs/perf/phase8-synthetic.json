@@ -1,0 +1,686 @@
+{
+  "generated_at": 1794589511399,
+  "quick": false,
+  "total_seconds": 90.9790349,
+  "rows": [
+    {
+      "section": "npc",
+      "case": "2 个 NPC（全部要求发言）",
+      "metric": "每回合模型请求数",
+      "value": 3.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "2 个 NPC（全部要求发言）",
+      "metric": "每回合 NPC 请求数",
+      "value": 2.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "2 个 NPC（全部要求发言）",
+      "metric": "每回合提示词总长",
+      "value": 14214.2,
+      "unit": "字"
+    },
+    {
+      "section": "npc",
+      "case": "2 个 NPC（全部要求发言）",
+      "metric": "每回合程序耗时(mock 模型)",
+      "value": 3.1616,
+      "unit": "ms"
+    },
+    {
+      "section": "npc",
+      "case": "8 个 NPC（全部要求发言）",
+      "metric": "每回合模型请求数",
+      "value": 3.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "8 个 NPC（全部要求发言）",
+      "metric": "每回合 NPC 请求数",
+      "value": 2.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "8 个 NPC（全部要求发言）",
+      "metric": "每回合提示词总长",
+      "value": 14436.2,
+      "unit": "字"
+    },
+    {
+      "section": "npc",
+      "case": "8 个 NPC（全部要求发言）",
+      "metric": "每回合程序耗时(mock 模型)",
+      "value": 3.7937800000000004,
+      "unit": "ms"
+    },
+    {
+      "section": "npc",
+      "case": "50 个 NPC（全部要求发言）",
+      "metric": "每回合模型请求数",
+      "value": 3.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "50 个 NPC（全部要求发言）",
+      "metric": "每回合 NPC 请求数",
+      "value": 2.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "50 个 NPC（全部要求发言）",
+      "metric": "每回合提示词总长",
+      "value": 14731.2,
+      "unit": "字"
+    },
+    {
+      "section": "npc",
+      "case": "50 个 NPC（全部要求发言）",
+      "metric": "每回合程序耗时(mock 模型)",
+      "value": 6.76808,
+      "unit": "ms"
+    },
+    {
+      "section": "npc",
+      "case": "200 个 NPC（全部要求发言）",
+      "metric": "每回合模型请求数",
+      "value": 3.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "200 个 NPC（全部要求发言）",
+      "metric": "每回合 NPC 请求数",
+      "value": 2.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "200 个 NPC（全部要求发言）",
+      "metric": "每回合提示词总长",
+      "value": 14732.2,
+      "unit": "字"
+    },
+    {
+      "section": "npc",
+      "case": "200 个 NPC（全部要求发言）",
+      "metric": "每回合程序耗时(mock 模型)",
+      "value": 17.23914,
+      "unit": "ms"
+    },
+    {
+      "section": "npc",
+      "case": "1000 个 NPC（全部要求发言）",
+      "metric": "每回合模型请求数",
+      "value": 3.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "1000 个 NPC（全部要求发言）",
+      "metric": "每回合 NPC 请求数",
+      "value": 2.0,
+      "unit": "次"
+    },
+    {
+      "section": "npc",
+      "case": "1000 个 NPC（全部要求发言）",
+      "metric": "每回合提示词总长",
+      "value": 14732.2,
+      "unit": "字"
+    },
+    {
+      "section": "npc",
+      "case": "1000 个 NPC（全部要求发言）",
+      "metric": "每回合程序耗时(mock 模型)",
+      "value": 73.70566,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "生成存档",
+      "value": 71.677,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "每回合写入(含检查点)",
+      "value": 0.71677,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "战役统计",
+      "value": 3.4792,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "编年史",
+      "value": 1.5789,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "全文搜索(200 条)",
+      "value": 0.4219,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "全文搜索(无结果,全扫描)",
+      "value": 0.09040000000000001,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "最近事件(GM 上下文用)",
+      "value": 0.0191,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "档案列表",
+      "value": 0.059,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "重放校验全部检查点",
+      "value": 1.861,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "导出 JSON",
+      "value": 4.508,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "导出文件大小",
+      "value": 0.2532930374145508,
+      "unit": "MB"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "导入 JSON(含重放校验)",
+      "value": 7.3944,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "数据库文件(导入后,两份)",
+      "value": 0.703125,
+      "unit": "MB"
+    },
+    {
+      "section": "events",
+      "case": "100 回合 / 600 条事件",
+      "metric": "GM 上下文组装",
+      "value": 2.9566000000000003,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "生成存档",
+      "value": 503.5902,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "每回合写入(含检查点)",
+      "value": 0.5035902,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "战役统计",
+      "value": 12.9723,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "编年史",
+      "value": 10.705499999999999,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "全文搜索(200 条)",
+      "value": 0.4188,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "全文搜索(无结果,全扫描)",
+      "value": 0.6478,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "最近事件(GM 上下文用)",
+      "value": 0.0198,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "档案列表",
+      "value": 0.4164,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "重放校验全部检查点",
+      "value": 34.5496,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "导出 JSON",
+      "value": 79.5255,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "导出文件大小",
+      "value": 3.741387367248535,
+      "unit": "MB"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "导入 JSON(含重放校验)",
+      "value": 179.59240000000003,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "数据库文件(导入后,两份)",
+      "value": 9.5234375,
+      "unit": "MB"
+    },
+    {
+      "section": "events",
+      "case": "1000 回合 / 6000 条事件",
+      "metric": "GM 上下文组装",
+      "value": 3.9217000000000004,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "生成存档",
+      "value": 6041.291,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "每回合写入(含检查点)",
+      "value": 1.2082582,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "战役统计",
+      "value": 65.1737,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "编年史",
+      "value": 73.19409999999999,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "全文搜索(200 条)",
+      "value": 0.4532,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "全文搜索(无结果,全扫描)",
+      "value": 11.0423,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "最近事件(GM 上下文用)",
+      "value": 0.029,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "档案列表",
+      "value": 11.5068,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "重放校验全部检查点",
+      "value": 470.7909,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "导出 JSON",
+      "value": 920.0825,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "导出文件大小",
+      "value": 44.36360549926758,
+      "unit": "MB"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "导入 JSON(含重放校验)",
+      "value": 1290.3649,
+      "unit": "ms"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "数据库文件(导入后,两份)",
+      "value": 91.25390625,
+      "unit": "MB"
+    },
+    {
+      "section": "events",
+      "case": "5000 回合 / 30000 条事件",
+      "metric": "GM 上下文组装",
+      "value": 17.3321,
+      "unit": "ms"
+    },
+    {
+      "section": "network",
+      "case": "2000 人 / 20000 次关系变化",
+      "metric": "写入关系变化",
+      "value": 579.2522,
+      "unit": "ms"
+    },
+    {
+      "section": "network",
+      "case": "2000 人 / 20000 次关系变化",
+      "metric": "不同关系对",
+      "value": 2000.0,
+      "unit": "条"
+    },
+    {
+      "section": "network",
+      "case": "2000 人 / 20000 次关系变化",
+      "metric": "全图查询(上限 400 节点)",
+      "value": 9.1631,
+      "unit": "ms"
+    },
+    {
+      "section": "network",
+      "case": "2000 人 / 20000 次关系变化",
+      "metric": "全图查询最大",
+      "value": 9.771099999999999,
+      "unit": "ms"
+    },
+    {
+      "section": "network",
+      "case": "2000 人 / 20000 次关系变化",
+      "metric": "按名称聚焦查询",
+      "value": 3.2053,
+      "unit": "ms"
+    },
+    {
+      "section": "network",
+      "case": "2000 人 / 20000 次关系变化",
+      "metric": "某人的全部关系",
+      "value": 0.6872999999999999,
+      "unit": "ms"
+    },
+    {
+      "section": "network",
+      "case": "2000 人 / 20000 次关系变化",
+      "metric": "战役统计(含关系变化汇总)",
+      "value": 147.2379,
+      "unit": "ms"
+    },
+    {
+      "section": "graph",
+      "case": "50000 节点 / 100000 关系",
+      "metric": "生成世界",
+      "value": 66753.16309999999,
+      "unit": "ms"
+    },
+    {
+      "section": "graph",
+      "case": "50000 节点 / 100000 关系",
+      "metric": "顶层 300 个子节点",
+      "value": 0.022,
+      "unit": "ms"
+    },
+    {
+      "section": "graph",
+      "case": "50000 节点 / 100000 关系",
+      "metric": "展开一个节点(300 子)",
+      "value": 1.0562,
+      "unit": "ms"
+    },
+    {
+      "section": "graph",
+      "case": "50000 节点 / 100000 关系",
+      "metric": "300 个可见节点间的关系",
+      "value": 11.9214,
+      "unit": "ms"
+    },
+    {
+      "section": "graph",
+      "case": "50000 节点 / 100000 关系",
+      "metric": "两跳邻域(上限 300)",
+      "value": 0.1673,
+      "unit": "ms"
+    },
+    {
+      "section": "graph",
+      "case": "50000 节点 / 100000 关系",
+      "metric": "节点全文搜索",
+      "value": 0.20550000000000002,
+      "unit": "ms"
+    },
+    {
+      "section": "forks",
+      "case": "连续回溯 30 层",
+      "metric": "第 1 层回溯耗时",
+      "value": 1.1673,
+      "unit": "ms"
+    },
+    {
+      "section": "forks",
+      "case": "连续回溯 30 层",
+      "metric": "第 30 层回溯耗时",
+      "value": 2.5574,
+      "unit": "ms"
+    },
+    {
+      "section": "forks",
+      "case": "连续回溯 30 层",
+      "metric": "第 30 层校验耗时",
+      "value": 1.0985,
+      "unit": "ms"
+    },
+    {
+      "section": "forks",
+      "case": "连续回溯 30 层",
+      "metric": "原时间线事件(回溯前/后)",
+      "value": 7.0,
+      "unit": "条新增(仅第1层自身游玩)"
+    },
+    {
+      "section": "forks",
+      "case": "连续回溯 30 层",
+      "metric": "原时间线旧检查点被改动",
+      "value": 0.0,
+      "unit": "个"
+    },
+    {
+      "section": "forks",
+      "case": "连续回溯 30 层",
+      "metric": "完整性检查通过",
+      "value": 31.0,
+      "unit": "/ 31 条时间线"
+    },
+    {
+      "section": "forks",
+      "case": "连续回溯 30 层",
+      "metric": "检查全部时间线",
+      "value": 29.595799999999997,
+      "unit": "ms"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "写入吞吐",
+      "value": 7433.932780893008,
+      "unit": "次/秒"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "写入 p50",
+      "value": 0.09000000000000001,
+      "unit": "ms"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "写入 p99",
+      "value": 0.7747999999999999,
+      "unit": "ms"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "写入失败",
+      "value": 0.0,
+      "unit": "次"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "读取次数",
+      "value": 615.0,
+      "unit": "次"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "读取 p50",
+      "value": 1.0549,
+      "unit": "ms"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "读取 p99",
+      "value": 22.435,
+      "unit": "ms"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "读取失败",
+      "value": 0.0,
+      "unit": "次"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 4 个读线程",
+      "metric": "压测后重放校验通过",
+      "value": 1.0,
+      "unit": "(1=是)"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 另一线程反复打开存档",
+      "metric": "期间打开次数",
+      "value": 31.0,
+      "unit": "次"
+    },
+    {
+      "section": "stress",
+      "case": "5000 次写入 + 另一线程反复打开存档",
+      "metric": "写入失败",
+      "value": 0.0,
+      "unit": "次"
+    },
+    {
+      "section": "crash",
+      "case": "强杀后重新打开",
+      "metric": "打开+完整性+重放校验",
+      "value": 26.4064,
+      "unit": "ms"
+    },
+    {
+      "section": "crash",
+      "case": "强杀写入中的进程 10 次",
+      "metric": "恢复后完整且校验通过",
+      "value": 10.0,
+      "unit": "/ 10 轮"
+    },
+    {
+      "section": "crash",
+      "case": "强杀写入中的进程 10 次",
+      "metric": "检测到中断的回合",
+      "value": 7.0,
+      "unit": "轮(会提示用户)"
+    },
+    {
+      "section": "crash",
+      "case": "强杀写入中的进程 10 次",
+      "metric": "最终回合数",
+      "value": 17678.0,
+      "unit": "回合"
+    }
+  ]
+}

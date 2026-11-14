@@ -1,0 +1,19 @@
+请为剧本完善 NPC 人物档案。
+{%- if targets %}
+
+## 需要完善的人物（name 必须与下面的名字完全一致）
+{{ targets }}
+{%- endif %}
+{%- if new_count > 0 %}
+
+## 另外新增 {{ new_count }} 个人物
+新人物的名字不能与已有名称重复。
+{%- endif %}
+
+每个人物需要：身份、外貌、性格、动机、秘密（secrets，主持人可见）、明确知道的事实（knowledge，扮演时只能使用这些知识）、能力，以及在本剧本中的定位与和玩家的关系。
+{%- if guidance %}
+额外要求：{{ guidance }}
+{%- endif %}
+
+# 参考资料
+{{ context }}

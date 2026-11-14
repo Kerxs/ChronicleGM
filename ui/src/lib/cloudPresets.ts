@@ -1,0 +1,64 @@
+// 云端服务预设：只是帮你填好地址与常用模型名，都可以改。
+// 地址与请求格式按各家公开文档的 OpenAI 兼容接口填写；没有用真实 API Key 测试过（软件里的"重新测试"会实测）。
+import type { ServiceType } from "../bindings/ServiceType";
+
+export interface CloudPreset {
+  id: string;
+  name: string;
+  service: ServiceType;
+  base_url: string;
+  models: string[];
+  /** 语音：可选的声音（第一个作为旁白默认）。 */
+  voices?: string[];
+  audio_format?: "wav" | "mp3";
+  send_instructions?: boolean;
+  /** 生图：可选尺寸。 */
+  sizes?: string[];
+  note?: string;
+  /** 本机服务：不需要 Key。 */
+  local?: boolean;
+}
+
+export const CLOUD_PRESETS: CloudPreset[] = [
+  // ---------- 语言模型 ----------
+  { id: "openai", name: "OpenAI", service: "chat", base_url: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini"] },
+  { id: "anthropic", name: "Anthropic Claude（OpenAI 兼容接口）", service: "chat", base_url: "https://api.anthropic.com/v1", models: ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"], note: "使用 Anthropic 提供的 OpenAI 兼容接口；结构化输出等能力以「重新测试」的结果为准。" },
+  { id: "gemini", name: "Google Gemini（OpenAI 兼容接口）", service: "chat", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", models: [], note: "2026-11-14 在这台电脑的网络环境下连不上这个地址（可能需要代理）。" },
+  { id: "deepseek", name: "DeepSeek 深度求索", service: "chat", base_url: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
+  { id: "dashscope", name: "阿里云百炼（通义千问）", service: "chat", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: ["qwen-plus", "qwen-max", "qwen-turbo"] },
+  { id: "moonshot", name: "月之暗面 Kimi", service: "chat", base_url: "https://api.moonshot.cn/v1", models: [] },
+  { id: "zhipu", name: "智谱 GLM", service: "chat", base_url: "https://open.bigmodel.cn/api/paas/v4", models: [] },
+  { id: "ark", name: "火山方舟（豆包）", service: "chat", base_url: "https://ark.cn-beijing.volces.com/api/v3", models: [], note: "模型名填方舟控制台里的接入点 ID（ep- 开头）或模型 ID。" },
+  { id: "siliconflow", name: "硅基流动 SiliconFlow", service: "chat", base_url: "https://api.siliconflow.cn/v1", models: [] },
+  { id: "openrouter", name: "OpenRouter", service: "chat", base_url: "https://openrouter.ai/api/v1", models: [] },
+  { id: "custom-chat", name: "其他（OpenAI 兼容）", service: "chat", base_url: "", models: [] },
+  // ---------- 语音合成 ----------
+  {
+    id: "openai-tts",
+    name: "OpenAI 语音",
+    service: "speech",
+    base_url: "https://api.openai.com/v1",
+    models: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
+    voices: ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"],
+    audio_format: "mp3",
+    send_instructions: true,
+    note: "gpt-4o-mini-tts 支持声音描述（语气、情绪）；tts-1 不支持，可以关掉「发送声音描述」。",
+  },
+  {
+    id: "siliconflow-tts",
+    name: "硅基流动 语音（CosyVoice）",
+    service: "speech",
+    base_url: "https://api.siliconflow.cn/v1",
+    models: ["FunAudioLLM/CosyVoice2-0.5B"],
+    voices: ["alex", "anna", "bella", "benjamin", "charles", "claire", "david", "diana"].map((v) => `FunAudioLLM/CosyVoice2-0.5B:${v}`),
+    audio_format: "mp3",
+    send_instructions: false,
+  },
+  { id: "custom-tts", name: "其他（OpenAI 兼容 /audio/speech）", service: "speech", base_url: "", models: [], audio_format: "mp3", send_instructions: false },
+  // ---------- 生成图片 ----------
+  { id: "openai-image", name: "OpenAI 图片", service: "image", base_url: "https://api.openai.com/v1", models: ["gpt-image-1", "dall-e-3"], sizes: ["1024x1024", "1024x1536", "1536x1024"] },
+  { id: "zhipu-image", name: "智谱 CogView", service: "image", base_url: "https://open.bigmodel.cn/api/paas/v4", models: ["cogview-4"], sizes: ["1024x1024", "768x1344", "1344x768"] },
+  { id: "custom-image", name: "其他（OpenAI 兼容 /images/generations）", service: "image", base_url: "", models: [], sizes: ["1024x1024", "1024x1536", "1536x1024", "512x512"] },
+];
+
+export const SERVICE_LABEL: Record<ServiceType, string> = { chat: "语言模型", speech: "语音合成", image: "生成图片" };

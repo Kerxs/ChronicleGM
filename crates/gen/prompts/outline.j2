@@ -1,0 +1,30 @@
+请为下面的需求设计一个完整的 TRPG 剧本大纲。
+
+## 需求
+- 创意：{{ idea }}
+{%- if title %}
+- 指定名称：{{ title }}
+{%- endif %}
+{%- if genre %}
+- 题材：{{ genre }}
+{%- endif %}
+{%- if tone %}
+- 风格基调：{{ tone }}
+{%- endif %}
+- 玩家人数：{{ players }}；预计游戏时长：{{ hours }} 小时
+{%- if rules %}
+- 额外要求：{{ rules }}
+{%- endif %}
+
+## 规模要求（按人数与时长计算）
+- 章节：{{ chapters_min }}–{{ chapters_max }} 个
+- 主线任务 {{ scale.main_quests.min }}–{{ scale.main_quests.max }} 个，支线任务 {{ scale.side_quests.min }}–{{ scale.side_quests.max }} 个，隐藏任务 {{ scale.hidden_quests.min }}–{{ scale.hidden_quests.max }} 个
+- 主要 NPC {{ npcs_min }}–{{ npcs_max }} 个（这里只列关键人物，细节之后再补）
+- 结局 {{ scale.endings.min }}–{{ scale.endings.max }} 个，结局之间要有明显不同的达成条件
+
+这是分段生成的第一步：只写大纲。每个章节的场景、线索等细节之后会逐章展开，所以章节概要保持简洁（2–4 句）。
+{%- if context %}
+
+# 参考资料
+{{ context }}
+{%- endif %}

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Chronicle GM 界面方案</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; font-size: 14px; overflow: hidden; }
+.serif { font-family: "Noto Serif SC", "Georgia", "SimSun", serif; }
+.app { display: grid; grid-template-columns: 232px 1fr 380px; height: 100vh; }
+svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- 侧栏 ---------- */
+.side { display: flex; flex-direction: column; padding: 22px 16px 16px; gap: 18px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; }
+.brand .mark { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; }
+.brand h1 { font-size: 18px; letter-spacing: .3px; font-weight: 600; white-space: nowrap; }
+.brand small { display: block; font-size: 11px; opacity: .6; letter-spacing: 2px; margin-top: 2px; }
+.world { border-radius: 10px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; }
+.world .thumb { width: 36px; height: 36px; border-radius: 8px; flex: none; }
+.world b { display: block; font-size: 14px; }
+.world span { font-size: 11px; opacity: .6; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav .label { font-size: 11px; letter-spacing: 2px; opacity: .45; padding: 10px 10px 6px; }
+.nav a { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 8px; font-size: 14px; text-decoration: none; color: inherit; opacity: .78; }
+.nav a.on { opacity: 1; font-weight: 600; }
+.nav a .badge { margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 10px; }
+.side .foot { margin-top: auto; font-size: 11px; opacity: .45; padding: 0 8px; line-height: 1.6; }
+
+/* ---------- 中间 ---------- */
+.main { display: flex; flex-direction: column; min-width: 0; }
+.top { display: flex; align-items: center; gap: 14px; padding: 18px 32px 14px; }
+.top h2 { font-size: 22px; font-weight: 600; }
+.top .sub { font-size: 12px; opacity: .6; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 20px; font-size: 12px; white-space: nowrap; }
+.top .sp { flex: 1; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.stream { flex: 1; overflow: hidden; padding: 8px 32px 0; display: flex; flex-direction: column; gap: 18px; }
+.scene { display: flex; align-items: center; gap: 12px; font-size: 12px; letter-spacing: 3px; }
+.scene::before, .scene::after { content: ""; flex: 1; height: 1px; }
+.narr { font-size: 16.5px; line-height: 2; padding: 22px 26px; border-radius: 12px; }
+.narr p + p { margin-top: 10px; }
+.narr .drop::first-letter { font-size: 44px; float: left; line-height: 1; margin: 6px 10px 0 0; font-weight: 700; }
+.player { align-self: flex-end; max-width: 70%; padding: 12px 16px; border-radius: 12px 12px 4px 12px; font-size: 15px; line-height: 1.7; }
+.player b { font-size: 12px; display: block; opacity: .7; margin-bottom: 2px; font-weight: 500; }
+.checks { display: flex; gap: 10px; flex-wrap: wrap; }
+.check { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 10px; font-size: 13px; }
+.check .die { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; font-weight: 700; font-size: 14px; }
+.check small { opacity: .6; }
+.npc { display: flex; gap: 14px; align-items: flex-start; }
+.npc .face { width: 46px; height: 46px; border-radius: 50%; flex: none; }
+.npc .bub { padding: 12px 16px; border-radius: 4px 12px 12px 12px; font-size: 15.5px; line-height: 1.8; }
+.npc .bub b { display: block; font-size: 12px; margin-bottom: 2px; }
+.intent { font-size: 12px; opacity: .55; }
+.compose { margin: 14px 32px 22px; border-radius: 14px; padding: 12px 12px 12px 18px; display: flex; align-items: flex-end; gap: 12px; }
+.compose .ta { flex: 1; min-height: 46px; font-size: 15px; line-height: 1.6; padding: 4px 0; opacity: .55; }
+.compose .act { padding: 11px 22px; border-radius: 10px; font-size: 15px; font-weight: 600; display: inline-flex; gap: 8px; align-items: center; }
+.compose .tools { display: flex; gap: 6px; }
+.compose .tools span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; opacity: .7; }
+
+/* ---------- 右侧 ---------- */
+.insp { display: flex; flex-direction: column; padding: 18px 20px; gap: 14px; overflow: hidden; }
+.tabs { display: flex; gap: 4px; padding: 4px; border-radius: 10px; }
+.tabs span { flex: 1; text-align: center; padding: 7px 0; border-radius: 7px; font-size: 13px; opacity: .7; }
+.tabs span.on { opacity: 1; font-weight: 600; }
+.card { border-radius: 12px; padding: 14px 16px; }
+.card h3 { font-size: 13px; letter-spacing: 2px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.card h3 .gm { margin-left: auto; font-size: 10px; letter-spacing: 1px; padding: 1px 7px; border-radius: 10px; font-weight: 500; }
+.clock { display: flex; align-items: center; gap: 14px; }
+.clock .big { font-size: 26px; font-weight: 600; }
+.clock .meta { font-size: 12px; line-height: 1.6; opacity: .75; }
+.place { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13.5px; }
+.place .tag { font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+.place small { opacity: .5; margin-left: auto; font-size: 11px; }
+.place.here b::after { content: " ◆ 你在这里"; font-size: 11px; font-weight: 500; }
+.fac { margin-bottom: 12px; }
+.fac:last-child { margin-bottom: 0; }
+.fac .h { display: flex; align-items: baseline; gap: 8px; font-size: 14px; margin-bottom: 6px; }
+.fac .h small { font-size: 11px; opacity: .55; }
+.fac .h .war { margin-left: auto; font-size: 11px; }
+.bars { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+.bar { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.bar i { flex: 1; height: 5px; border-radius: 3px; position: relative; overflow: hidden; }
+.bar i::after { content: ""; position: absolute; inset: 0; width: var(--v); border-radius: 3px; }
+.party { display: flex; align-items: center; gap: 12px; }
+.party .face { width: 44px; height: 44px; border-radius: 50%; }
+.hp { flex: 1; }
+.hp div { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+.hp i { display: block; height: 6px; border-radius: 3px; position: relative; overflow: hidden; }
+.hp i::after { content: ""; position: absolute; inset: 0; width: 72%; border-radius: 3px; }
+
+/* =============== A 烛火羊皮 =============== */
+.a { background: #17110c; color: #e9dcc4; }
+.a .side { background: #110c08; border-right: 1px solid #2c2117; }
+.a .brand .mark { background: radial-gradient(circle at 35% 30%, #f3c46b, #9b5f1d 70%); color: #2a1709; }
+.a .brand h1 { font-family: "Noto Serif SC", Georgia, serif; color: #f0cf8c; }
+.a .world { background: #1f1710; border: 1px solid #3a2a1b; }
+.a .world .thumb { background: linear-gradient(135deg, #5b3b1e, #2b4a4a); }
+.a .nav a.on { background: linear-gradient(90deg, #3a2814, #22180f); color: #f3cf88; box-shadow: inset 2px 0 0 #d9a24a; }
+.a .nav a .badge { background: #6b3b16; color: #ffd9a0; }
+.a .top { border-bottom: 1px solid #2c2117; }
+.a .top h2 { font-family: "Noto Serif SC", Georgia, serif; color: #f2d79e; }
+.a .chip { background: #241a11; border: 1px solid #3c2c1c; color: #d9c49f; }
+.a .btn { background: #241a11; border: 1px solid #45331f; color: #e6cf9f; }
+.a .scene { color: #b9965c; font-family: "Noto Serif SC", serif; }
+.a .scene::before, .a .scene::after { background: linear-gradient(90deg, transparent, #6a4c27, transparent); }
+.a .narr { font-family: "Noto Serif SC", Georgia, serif; background: linear-gradient(180deg, #efe2c6, #e4d2ae); color: #3a2814; box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 0 60px rgba(120,80,30,.18); border: 1px solid #b89663; }
+.a .narr .drop::first-letter { color: #8a3b14; font-family: "Noto Serif SC", serif; }
+.a .player { background: #2b2015; border: 1px solid #4a3620; color: #f0e2c6; }
+.a .check { background: #1e160e; border: 1px solid #3b2b1a; }
+.a .check .die { background: linear-gradient(135deg, #e9b75c, #a8661f); color: #2a1609; }
+.a .check.fail .die { background: linear-gradient(135deg, #8a3a2a, #4d1c14); color: #f4d0c4; }
+.a .npc .face { background: radial-gradient(circle at 40% 35%, #c9a27a, #5b3a22 75%); border: 2px solid #b8894a; }
+.a .npc .bub { background: #241a11; border: 1px solid #3f2e1c; font-family: "Noto Serif SC", serif; }
+.a .npc .bub b { color: #e7b660; font-family: "Microsoft YaHei UI", sans-serif; }
+.a .compose { background: #1f1710; border: 1px solid #4a3620; box-shadow: 0 -10px 30px rgba(0,0,0,.3); }
+.a .compose .act { background: linear-gradient(180deg, #e3ab4f, #b4741f); color: #2a1609; }
+.a .insp { background: #130e09; border-left: 1px solid #2c2117; }
+.a .tabs { background: #1d150e; }
+.a .tabs span.on { background: #3a2814; color: #f3cf88; }
+.a .card { background: #1d150e; border: 1px solid #33261a; }
+.a .card h3 { color: #d8ad62; font-family: "Noto Serif SC", serif; }
+.a .card h3 .gm { background: #4a1f14; color: #f1b39c; }
+.a .clock .big { font-family: "Noto Serif SC", Georgia, serif; color: #f2d79e; }
+.a .place .tag { background: #33261a; color: #c9ad7d; }
+.a .place.here b { color: #f3cf88; }
+.a .place.here b::after { color: #e0a24b; }
+.a .fac .h .war { color: #e2704f; }
+.a .bar i { background: #2e2216; }
+.a .bar i::after { background: linear-gradient(90deg, #a8661f, #e9b75c); }
+.a .party .face { background: radial-gradient(circle at 40% 35%, #d6b08a, #6b432a 75%); border: 2px solid #d9a24a; }
+.a .hp i { background: #2e2216; }
+.a .hp i::after { background: linear-gradient(90deg, #8e2a1c, #d4553b); }
+.a .intent { color: #b48c55; }
+
+/* =============== B 星夜秘典 =============== */
+.b { background: radial-gradient(1200px 800px at 60% -10%, #1b2448 0%, #0b0f20 55%, #070912 100%); color: #d6dcf0; }
+.b .side { background: rgba(8, 11, 24, .75); border-right: 1px solid #1d2546; }
+.b .brand .mark { background: conic-gradient(from 200deg, #7fd8ff, #8b6cff, #7fd8ff); color: #0b0f20; box-shadow: 0 0 18px rgba(127,216,255,.45); }
+.b .brand h1 { font-family: "Noto Serif SC", Georgia, serif; color: #e6ecff; }
+.b .brand small { color: #7fd8ff; opacity: .8; }
+.b .world { background: rgba(30, 40, 80, .45); border: 1px solid #2b3768; }
+.b .world .thumb { background: linear-gradient(135deg, #2c3f8a, #1a6d7d); box-shadow: inset 0 0 12px rgba(127,216,255,.35); }
+.b .nav a.on { background: linear-gradient(90deg, rgba(127,216,255,.16), rgba(139,108,255,.06)); color: #bfefff; box-shadow: inset 0 0 0 1px rgba(127,216,255,.28); }
+.b .nav a .badge { background: rgba(139,108,255,.3); color: #ddd2ff; }
+.b .top h2 { font-family: "Noto Serif SC", Georgia, serif; color: #eef2ff; }
+.b .chip { background: rgba(30, 40, 80, .55); border: 1px solid #2d3a6e; color: #b9c6ef; }
+.b .btn { background: rgba(30, 40, 80, .55); border: 1px solid #34437c; color: #cfe0ff; }
+.b .scene { color: #7fd8ff; font-family: "Noto Serif SC", serif; }
+.b .scene::before, .b .scene::after { background: linear-gradient(90deg, transparent, rgba(127,216,255,.5), transparent); }
+.b .narr { font-family: "Noto Serif SC", Georgia, serif; background: linear-gradient(180deg, rgba(23, 31, 64, .85), rgba(14, 19, 40, .85)); border: 1px solid #2b3768; box-shadow: 0 0 0 1px rgba(127,216,255,.06), 0 18px 40px rgba(0,0,0,.45); color: #e3e8fa; }
+.b .narr .drop::first-letter { color: #7fd8ff; text-shadow: 0 0 14px rgba(127,216,255,.6); }
+.b .player { background: linear-gradient(135deg, rgba(139,108,255,.28), rgba(80,60,170,.22)); border: 1px solid rgba(139,108,255,.45); }
+.b .check { background: rgba(20, 27, 56, .7); border: 1px solid #2b3768; }
+.b .check .die { background: linear-gradient(135deg, #7fd8ff, #4b7dff); color: #071022; box-shadow: 0 0 12px rgba(127,216,255,.4); }
+.b .check.fail .die { background: linear-gradient(135deg, #ff7a9a, #a63a6a); color: #1c0712; box-shadow: none; }
+.b .npc .face { background: radial-gradient(circle at 40% 35%, #9fb4e8, #2b3b78 75%); border: 2px solid rgba(127,216,255,.6); box-shadow: 0 0 14px rgba(127,216,255,.3); }
+.b .npc .bub { background: rgba(20, 27, 56, .8); border: 1px solid #2b3768; font-family: "Noto Serif SC", serif; }
+.b .npc .bub b { color: #7fd8ff; font-family: "Microsoft YaHei UI", sans-serif; }
+.b .compose { background: rgba(16, 22, 46, .9); border: 1px solid #34437c; box-shadow: 0 0 0 1px rgba(127,216,255,.05), 0 -10px 30px rgba(0,0,0,.35); }
+.b .compose .act { background: linear-gradient(135deg, #7fd8ff, #8b6cff); color: #070b1c; box-shadow: 0 0 18px rgba(127,216,255,.35); }
+.b .insp { background: rgba(8, 11, 24, .6); border-left: 1px solid #1d2546; }
+.b .tabs { background: rgba(20, 27, 56, .7); }
+.b .tabs span.on { background: rgba(127,216,255,.16); color: #bfefff; }
+.b .card { background: rgba(18, 24, 50, .75); border: 1px solid #242f5c; }
+.b .card h3 { color: #9fd9f5; font-family: "Noto Serif SC", serif; }
+.b .card h3 .gm { background: rgba(255,122,154,.18); color: #ffb3c4; }
+.b .clock .big { font-family: Georgia, "Noto Serif SC", serif; color: #f0f4ff; }
+.b .place .tag { background: rgba(127,216,255,.12); color: #9fd9f5; }
+.b .place.here b { color: #bfefff; }
+.b .place.here b::after { color: #7fd8ff; }
+.b .fac .h .war { color: #ff8aa6; }
+.b .bar i { background: rgba(60, 75, 130, .45); }
+.b .bar i::after { background: linear-gradient(90deg, #4b7dff, #7fd8ff); }
+.b .party .face { background: radial-gradient(circle at 40% 35%, #b7c6f0, #39459a 75%); border: 2px solid #8b6cff; }
+.b .hp i { background: rgba(60, 75, 130, .45); }
+.b .hp i::after { background: linear-gradient(90deg, #c2416e, #ff7a9a); }
+.b .intent { color: #8fa3d8; }
+
+/* =============== C 铁与墨 =============== */
+.c { background: #0e0e10; color: #d8d4cc; }
+.c .app { grid-template-columns: 76px 1fr 360px; }
+.c .side { background: #09090b; border-right: 1px solid #1f1f23; padding: 18px 10px; align-items: center; }
+.c .brand { padding: 0; }
+.c .brand h1, .c .brand small, .c .world, .c .nav .label, .c .side .foot, .c .nav a span.t, .c .nav a .badge { display: none; }
+.c .brand .mark { width: 40px; height: 40px; border-radius: 10px; background: #1a1a1e; border: 1px solid #b33a2a; color: #e2553f; font-family: "Noto Serif SC", serif; font-weight: 700; font-size: 18px; }
+.c .nav { align-items: center; gap: 6px; }
+.c .nav a { width: 46px; height: 46px; justify-content: center; padding: 0; border-radius: 12px; }
+.c .nav a svg.i { width: 21px; height: 21px; }
+.c .nav a.on { background: #1d1d21; color: #ef6a52; box-shadow: inset 0 0 0 1px #3a2522; }
+.c .top { padding: 26px 64px 10px; }
+.c .top h2 { font-family: "Noto Serif SC", serif; font-size: 26px; color: #efe9df; font-weight: 700; }
+.c .chip { background: transparent; border: 1px solid #2a2a2f; color: #a8a39a; }
+.c .btn { background: #18181b; border: 1px solid #2a2a2f; color: #d8d4cc; }
+.c .stream { padding: 14px 64px 0; gap: 22px; max-width: 980px; width: 100%; margin: 0 auto; }
+.c .scene { color: #ef6a52; font-family: "Noto Serif SC", serif; letter-spacing: 6px; }
+.c .scene::before, .c .scene::after { background: #2a2a2f; }
+.c .narr { font-family: "Noto Serif SC", Georgia, serif; font-size: 17.5px; line-height: 2.05; padding: 0; background: none; color: #e6e1d8; }
+.c .narr .drop::first-letter { color: #ef6a52; font-size: 52px; }
+.c .player { background: none; border-left: 2px solid #ef6a52; border-radius: 0; align-self: stretch; max-width: none; padding: 4px 0 4px 18px; color: #f2ece2; font-size: 15.5px; }
+.c .player b { color: #ef6a52; opacity: 1; letter-spacing: 2px; }
+.c .check { background: #141417; border: 1px solid #26262b; border-radius: 6px; }
+.c .check .die { background: #efe9df; color: #111; border-radius: 4px; }
+.c .check.fail .die { background: #b33a2a; color: #fff; }
+.c .npc .face { background: radial-gradient(circle at 40% 35%, #9a948a, #2c2a27 75%); filter: grayscale(.3); border: 1px solid #3a3a40; }
+.c .npc .bub { background: none; padding: 2px 0; font-family: "Noto Serif SC", serif; }
+.c .npc .bub b { color: #c9a777; font-family: "Microsoft YaHei UI", sans-serif; letter-spacing: 1px; }
+.c .compose { max-width: 980px; width: calc(100% - 128px); margin: 14px auto 26px; background: #141417; border: 1px solid #2a2a2f; }
+.c .compose .act { background: #b33a2a; color: #fff; }
+.c .insp { background: #0b0b0d; border-left: 1px solid #1f1f23; }
+.c .tabs { background: none; border-bottom: 1px solid #222226; border-radius: 0; padding: 0; gap: 0; }
+.c .tabs span { border-radius: 0; padding-bottom: 10px; }
+.c .tabs span.on { box-shadow: inset 0 -2px 0 #ef6a52; color: #f2ece2; }
+.c .card { background: none; border: none; border-bottom: 1px solid #1f1f23; border-radius: 0; padding: 4px 2px 16px; }
+.c .card h3 { color: #8f8a82; font-size: 11px; letter-spacing: 3px; }
+.c .card h3 .gm { background: #2a1714; color: #ef8a75; }
+.c .clock .big { font-family: "Noto Serif SC", serif; color: #f2ece2; }
+.c .place .tag { background: #1d1d21; color: #a8a39a; }
+.c .place.here b { color: #f2ece2; }
+.c .place.here b::after { color: #ef6a52; }
+.c .fac .h .war { color: #ef6a52; }
+.c .bar i { background: #222226; }
+.c .bar i::after { background: #c9a777; }
+.c .party .face { background: radial-gradient(circle at 40% 35%, #b5ad9f, #3a3631 75%); border: 1px solid #ef6a52; }
+.c .hp i { background: #222226; }
+.c .hp i::after { background: #b33a2a; }
+.c .intent { color: #77736c; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark serif">编</div>
+      <div><h1>Chronicle GM</h1><small>编年史主持人</small></div>
+    </div>
+    <div class="world"><div class="thumb"></div><div><b>雾港纪事</b><span>3 个战役 · 1,284 个条目</span></div></div>
+    <nav class="nav">
+      <div class="label">冒险</div>
+      <a class="on"><svg class="i" viewBox="0 0 24 24"><path d="M4 19V6a2 2 0 0 1 2-2h11l3 3v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1Z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span class="t">游戏</span></a>
+      <a><svg class="i" viewBox="0 0 24 24"><path d="M3 21h18M8 21v-5a4 4 0 0 1 8 0v5"/><path d="M12 3c3 2 5 5 5 8"/><circle cx="12" cy="9" r="1.2"/></svg><span class="t">战役档案馆</span></a>
+      <div class="label">世界</div>
+      <a><svg class="i" viewBox="0 0 24 24"><path d="M12 3v18M12 8l-5-3M12 8l5-3M12 14l-6-2M12 14l6-2"/></svg><span class="t">世界树</span></a>
+      <a><svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10" cy="18" r="2.5"/><path d="M8.2 7l7.4.8M7 8.3l2.2 7.4M16.4 10l-4.6 6"/></svg><span class="t">世界图谱</span></a>
+      <a><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M15 14.5c3 0 6 2 6 5.5"/></svg><span class="t">人物关系</span></a>
+      <a><svg class="i" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h5"/></svg><span class="t">剧本</span></a>
+      <a><svg class="i" viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg><span class="t">审阅台</span><span class="badge">3</span></a>
+      <div class="label">系统</div>
+      <a><svg class="i" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span class="t">模型服务</span></a>
+      <a><svg class="i" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span class="t">性能中心</span></a>
+    </nav>
+    <div class="foot">v0.2 · 本地模型已连接<br>Ornith-35B · Breeze TTS</div>
+  </aside>
+
+  <main class="main">
+    <div class="top">
+      <div><h2>灯塔熄灭之夜</h2><div class="sub">战役 · 第 12 回合 · 主持人视角</div></div>
+      <span class="sp"></span>
+      <span class="chip">🌙 第 4 天 21:40 · 夜晚</span>
+      <span class="chip">🌧 小雨 · 春季</span>
+      <span class="btn"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>时间线</span>
+    </div>
+    <div class="stream">
+      <div class="scene">第 二 章 · 旧 码 头</div>
+      <div class="narr">
+        <p class="drop">雨丝斜斜地打在旧码头的木栈道上，泡胀的木板在你脚下发出低沉的呻吟。触礁船只的残骸横七竖八地躺在滩上，被礁石撕开的船腹里，海水还在一下一下地往外渗。</p>
+        <p>灯塔就立在岬角尽头，黑沉沉的，像一根熄灭的蜡烛。你注意到残骸边的沙地上有一串新鲜的脚印，一直延伸到防波堤后面——有人比你先来过。</p>
+      </div>
+      <div class="checks">
+        <div class="check"><span class="die">17</span><div>察觉 检定 · 发现脚印<br><small>1d20+2 = 17 ≥ 12 · 成功</small></div></div>
+        <div class="check fail"><span class="die">6</span><div>潜行 检定 · 不惊动守卫<br><small>1d20 = 6 &lt; 14 · 失败</small></div></div>
+      </div>
+      <div class="npc"><div class="face"></div><div class="bub"><b>渔夫阿诺</b>“那串脚印？昨夜我收网时就看见了。是税务官手下的人，他们半夜往灯塔那边搬过油桶。”</div></div>
+      <div class="player"><b>你 · 艾琳</b>我顺着脚印往防波堤后面走，尽量贴着礁石的阴影，别让灯塔上的人看见。</div>
+      <div class="intent">GM 判断意图：跟踪 · 依据：线索「灯油被换成了海水」、记忆 M3</div>
+    </div>
+    <div class="compose">
+      <div class="ta">描述你的行动……（Ctrl+Enter 发送）</div>
+      <div class="tools"><span><svg class="i" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg></span><span><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.4"/><path d="M8 16h8M12 12v8"/></svg></span></div>
+      <span class="act">行动 <svg class="i" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+    </div>
+  </main>
+
+  <aside class="insp">
+    <div class="tabs"><span class="on">世界</span><span>人物</span><span>任务</span><span>调查</span><span>控制台</span></div>
+    <div class="card">
+      <h3>队伍</h3>
+      <div class="party"><div class="face"></div><div class="hp"><div><b>艾琳</b><span>HP 22 / 30</span></div><i></i></div></div>
+    </div>
+    <div class="card">
+      <h3>时间与天气</h3>
+      <div class="clock"><div class="big">21:40</div><div class="meta">第 4 天 · 夜晚 · 春季<br>小雨，能见度低，海上起雾</div></div>
+    </div>
+    <div class="card">
+      <h3>地图</h3>
+      <div class="place"><span class="tag">已探索</span><b>雾港</b><small>城市</small></div>
+      <div class="place" style="padding-left:16px"><span class="tag">已探索</span><b>锚链酒馆</b><small>0.2 天</small></div>
+      <div class="place here" style="padding-left:16px"><span class="tag">已探索</span><b>旧码头</b><small></small></div>
+      <div class="place" style="padding-left:16px"><span class="tag">传闻</span><b>岬角灯塔</b><small>0.1 天</small></div>
+    </div>
+    <div class="card">
+      <h3>势力 <span class="gm">主持人信息</span></h3>
+      <div class="fac"><div class="h"><b>港务署</b><small>最近：收买</small><span class="war">与走私帮勾结</span></div>
+        <div class="bars"><span class="bar">财富<i style="--v:72%"></i></span><span class="bar">军力<i style="--v:40%"></i></span><span class="bar">影响<i style="--v:66%"></i></span><span class="bar">稳定<i style="--v:38%"></i></span></div></div>
+      <div class="fac"><div class="h"><b>黑潮走私帮</b><small>最近：打捞</small></div>
+        <div class="bars"><span class="bar">财富<i style="--v:84%"></i></span><span class="bar">军力<i style="--v:58%"></i></span><span class="bar">影响<i style="--v:44%"></i></span><span class="bar">稳定<i style="--v:70%"></i></span></div></div>
+    </div>
+  </aside>
+</div>
+<script>
+  const t = new URLSearchParams(location.search).get("t") || "a";
+  document.body.className = t;
+</script>
+</body>
+</html>

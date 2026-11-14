@@ -448,3 +448,7 @@ npm run tauri build
    - `TAURI_SIGNING_PRIVATE_KEY`：私钥文件路径
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码
 3. 生成 `latest.json`（版本、说明、签名、安装包下载地址），和安装包、签名一起上传到 GitHub Release `v<版本>`。软件读取的是 `releases/latest/download/latest.json`。
+
+## 许可证
+
+[MIT](LICENSE)。第三方组件按各自的许可证使用（例如液态玻璃组件 @samasante/liquid-glass 为 MIT）。

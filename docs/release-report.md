@@ -49,6 +49,6 @@
 
 ## 已知问题
 
-1. 仓库没有添加开源许可证（LICENSE）。没有许可证时，默认保留全部权利，别人能看但不能合法复用。需要的话告诉我用哪种许可证。
+1. 已添加 MIT 许可证（`LICENSE`，版权人 Kerxs）。
 2. 安装包没有代码签名证书（Authenticode），Windows SmartScreen 第一次运行时可能提示"未知发布者"。更新签名（minisign）和代码签名是两回事。
 3. 发布流程在本机完成（打包、签名、上传），没有配置 GitHub Actions：私钥不需要上传到 GitHub。

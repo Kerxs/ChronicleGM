@@ -5,5 +5,5 @@ members = ["crates/rules", "crates/core", "crates/llm", "crates/gen", "crates/gm
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-license = "UNLICENSED"
+license = "MIT"
 publish = false

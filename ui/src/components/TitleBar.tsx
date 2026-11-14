@@ -71,7 +71,7 @@ export default function TitleBar({
   return (
     <header className="titlebar" data-tauri-drag-region>
       <div className="tb-brand" data-tauri-drag-region>
-        <span className="tb-mark">编</span>
+        <img className="tb-icon" src="/app-icon.png" alt="" draggable={false} />
         <span className="tb-name" data-tauri-drag-region>
           Chronicle GM
         </span>

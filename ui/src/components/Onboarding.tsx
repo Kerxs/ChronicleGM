@@ -73,7 +73,7 @@ function Welcome() {
   return (
     <>
       <div className="onb-hero">
-        <div className="onb-orb" />
+        <img className="app-icon-hero" src="/app-icon.png" alt="Chronicle GM" draggable={false} />
         <h2>欢迎使用 Chronicle GM</h2>
         <p className="hint">本地 AI 跑团主持工具。模型由你自己准备，数据都保存在这台电脑上。</p>
       </div>

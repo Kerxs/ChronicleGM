@@ -68,3 +68,8 @@
 .update-progress .bar span.indeterminate { animation: indet 1.2s ease-in-out infinite; }
 @keyframes indet { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
 .tb-status.update { background: rgba(52, 199, 89, 0.15); color: #1f7a3a; }
+
+/* ===================== 程序图标 ===================== */
+.tb-icon { width: 26px; height: 26px; flex: none; border-radius: 7px; box-shadow: 0 2px 8px rgba(40, 60, 140, 0.18); }
+.app-icon-hero { display: block; width: 84px; height: 84px; margin: 0 auto 14px; border-radius: 22px; box-shadow: 0 14px 40px rgba(40, 60, 160, 0.22); animation: onb-float 4s ease-in-out infinite; }
+.app-icon-small { width: 52px; height: 52px; flex: none; border-radius: 14px; box-shadow: 0 6px 18px rgba(40, 60, 160, 0.2); }

@@ -11,7 +11,7 @@ export default function UpdateDialog() {
     <div className="onb-backdrop" role="dialog" aria-label="软件更新" onClick={closeUpdate}>
       <div className="update-card" onClick={(e) => e.stopPropagation()}>
         <div className="update-head">
-          <div className="onb-orb small" />
+          <img className="app-icon-small" src="/app-icon.png" alt="" draggable={false} />
           <div>
             <h2>发现新版本 {u.info.version}</h2>
             <p className="hint">

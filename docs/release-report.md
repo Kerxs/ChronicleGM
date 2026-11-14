@@ -6,7 +6,7 @@
 
 - 仓库：https://github.com/Kerxs/ChronicleGM （公开）
 - 发布：https://github.com/Kerxs/ChronicleGM/releases/tag/v0.0.1
-  - `ChronicleGM_0.0.1_x64-setup.exe`：7,976,080 字节，SHA-256 `d7c57bf85f976054f4640c2b125dc309e05c7712ce5bdd13d03cac52675fbc0b`
+  - `ChronicleGM_0.0.1_x64-setup.exe`：8,044,827 字节，SHA-256 `5f5973ff2c3b270c2068132c7e0e43bc109a5eb7d4298c614d100940aa55ec47`（换上新图标后重新打包；第一次发布的 0.0.1 安装包已删除）
   - `ChronicleGM_0.0.1_x64-setup.exe.sig`：更新签名
   - `latest.json`：软件检查更新时读取的文件
 - 版本号统一改为 0.0.1：workspace、各 crate、`tauri.conf.json`、`package.json`。

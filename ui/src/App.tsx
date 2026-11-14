@@ -271,7 +271,7 @@ export default function App() {
           </TabbedPage>
         ) : !ctx ? (
           <div className="welcome">
-            <div className="onb-orb" />
+            <img className="app-icon-hero" src="/app-icon.png" alt="Chronicle GM" draggable={false} />
             <h2>欢迎使用 Chronicle GM</h2>
             <p className="hint">在顶部标题栏的世界菜单里选择或新建一个世界。</p>
             <button className="primary" onClick={() => setGuide(true)}>打开使用引导</button>

@@ -34,6 +34,7 @@ export const STAGE_LABEL: Record<string, string> = {
   resolve: "程序判定 · 掷骰",
   narrate: "组织叙述",
   npc: "人物正在回应",
+  voice: "正在生成语音",
 };
 
 const CHARS_PER_SEC = 16;
@@ -43,6 +44,8 @@ export default function GmOrb({
   stage,
   text,
   level,
+  reveal,
+  onSkipWait,
   onFinished,
   check,
   onCheckDone,
@@ -59,6 +62,10 @@ export default function GmOrb({
   text: string;
   /** 朗读音量 0–1（没有朗读时返回 null，按文字节奏起伏）。 */
   level: () => number | null;
+  /** 先合成后输出时：声音读到全文的几分之几（0–1），文字按它出现；没有同步朗读时返回 null（按固定速度出字）。 */
+  reveal?: () => number | null;
+  /** 正在等语音合成时：不等了，先显示文字。 */
+  onSkipWait?: () => void;
   /** 讲述结束（文字输出完、停留片刻后，或点了跳过）。 */
   onFinished: () => void;
   /** 正在展示的检定（玻璃球展开显示骰子与判定）。 */
@@ -172,9 +179,16 @@ export default function GmOrb({
     let raf = 0;
     let doneAt = 0;
     const t0 = performance.now();
+    let synced = false;
+    let shown = 0;
     const tick = (now: number) => {
       const x = (now - t0) / 1000;
-      const n = Math.min(text.length, Math.floor(Math.max(0, x - 0.5) * CHARS_PER_SEC));
+      const r = reveal?.() ?? null;
+      if (r !== null) synced = true;
+      // 同步朗读：跟着声音出字（声音读完后 reveal 变回 null，这时显示全文）；否则按固定速度。
+      const target = synced ? (r === null ? text.length : Math.floor(r * text.length)) : Math.floor(Math.max(0, x - 0.5) * CHARS_PER_SEC);
+      shown = Math.max(shown, Math.min(text.length, target));
+      const n = shown;
       setTyped(n);
       const lv = level();
       const a = lv ?? (n < text.length ? Math.min(1, Math.max(0, 0.45 * Math.sin(x * 9.3) * Math.sin(x * 2.1) + 0.3 * Math.sin(x * 15.7 + 1) + 0.3)) : 0);
@@ -291,6 +305,11 @@ export default function GmOrb({
         <div className="gm-glass gm-css">{box}</div>
       )}
       <div className="step-label" role="status">{label}</div>
+      {state === "thinking" && onSkipWait && (
+        <button type="button" className="link small gm-skip-wait" onClick={(e) => { e.stopPropagation(); onSkipWait(); }}>
+          不等语音，先看文字
+        </button>
+      )}
     </div>
   );
 }

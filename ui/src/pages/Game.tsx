@@ -26,6 +26,7 @@ import { CharacterPanel, CombatPanel } from "../components/RpgPanels";
 import { ConsolePanel } from "../components/ConsolePanel";
 import type { Choices } from "../components/DslEditors";
 import { listen } from "@tauri-apps/api/event";
+import { splitForSpeech } from "../lib/speechChunks";
 import type { ForkPoint } from "../bindings/ForkPoint";
 import type { VerifyReport } from "../bindings/VerifyReport";
 import type { TimelineComparison } from "../bindings/TimelineComparison";
@@ -319,12 +320,16 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
     setSpeaking(null);
     try {
       const r = await api.gmTurn(ctx.worldId, campaignId, said);
-      if (r.narration.trim()) setSpeaking(r.narration.trim());
-      else setUnread(false);
-      if (autoRead) {
-        if (r.narration.trim()) voice.enqueue(null, r.narration);
-        for (const n of r.npc_lines) voice.enqueue(n.npc_id, n.text);
+      const narr = r.narration.trim();
+      // 自动朗读：先把讲述合成成语音（玻璃球显示"正在生成语音"），合成好第一段再让文字和声音一起出来。
+      // 合成失败时照常显示文字。
+      if (narr && autoRead) {
+        setStage("voice");
+        await voice.speakSynced(null, narr);
       }
+      if (narr) setSpeaking(narr);
+      else setUnread(false);
+      if (autoRead) for (const n of r.npc_lines) voice.enqueue(n.npc_id, n.text);
       setLast(r);
       if (!opening && text === undefined) setInput("");
       if (r.leaks.length || r.npc_lines.some((n) => n.leaks.length)) ctx.notify("本回合的文字中可能泄露了主持人信息（主持人视角可查看）", "error");
@@ -386,6 +391,8 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
             stage={stage}
             text={speaking ?? ""}
             level={voice.level}
+            reveal={voice.progress}
+            onSkipWait={stage === "voice" ? voice.skipWait : undefined}
             onFinished={() => {
               setSpeaking(null);
               // 讲完后留在球里，显示完整的这一段（玩家行动时自动收起）。
@@ -990,6 +997,8 @@ function TimelinePanel({ ctx, campaign, campaigns, onSwitch, onChanged }: { ctx:
 }
 
 /** 朗读队列：按顺序合成并播放；停止时清空。合成在后端进行（有缓存、去重和队列上限）。 */
+const SKIPPED = "__skip_voice__";
+
 function useVoice(ctx: Ctx) {
   const queue = useRef<{ speaker: string | null; text: string }[]>([]);
   const audio = useRef<HTMLAudioElement | null>(null);
@@ -1005,48 +1014,60 @@ function useVoice(ctx: Ctx) {
     return Math.min(1, Math.sqrt(sum / g.buf.length) * 4);
   }, []);
   const running = useRef(false);
+  /** 每次停止都加一：旧的播放循环看到编号变了就退出。 */
+  const gen = useRef(0);
   const [playing, setPlaying] = useState(false);
+
+  /** 播放一段音频，播完（或出错）时返回。出错时抛出原因，不再悄悄跳过（以前播放失败没有任何提示）。 */
+  const playClip = useCallback((url: string) => {
+    return new Promise<void>((resolve, reject) => {
+      const a = new Audio(url);
+      audio.current = a;
+      try {
+        if (!ac.current) {
+          const c = new AudioContext();
+          const an = c.createAnalyser();
+          an.fftSize = 1024;
+          an.connect(c.destination);
+          ac.current = { ctx: c, an, buf: new Uint8Array(an.fftSize) };
+        }
+        // 音频上下文没有在运行时不接分析器：接上会把声音送进一个不出声的上下文。
+        if (ac.current.ctx.state === "running") ac.current.ctx.createMediaElementSource(a).connect(ac.current.an);
+        else void ac.current.ctx.resume();
+      } catch {
+        /* 音量分析不可用时只影响玻璃球的起伏，不影响朗读 */
+      }
+      a.onended = () => resolve();
+      a.onerror = () => reject(new Error(`语音播放失败：${a.error?.message || "音频无法加载"}`));
+      void a.play().catch((e: Error) => reject(new Error(`语音播放失败：${e.message}`)));
+    });
+  }, []);
+
   const pump = useCallback(async () => {
     if (running.current) return;
     running.current = true;
+    const my = gen.current;
     setPlaying(true);
     try {
-      while (queue.current.length) {
+      while (queue.current.length && gen.current === my) {
         const item = queue.current.shift()!;
         try {
           const r = await api.voiceSpeak(ctx.worldId, item.speaker, item.text);
-          if (!running.current) break;
-          await new Promise<void>((resolve) => {
-            const a = new Audio(r.data_url);
-            audio.current = a;
-            try {
-              if (!ac.current) {
-                const c = new AudioContext();
-                const an = c.createAnalyser();
-                an.fftSize = 1024;
-                an.connect(c.destination);
-                ac.current = { ctx: c, an, buf: new Uint8Array(an.fftSize) };
-              }
-              ac.current.ctx.createMediaElementSource(a).connect(ac.current.an);
-              void ac.current.ctx.resume();
-            } catch {
-              /* 音量分析不可用时只影响玻璃球的起伏，不影响朗读 */
-            }
-            a.onended = () => resolve();
-            a.onerror = () => resolve();
-            void a.play().catch(() => resolve());
-          });
+          if (gen.current !== my) break;
+          await playClip(r.data_url);
         } catch (e) {
           ctx.notify((e as Error).message, "error");
           queue.current = [];
         }
       }
     } finally {
-      running.current = false;
-      audio.current = null;
-      setPlaying(false);
+      if (gen.current === my) {
+        running.current = false;
+        audio.current = null;
+        setPlaying(false);
+      }
     }
-  }, [ctx]);
+  }, [ctx, playClip]);
   const enqueue = useCallback(
     (speaker: string | null, text: string) => {
       if (!text.trim()) return;
@@ -1056,10 +1077,92 @@ function useVoice(ctx: Ctx) {
     [pump],
   );
   const stop = useCallback(() => {
+    gen.current++;
     queue.current = [];
     running.current = false;
+    sync.current = null;
     audio.current?.pause();
+    audio.current = null;
     setPlaying(false);
   }, []);
-  return { enqueue, stop, playing, level };
+
+  // 先合成、再输出：讲述切成几段，第一段合成好才开始（文字和声音一起出现），后面的段在播放时依次合成。
+  // progress() 返回声音已经读到全文的几分之几，玻璃球按它显示文字。
+  const sync = useRef<{ lens: number[]; total: number; done: number; cur: number } | null>(null);
+  const abortWait = useRef<(() => void) | null>(null);
+  /** 不等语音合成完，先显示文字（这一段不朗读）。 */
+  const skipWait = useCallback(() => {
+    const f = abortWait.current;
+    stop();
+    f?.();
+  }, [stop]);
+  const progress = useCallback((): number | null => {
+    const st = sync.current;
+    if (!st) return null;
+    const a = audio.current;
+    let chars = st.done;
+    if (a && Number.isFinite(a.duration) && a.duration > 0) chars += st.lens[st.cur] * Math.min(1, a.currentTime / a.duration);
+    return Math.min(1, chars / st.total);
+  }, []);
+  /** 返回第一段是否合成好（false = 失败，调用方按没有声音的方式显示文字）。播放在后台继续，播完再接着读队列里的台词。 */
+  const speakSynced = useCallback(
+    async (speaker: string | null, text: string): Promise<boolean> => {
+      stop();
+      const my = gen.current;
+      const chunks = splitForSpeech(text);
+      if (!chunks.length) return false;
+      running.current = true;
+      setPlaying(true);
+      // 依次合成（本机语音服务一次只能合成一段，排队即可）。
+      const results: Promise<string>[] = [];
+      let chain: Promise<unknown> = Promise.resolve();
+      for (const c of chunks) {
+        const pr = chain.then(() => (gen.current === my ? api.voiceSpeak(ctx.worldId, speaker, c).then((r) => r.data_url) : Promise.reject(new Error("已停止"))));
+        results.push(pr);
+        chain = pr.catch(() => {});
+      }
+      const finish = () => {
+        if (gen.current !== my) return;
+        sync.current = null;
+        running.current = false;
+        audio.current = null;
+        setPlaying(false);
+        if (queue.current.length) void pump();
+      };
+      let first: string;
+      try {
+        // 「不等语音，先看文字」会让这里提前结束。
+        first = await Promise.race([results[0], new Promise<string>((_, rej) => (abortWait.current = () => rej(new Error(SKIPPED))))]);
+      } catch (e) {
+        if (gen.current === my && (e as Error).message !== SKIPPED) ctx.notify((e as Error).message, "error");
+        finish();
+        return false;
+      } finally {
+        abortWait.current = null;
+      }
+      if (gen.current !== my) return false;
+      const lens = chunks.map((c) => c.length);
+      sync.current = { lens, total: lens.reduce((a, b) => a + b, 0), done: 0, cur: 0 };
+      void (async () => {
+        try {
+          for (let i = 0; i < chunks.length && gen.current === my; i++) {
+            const url = i === 0 ? first : await results[i];
+            if (gen.current !== my) return;
+            sync.current!.cur = i;
+            await playClip(url);
+            // 先清掉已经播完的音频再记账，免得这一段被算两次（文字会突然往前跳一段）。
+            audio.current = null;
+            if (sync.current) sync.current.done += lens[i];
+          }
+        } catch (e) {
+          if (gen.current === my) ctx.notify((e as Error).message, "error");
+        } finally {
+          finish();
+        }
+      })();
+      return true;
+    },
+    [ctx, pump, playClip, stop],
+  );
+  return { enqueue, stop, playing, level, speakSynced, progress, skipWait };
 }

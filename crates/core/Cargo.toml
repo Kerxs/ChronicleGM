@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-chronicle-rules = { version = "0.0.4", path = "../rules" }
+chronicle-rules = { version = "0.0.5", path = "../rules" }
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }

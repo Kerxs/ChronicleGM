@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-core"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "base64 0.23.1",
  "chronicle-rules",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gen"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "base64 0.23.1",
  "chronicle-core",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gm"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "chronicle-core",
  "chronicle-gen",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gm-app"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "base64 0.23.1",
  "chronicle-core",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-llm"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-rules"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "proptest",
  "rand_chacha",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-runtime"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "chronicle-llm",
  "serde",

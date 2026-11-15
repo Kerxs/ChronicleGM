@@ -195,15 +195,48 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
   const linesRef = useRef<HTMLDivElement>(null);
   // 打开页面时已有的行不播放入场动画，之后新加入的行才浮现（记下第一次显示时已有的行）。
   const initialLines = useRef<Set<string> | null>(null);
-  const scrolledOnce = useRef(false);
+  // 贴底：剧情区始终显示最新的对话。GM 讲述时玻璃球在上面长高、剧情区变矮，NPC 回应和图片也会晚到，
+  // 所以不只在新事件时滚动，而是剧情区大小或内容一变就回到底部。玩家往上翻看时不跟随，翻回底部再继续跟随。
+  const stick = useRef(true);
+  const autoScrollAt = useRef(0);
+  const toBottom = useCallback(() => {
+    const el = linesRef.current;
+    if (!el) return;
+    autoScrollAt.current = performance.now();
+    el.scrollTop = el.scrollHeight;
+  }, []);
   useEffect(() => {
     const el = linesRef.current;
-    if (!el || events.length === 0) return;
-    const first = !scrolledOnce.current;
-    scrolledOnce.current = true;
-    const id = window.setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: first ? "auto" : "smooth" }), first ? 0 : 30);
+    if (!el) return;
+    const onScroll = () => {
+      // 程序自己滚动引起的事件不算玩家翻看。
+      if (performance.now() - autoScrollAt.current < 120) return;
+      stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    };
+    const follow = () => {
+      if (stick.current) requestAnimationFrame(toBottom);
+    };
+    const ro = new ResizeObserver(follow);
+    ro.observe(el);
+    const mo = new MutationObserver(follow);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("load", follow, true);
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("load", follow, true);
+    };
+  }, [toBottom, campaignId]);
+  // 有新事件（玩家行动、GM 回应）时一定回到底部，重新开始跟随。
+  useEffect(() => {
+    if (events.length === 0) return;
+    stick.current = true;
+    toBottom();
+    const id = window.setTimeout(toBottom, 60);
     return () => clearTimeout(id);
-  }, [events.length]);
+  }, [events.length, toBottom]);
   useEffect(() => {
     if (initialLines.current == null && lines.length > 0) initialLines.current = new Set(lines.map((l, i) => `${l.seq}-${i}`));
   });
@@ -236,9 +269,13 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
   }, [campaignId]);
   // GM 的讲述留在玻璃球里：讲完停在"查看"状态，点球或剧情流里的小条可以翻看之前的讲述。
   const gmSaid = useMemo(() => toTranscript(events).filter((l) => l.who === "gm" && !l.gmOnly && l.text.trim()).map((l) => ({ turn: l.turn, text: l.text, seq: l.seq })), [events]);
+  // LATEST：总是显示最新的一段。讲完时用它，而不是"当时列表的最后一条"——讲述开始时新的讲述还没进列表，
+  // 记下的下标会指向上一段（实测讲完停在 4/5）。
+  const LATEST = -1;
   const [readIdx, setReadIdx] = useState<number | null>(null);
+  const readAt = readIdx === LATEST ? (gmSaid.length ? gmSaid.length - 1 : null) : readIdx;
   const [unread, setUnread] = useState(false);
-  const orbState: OrbState = checkQueue.length ? "rolling" : busy ? "thinking" : speaking ? "speaking" : readIdx != null && gmSaid[readIdx] ? "reading" : "idle";
+  const orbState: OrbState = checkQueue.length ? "rolling" : busy ? "thinking" : speaking ? "speaking" : readAt != null && gmSaid[readAt] ? "reading" : "idle";
   // 朗读：前端按顺序一条一条播放（后端有缓存与队列上限）。
   const [autoRead, setAutoRead] = useState(() => {
     try {
@@ -352,25 +389,25 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
             onFinished={() => {
               setSpeaking(null);
               // 讲完后留在球里，显示完整的这一段（玩家行动时自动收起）。
-              setReadIdx(gmSaid.length ? gmSaid.length - 1 : null);
+              setReadIdx(LATEST);
               setUnread(false);
             }}
             check={checkQueue[0] ?? null}
             onCheckDone={() => setCheckQueue((q) => q.slice(1))}
             history={gmSaid}
-            readIndex={readIdx}
+            readIndex={readAt}
             onRead={(i) => {
               setReadIdx(i);
               if (i != null) setUnread(false);
             }}
             unread={unread}
             footer={
-              readIdx != null && gmSaid[readIdx] ? (
+              readAt != null && gmSaid[readAt] ? (
                 <>
-                  <button className="link speak" title="朗读这一段" onClick={(e) => { e.stopPropagation(); voice.enqueue(null, gmSaid[readIdx].text); }}>
+                  <button className="link speak" title="朗读这一段" onClick={(e) => { e.stopPropagation(); voice.enqueue(null, gmSaid[readAt].text); }}>
                     🔊 朗读
                   </button>
-                  <MentionThumbs ctx={ctx} text={gmSaid[readIdx].text} nodes={illustrated} onOpen={setGallery} />
+                  <MentionThumbs ctx={ctx} text={gmSaid[readAt].text} nodes={illustrated} onOpen={setGallery} />
                 </>
               ) : null
             }
@@ -431,7 +468,7 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
               <button
                 key={`${l.seq}-${i}`}
                 type="button"
-                className={`gm-chip${readIdx != null && gmSaid[readIdx]?.seq === l.seq ? " on" : ""}`}
+                className={`gm-chip${readAt != null && gmSaid[readAt]?.seq === l.seq ? " on" : ""}`}
                 onClick={() => {
                   const k = gmSaid.findIndex((g) => g.seq === l.seq);
                   setReadIdx(k >= 0 ? k : null);
@@ -473,6 +510,8 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
         )}
         <form
           className="row input-row"
+          // 选角色时还不能行动：先藏起输入框，免得盖住「开始游戏」按钮。
+          style={showPicker ? { display: "none" } : undefined}
           onSubmit={(e) => {
             e.preventDefault();
             void send();

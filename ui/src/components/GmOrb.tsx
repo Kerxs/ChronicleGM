@@ -78,10 +78,8 @@ export default function GmOrb({
   const hostRef = useRef<HTMLDivElement>(null);
   const [panelW, setPanelW] = useState(720);
   const geom = useMemo(() => ({ idle: [64, 64, 32], thinking: [76, 76, 38], speaking: [panelW, 0, 30], reading: [panelW, 0, 30], rolling: [Math.min(420, panelW), 176, 30] }) as Record<OrbState, number[]>, [panelW]);
-  const readRef = useRef<HTMLDivElement>(null);
   const [readH, setReadH] = useState(100);
   const boxEl = useRef<HTMLDivElement | null>(null);
-  const talkRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const [talkH, setTalkH] = useState(100);
   const [typed, setTyped] = useState(0);
@@ -120,14 +118,34 @@ export default function GmOrb({
     applySize();
   }, [applySize]);
   useEffect(applySize, [applySize]);
-  // 查看时面板高度跟着文字走。
-  useEffect(() => {
-    if (state !== "reading" || !readRef.current) return;
-    const el = readRef.current;
-    const ro = new ResizeObserver(() => setReadH(Math.max(100, Math.ceil(el.getBoundingClientRect().height))));
+  // 查看 / 讲述时面板高度跟着文字走。用回调 ref：打开时会从 CSS 球切到液态玻璃，面板元素会重新挂载，
+  // 观察器必须跟着新元素走（之前观察的是已卸载的旧元素，高度停在最小值，只露出两行字）。
+  const readRO = useRef<ResizeObserver | null>(null);
+  const readRef = useCallback((el: HTMLDivElement | null) => {
+    readRO.current?.disconnect();
+    readRO.current = null;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      if (el.isConnected) setReadH(Math.max(100, Math.ceil(el.offsetHeight)));
+    });
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [state]);
+    readRO.current = ro;
+  }, []);
+  const talkRO = useRef<ResizeObserver | null>(null);
+  const talkRef = useCallback((el: HTMLDivElement | null) => {
+    talkRO.current?.disconnect();
+    talkRO.current = null;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      if (el.isConnected) setTalkH(Math.max(100, Math.ceil(el.offsetHeight)));
+    });
+    ro.observe(el);
+    talkRO.current = ro;
+  }, []);
+  useEffect(() => () => {
+    readRO.current?.disconnect();
+    talkRO.current?.disconnect();
+  }, []);
   // 方向键翻看（查看状态下）。
   useEffect(() => {
     if (state !== "reading" || readIndex == null) return;
@@ -142,14 +160,6 @@ export default function GmOrb({
     return () => window.removeEventListener("keydown", onKey);
   }, [state, readIndex, history.length, onRead]);
 
-  // 讲述时文字逐字增加：文字区域长高，面板跟着长高。
-  useEffect(() => {
-    if (state !== "speaking" || !talkRef.current) return;
-    const el = talkRef.current;
-    const ro = new ResizeObserver(() => setTalkH(Math.max(100, Math.ceil(el.getBoundingClientRect().height))));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [state]);
 
   // 讲述：逐字输出；起伏优先跟朗读音量，没有朗读时按文字节奏。输出完停留 1.6 秒再收回。
   useEffect(() => {

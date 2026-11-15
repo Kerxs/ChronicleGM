@@ -39,6 +39,9 @@ export default function RelationGraph({ ctx, center, relTypes, onSelect }: { ctx
     const nodes: FlowNode[] = g.nodes.map((n) => ({
       id: n.id,
       position: pos.get(n.id) ?? { x: 0, y: 0 },
+      // 小地图只画有尺寸的节点：受控模式下量到的尺寸不会写回这里，先给一个大致尺寸。
+      initialWidth: 160,
+      initialHeight: 50,
       data: { label: `${n.title}\n${NODE_KIND[n.kind] ?? n.kind}` },
       className: n.id === center ? "gnode center" : "gnode",
     }));
@@ -97,7 +100,7 @@ export default function RelationGraph({ ctx, center, relTypes, onSelect }: { ctx
         >
           <Background />
           <Controls />
-          <MiniMap pannable zoomable />
+          <MiniMap pannable zoomable nodeColor={(n) => (n.style?.borderColor as string) || "#8e8e93"} nodeStrokeWidth={3} maskColor="rgba(15, 23, 42, 0.08)" />
         </ReactFlow>
       </div>
       <small className="hint">双击节点跳转；颜色：人物关系 / 势力 / 地理 / 事件 / 其他。只显示邻域，避免一次渲染整个世界。</small>

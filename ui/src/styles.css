@@ -594,3 +594,8 @@ table.data th, table.kv th { color: var(--muted); }
 .mem-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .mem-legend i.reserve { background: var(--danger); width: 3px; }
 @media (max-width: 760px) { .arg-row { grid-template-columns: 1fr; } }
+
+/* 人物关系：节点和头像放大（以前 12px 字、34px 头像，图一缩放就看不清） */
+.network-page .gnode { font-size: 14px; min-width: 120px; padding: 10px 14px; line-height: 1.4; }
+.network-page .gnode.has-pic { padding: 8px 12px; min-width: 160px; }
+.network-page .gnode-pic { gap: 10px; }

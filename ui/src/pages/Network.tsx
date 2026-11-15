@@ -91,10 +91,13 @@ export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { c
     const nodes: FlowNode[] = net.nodes.map((n) => ({
       id: n.id,
       position: dragged.get(n.id) ?? pos.get(n.id) ?? { x: 0, y: 0 },
+      // 小地图只画有尺寸的节点：受控模式下量到的尺寸不会写回这里，先给一个大致尺寸。
+      initialWidth: 160,
+      initialHeight: 64,
       data: {
         label: covers[n.id] ? (
           <span className="gnode-pic">
-            <Cover src={covers[n.id]} size={34} round />
+            <Cover src={covers[n.id]} size={56} round />
             <span>{`${n.title}${n.status ? `（${n.status}）` : ""}\n${NODE_KIND[n.kind] ?? n.kind}`}</span>
           </span>
         ) : (
@@ -183,7 +186,7 @@ export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { c
           >
             <Background />
             <Controls />
-            <MiniMap pannable zoomable />
+            <MiniMap pannable zoomable nodeColor={(n) => (n.style?.borderColor as string) || "#8e8e93"} nodeStrokeWidth={3} maskColor="rgba(15, 23, 42, 0.08)" />
           </ReactFlow>
         </div>
         <div className="card side">

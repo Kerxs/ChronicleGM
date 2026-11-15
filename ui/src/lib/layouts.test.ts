@@ -43,3 +43,16 @@ describe("treeLayout", () => {
     expect(keys.size).toBe(300);
   });
 });
+
+describe("forceLayout 孤立人物", () => {
+  it("几个互不相连的人物不会被推得很远", () => {
+    const ids = ["a", "b", "c", "d", "e"];
+    const p = forceLayout(ids, [["c", "d"]]);
+    const xs = ids.map((i) => p.get(i)!.x);
+    const ys = ids.map((i) => p.get(i)!.y);
+    const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    expect(span).toBeLessThan(140 * 4);
+    // 也不会挤在一起
+    for (const a of ids) for (const b of ids) if (a < b) expect(Math.hypot(p.get(a)!.x - p.get(b)!.x, p.get(a)!.y - p.get(b)!.y)).toBeGreaterThan(60);
+  });
+});

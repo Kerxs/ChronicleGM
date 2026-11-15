@@ -7,32 +7,60 @@ import { TOUR, type TourStep } from "../lib/tutorialSteps";
 
 type Rect = { x: number; y: number; w: number; h: number };
 
+/** 这一步要高亮的区域：所有找得到的目标合在一起（例如「选剧本」和「新建战役」一起亮），
+ *  合起来太大（超过窗口一半）时只用第一个。 */
 function findTarget(step: TourStep): Rect | null {
+  const rs: Rect[] = [];
   for (const t of step.target ?? []) {
     const el = document.querySelector<HTMLElement>(`[data-tour="${t}"]`);
     if (!el) continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) continue;
-    return { x: r.left, y: r.top, w: r.width, h: r.height };
+    rs.push({ x: r.left, y: r.top, w: r.width, h: r.height });
   }
-  return null;
+  if (!rs.length) return null;
+  const x1 = Math.min(...rs.map((r) => r.x));
+  const y1 = Math.min(...rs.map((r) => r.y));
+  const x2 = Math.max(...rs.map((r) => r.x + r.w));
+  const y2 = Math.max(...rs.map((r) => r.y + r.h));
+  const all = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  return all.w * all.h > window.innerWidth * window.innerHeight * 0.5 ? rs[0] : all;
 }
 
 const ORB = 56;
-const BUBBLE_W = 340;
+const GAP = 18;
+const EDGE = 12;
 
-/** 玻璃球与气泡的位置：没有目标时在屏幕中间；有目标时放在目标旁边（右边放不下就放左边，再不行放下面）。 */
-function place(target: Rect | null) {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (!target) return { x: vw / 2 - ORB / 2, y: vh / 2 - 120, side: "below" as const };
-  const gap = 18;
-  if (target.x + target.w + gap + ORB + BUBBLE_W < vw) return { x: target.x + target.w + gap, y: Math.min(Math.max(12, target.y), vh - 260), side: "right" as const };
-  if (target.x - gap - ORB - BUBBLE_W > 0) return { x: target.x - gap - ORB, y: Math.min(Math.max(12, target.y), vh - 260), side: "left" as const };
-  const below = target.y + target.h + gap;
-  const y = below + 240 < vh ? below : Math.max(12, target.y - 260);
-  const x = Math.min(Math.max(12, target.x), Math.max(12, vw - ORB - BUBBLE_W - 24));
-  return { x, y: Math.min(y, Math.max(12, vh - 260)), side: "below" as const };
+function overlaps(a: Rect, b: Rect) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/** 玻璃球与气泡的位置：没有目标时在屏幕中间；有目标时依次试右、左、下、上，选第一个放得下且不挡住目标的位置；
+ *  都不行就放到不挡目标的角落。`size` 是整个引导（球 + 气泡）的实际尺寸。 */
+export function placeGuide(target: Rect | null, size: { w: number; h: number }, vw: number, vh: number) {
+  const { w, h } = size;
+  const clampX = (x: number) => Math.min(Math.max(EDGE, x), Math.max(EDGE, vw - w - EDGE));
+  const clampY = (y: number) => Math.min(Math.max(EDGE, y), Math.max(EDGE, vh - h - EDGE));
+  if (!target) return { x: clampX(vw / 2 - w / 2), y: clampY(vh / 2 - h / 2 - 40), side: "below" as const };
+  const pad = 8;
+  const t = { x: target.x - pad, y: target.y - pad, w: target.w + pad * 2, h: target.h + pad * 2 };
+  const cands = [
+    { x: t.x + t.w + GAP, y: clampY(t.y), side: "right" as const },
+    { x: t.x - GAP - w, y: clampY(t.y), side: "left" as const },
+    { x: clampX(t.x), y: t.y + t.h + GAP, side: "below" as const },
+    { x: clampX(t.x), y: t.y - GAP - h, side: "below" as const },
+    { x: vw - w - EDGE, y: vh - h - EDGE, side: "below" as const },
+    { x: EDGE, y: vh - h - EDGE, side: "below" as const },
+    { x: vw - w - EDGE, y: EDGE, side: "below" as const },
+    { x: EDGE, y: EDGE, side: "below" as const },
+  ];
+  for (const c of cands) {
+    const inside = c.x >= EDGE - 0.5 && c.y >= EDGE - 0.5 && c.x + w <= vw - EDGE + 0.5 && c.y + h <= vh - EDGE + 0.5;
+    if (inside && !overlaps({ x: c.x, y: c.y, w, h }, t)) return c;
+  }
+  // 窗口太小，怎么放都会挡住：放在离目标最远的一边。
+  const belowRoom = vh - (t.y + t.h);
+  return { x: clampX(t.x), y: belowRoom > t.y ? vh - h - EDGE : EDGE, side: "below" as const };
 }
 
 export default function Tutorial({
@@ -53,6 +81,20 @@ export default function Tutorial({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const step = TOUR[idx];
+  // 引导（球 + 气泡）的实际尺寸：气泡里文字多少不一样，按实际大小找不挡住目标的位置。
+  const guideRef = useRef<HTMLDivElement>(null);
+  const [guideSize, setGuideSize] = useState({ w: ORB + 10 + 340, h: 240 });
+  useLayoutEffect(() => {
+    const el = guideRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      setGuideSize((o) => (Math.abs(o.w - w) < 1 && Math.abs(o.h - h) < 1 ? o : { w, h }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const envRef = useRef({ worldId });
   envRef.current = { worldId };
 
@@ -161,7 +203,7 @@ export default function Tutorial({
     }
   }
 
-  const pos = place(rect);
+  const pos = placeGuide(rect, guideSize, window.innerWidth, window.innerHeight);
   const pad = 6;
   return (
     <div className="tour" role="dialog" aria-label="游戏教程">
@@ -170,7 +212,7 @@ export default function Tutorial({
       ) : (
         <div className="tour-dim" />
       )}
-      <div className={`tour-guide side-${pos.side}`} style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
+      <div ref={guideRef} className={`tour-guide side-${pos.side}`} style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
         <div className="tour-orb" aria-hidden="true">
           <span />
         </div>

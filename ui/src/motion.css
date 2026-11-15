@@ -412,3 +412,6 @@ button:active:not(:disabled) { transform: scale(0.95); transition-duration: 90ms
 .tour-count { font-size: 11px; margin-top: 4px; }
 .tour-bubble { max-width: calc(100vw - 110px); }
 .tour-guide.side-below { flex-direction: row; }
+
+/* 选角色：「开始游戏」按钮贴在可见区域底部，身世再长也不用找 */
+.pc-confirm-row { position: sticky; bottom: 0; z-index: 2; margin: 0 -18px -16px; padding: 10px 18px 14px; background: linear-gradient(to bottom, transparent, var(--panel) 30%); border-radius: 0 0 var(--radius) var(--radius); }

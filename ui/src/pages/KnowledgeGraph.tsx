@@ -168,6 +168,9 @@ export default function KnowledgeGraph({ ctx, focus, onOpenTree, onOpenNetwork }
       return {
         id,
         position: pos.get(id) ?? { x: 0, y: 0 },
+        // 小地图只画有尺寸的节点：受控模式下量到的尺寸不会写回这里，先给一个大致尺寸。
+        initialWidth: 180,
+        initialHeight: 60,
         data: {
           label: covers[id] ? (
             <span className="gnode-pic">
@@ -272,7 +275,7 @@ export default function KnowledgeGraph({ ctx, focus, onOpenTree, onOpenNetwork }
           >
             <Background />
             <Controls />
-            <MiniMap pannable zoomable />
+            <MiniMap pannable zoomable nodeColor={(n) => (n.style?.borderColor as string) || "#8e8e93"} nodeStrokeWidth={3} maskColor="rgba(15, 23, 42, 0.08)" />
           </ReactFlow>
         </div>
         <div className="card side">

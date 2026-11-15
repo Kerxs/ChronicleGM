@@ -110,7 +110,7 @@ export default function PcPicker({ ctx, scriptId, campaignId, onDone }: { ctx: C
           </button>
         </div>
       )}
-      <div className="row">
+      <div className="row pc-confirm-row">
         <button type="button" className="primary" data-tour="pc-confirm" disabled={busy !== null || (list.length > 0 && !cur)} onClick={() => void confirm(cur ?? null)}>
           {cur ? `扮演「${cur.name}」，开始游戏` : "直接开始游戏"}
         </button>

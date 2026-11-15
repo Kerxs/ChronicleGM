@@ -85,6 +85,9 @@ export default function PlotEditor({ ctx, scriptId }: { ctx: Ctx; scriptId: stri
       return {
         id: n.id,
         position: typeof p?.x === "number" && typeof p?.y === "number" ? { x: p.x, y: p.y } : (auto.get(n.id) ?? { x: 0, y: 0 }),
+        // 小地图只画有尺寸的节点：受控模式下量到的尺寸不会写回这里，先给一个大致尺寸。
+        initialWidth: 180,
+        initialHeight: 60,
         data: { label: `${KIND[n.kind]}\n${n.title}` },
         className: `pnode pk-${n.kind}${sel?.type === "node" && sel.id === n.id ? " sel" : ""}${highlight === n.id ? " here" : ""}${flagged.has(n.id) ? " flagged" : ""}`,
       };
@@ -226,7 +229,7 @@ export default function PlotEditor({ ctx, scriptId }: { ctx: Ctx; scriptId: stri
             >
               <Background />
               <Controls />
-              <MiniMap pannable zoomable />
+              <MiniMap pannable zoomable nodeColor={(n) => (n.style?.borderColor as string) || "#8e8e93"} nodeStrokeWidth={3} maskColor="rgba(15, 23, 42, 0.08)" />
             </ReactFlow>
           )}
         </div>

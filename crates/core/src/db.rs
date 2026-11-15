@@ -30,12 +30,17 @@ pub const WORLD_MIGRATIONS: &[Migration] = &[
     Migration { version: 8, name: "npc_minds_records", sql: include_str!("../migrations/world/0008_npc_minds_records.sql") },
     Migration { version: 9, name: "node_images", sql: include_str!("../migrations/world/0009_node_images.sql") },
     Migration { version: 10, name: "image_thumbs", sql: include_str!("../migrations/world/0010_image_thumbs.sql") },
+    Migration { version: 11, name: "game_profile", sql: include_str!("../migrations/world/0011_game_profile.sql") },
+    Migration { version: 12, name: "script_versions", sql: include_str!("../migrations/world/0012_script_versions.sql") },
+    Migration { version: 13, name: "summary_compression", sql: include_str!("../migrations/world/0013_summary_compression.sql") },
+    Migration { version: 14, name: "campaign_trash", sql: include_str!("../migrations/world/0014_campaign_trash.sql") },
 ];
 
 pub const LIBRARY_MIGRATIONS: &[Migration] = &[
     Migration { version: 1, name: "init", sql: include_str!("../migrations/library/0001_init.sql") },
     Migration { version: 2, name: "providers", sql: include_str!("../migrations/library/0002_providers.sql") },
     Migration { version: 3, name: "managed_models", sql: include_str!("../migrations/library/0003_managed_models.sql") },
+    Migration { version: 4, name: "request_timings", sql: include_str!("../migrations/library/0004_request_timings.sql") },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

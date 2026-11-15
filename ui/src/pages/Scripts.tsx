@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api, type WorldOverview } from "../api";
 import type { Ctx } from "../App";
 import type { Script } from "../bindings/Script";
+import type { DeletedScript } from "../bindings/DeletedScript";
 
 export default function ScriptsPage({ ctx, overview }: { ctx: Ctx; overview: WorldOverview | null }) {
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -17,9 +18,22 @@ export default function ScriptsPage({ ctx, overview }: { ctx: Ctx; overview: Wor
   const [busy, setBusy] = useState(false);
   const [refs, setRefs] = useState<string[]>([]);
 
+  const [trash, setTrash] = useState<DeletedScript[]>([]);
+  const [showTrash, setShowTrash] = useState(false);
   useEffect(() => {
     api.listScripts(ctx.worldId).then(setScripts).catch((e: Error) => ctx.notify(e.message, "error"));
+    api.scriptTrash(ctx.worldId).then(setTrash).catch(() => setTrash([]));
   }, [ctx.worldId, ctx.tick]);
+
+  async function act(p: Promise<unknown>, ok: string) {
+    try {
+      await p;
+      ctx.notify(ok);
+      ctx.bump();
+    } catch (e) {
+      ctx.notify((e as Error).message, "error");
+    }
+  }
 
   async function generate() {
     setBusy(true);
@@ -56,6 +70,7 @@ export default function ScriptsPage({ ctx, overview }: { ctx: Ctx; overview: Wor
         player_count: players,
         duration_hours: hours,
         tone,
+        game_profile: {},
       });
       ctx.go({ name: "script", id: s.id });
     } catch (e) {
@@ -72,16 +87,52 @@ export default function ScriptsPage({ ctx, overview }: { ctx: Ctx; overview: Wor
           {scripts.length === 0 && <p className="hint">还没有剧本。</p>}
           <ul className="list">
             {scripts.map((s) => (
-              <li key={s.id}>
+              <li key={s.id} className="script-row">
                 <button onClick={() => ctx.go({ name: "script", id: s.id })}>
                   <strong>{s.title}</strong>
                   <small>
                     {s.genre || "未分类"} · {s.player_count} 人 · {s.duration_hours} 小时
                   </small>
                 </button>
+                <span className="row-actions">
+                  <button className="small" title="连同条目、角色、剧情图一起复制" onClick={() => void act(api.copyScript(ctx.worldId, s.id, ""), "已复制「" + s.title + "」")}>
+                    复制
+                  </button>
+                  <button
+                    className="small danger"
+                    title="连同条目、角色、剧情图一起移到回收站，可以恢复"
+                    onClick={() => {
+                      if (window.confirm("把剧本「" + s.title + "」移到回收站？\n条目、角色、剧情图会一起移走，可以在回收站恢复。删除前会自动保存一个版本。"))
+                        void act(api.deleteScript(ctx.worldId, s.id), "已移到回收站");
+                    }}
+                  >
+                    删除
+                  </button>
+                </span>
               </li>
             ))}
           </ul>
+          {trash.length > 0 && (
+            <div className="trash">
+              <button className="link" onClick={() => setShowTrash(!showTrash)}>
+                回收站（{trash.length}）{showTrash ? "▲" : "▼"}
+              </button>
+              {showTrash && (
+                <ul className="list">
+                  {trash.map((t) => (
+                    <li key={t.id} className="script-row">
+                      <span>
+                        {t.title} <small className="hint">{t.items} 个条目 · {new Date(t.deleted_at).toLocaleString()}</small>
+                      </span>
+                      <button className="small" onClick={() => void act(api.restoreScript(ctx.worldId, t.id), "已恢复「" + t.title + "」")}>
+                        恢复
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
         <form
           className="card form"

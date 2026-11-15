@@ -1,3 +1,4 @@
+import { PageSkeleton } from "../components/Skeleton";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ReactFlow, Background, Controls, MiniMap, type Edge as FlowEdge, type Node as FlowNode, type Connection } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -164,7 +165,7 @@ export default function PlotEditor({ ctx, scriptId }: { ctx: Ctx; scriptId: stri
     }
   }
 
-  if (!graph || !script) return <p className="hint">加载中…</p>;
+  if (!graph || !script) return <PageSkeleton />;
   const selNode = sel?.type === "node" ? graph.nodes.find((n) => n.id === sel.id) : undefined;
   const selEdge = sel?.type === "edge" ? graph.edges.find((e) => e.id === sel.id) : undefined;
 

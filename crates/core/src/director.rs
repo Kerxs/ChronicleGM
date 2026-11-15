@@ -34,11 +34,15 @@ pub struct DirectorSettings {
     pub auto_adopt_on_stall: bool,
     /// 采用的建议在 GM 上下文里保留几回合。
     pub guidance_turns: i64,
+    /// 剧情节奏：0 松弛（给玩家很多自由探索的时间）… 100 紧凑（事情一件接一件）。
+    pub pacing_level: i64,
+    /// 玩家偏离剧本时只提示主持人，不设法把玩家拉回主线。
+    pub hint_only: bool,
 }
 
 impl Default for DirectorSettings {
     fn default() -> Self {
-        Self { auto_analyze: true, every_turns: 6, stall_turns: 4, auto_adopt_on_stall: true, guidance_turns: 4 }
+        Self { auto_analyze: true, every_turns: 6, stall_turns: 4, auto_adopt_on_stall: true, guidance_turns: 4, pacing_level: 50, hint_only: false }
     }
 }
 
@@ -47,7 +51,7 @@ pub fn settings(conn: &Connection, campaign_id: &str) -> DirectorSettings {
 }
 
 pub fn set_settings(world: &mut World, campaign_id: &str, s: &DirectorSettings) -> Result<()> {
-    if !(1..=50).contains(&s.stall_turns) || !(0..=100).contains(&s.every_turns) || !(1..=50).contains(&s.guidance_turns) {
+    if !(1..=50).contains(&s.stall_turns) || !(0..=100).contains(&s.every_turns) || !(1..=50).contains(&s.guidance_turns) || !(0..=100).contains(&s.pacing_level) {
         return Err(CoreError::Invalid("导演设置超出范围（停滞 1–50 回合，间隔 0–100，建议保留 1–50 回合）".into()));
     }
     campaign::apply_effects(world, campaign_id, &[Effect::SetVar { key: SETTINGS_VAR.into(), value: serde_json::to_value(s).unwrap_or(Value::Null) }], "修改导演设置")?;
@@ -91,6 +95,13 @@ pub struct Pacing {
     pub recent_progress: Vec<String>,
     pub curve: Vec<Beat>,
     pub hooks: Vec<Hook>,
+    /// 剧情阶段：铺垫 / 发展 / 高潮 / 收束。
+    #[serde(default = "default_phase")]
+    pub phase: crate::story::PlotPhase,
+}
+
+fn default_phase() -> crate::story::PlotPhase {
+    crate::story::PlotPhase { phase: "setup".into(), label: "铺垫".into(), progress: 0, reason: String::new() }
 }
 
 /// 一组状态变化里算"剧情进展"的部分（说明文字）。
@@ -236,10 +247,22 @@ pub fn hooks(conn: &Connection, campaign_id: &str) -> Result<Vec<Hook>> {
     let view = CampaignView { conn, campaign_id };
     let c = campaign::get_campaign(conn, campaign_id)?;
     let mut out = vec![];
+    // 未揭示的线索按剧本的调查比重取舍：非探案剧本只留很少几条、排在最后（以前排在最前，导演总建议"去找线索"）。
+    let investigation = match &c.script_id {
+        Some(sid) => crate::scripts::get_script(conn, sid)?.map(|s| crate::profile::for_script(&s).weights.investigation).unwrap_or(1),
+        None => 1,
+    };
+    let clue_cap = match investigation {
+        0 => 0,
+        1 => 2,
+        2 => 5,
+        _ => usize::MAX,
+    };
+    let mut clue_hooks = vec![];
     if let Some(sid) = &c.script_id {
         for it in crate::scripts::all_items(conn, sid)? {
             match it.kind {
-                ScriptItemKind::Clue if !view.clue_known(&it.id) => out.push(Hook { kind: "clue".into(), id: it.id, title: it.title, note: it.player_text.chars().take(40).collect() }),
+                ScriptItemKind::Clue if !view.clue_known(&it.id) => clue_hooks.push(Hook { kind: "clue".into(), id: it.id, title: it.title, note: it.player_text.chars().take(40).collect() }),
                 ScriptItemKind::Trigger | ScriptItemKind::KeyEvent if it.payload.get("when").is_some() && view.record("trigger_fired", &it.id).is_none() => {
                     out.push(Hook { kind: "trigger".into(), id: it.id, title: it.title, note: "还没有触发".into() })
                 }
@@ -269,6 +292,13 @@ pub fn hooks(conn: &Connection, campaign_id: &str) -> Result<Vec<Hook>> {
             out.push(Hook { kind: "place".into(), id: p.id, title: p.title, note: "听说过，还没去".into() });
         }
     }
+    clue_hooks.truncate(clue_cap);
+    if investigation >= 2 {
+        // 探案剧本：线索仍是首要推进点。
+        clue_hooks.extend(out);
+        return Ok(clue_hooks);
+    }
+    out.extend(clue_hooks);
     Ok(out)
 }
 
@@ -294,6 +324,7 @@ pub fn pacing(conn: &Connection, campaign_id: &str) -> Result<Pacing> {
         recent_progress,
         curve: curve.into_iter().rev().take(30).rev().collect(),
         hooks: hooks(conn, campaign_id)?,
+        phase: crate::story::plot_phase(conn, campaign_id, tension)?,
     })
 }
 
@@ -347,6 +378,33 @@ pub struct DirectorNote {
     pub assessment: String,
     pub tension: i64,
     pub suggestions: Vec<Suggestion>,
+    /// 剧情符合度 0–100（和原剧本、世界观、人物设定、已发生事件的一致程度；没有评估时为空）。
+    #[serde(default)]
+    pub conformity: Option<i64>,
+    /// 偏离点。
+    #[serde(default)]
+    pub deviations: Vec<Deviation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct Deviation {
+    /// script（原剧本）/ world（世界观）/ character（人物设定）/ event（已发生的事件）
+    pub kind: String,
+    pub text: String,
+}
+
+/// 节奏偏好的文字说明（给导演和 GM）。
+pub fn pacing_preference(s: &DirectorSettings) -> String {
+    let pace = match s.pacing_level {
+        0..=20 => "很松弛：让玩家慢慢探索、闲聊、经营，不急着推动事件",
+        21..=40 => "偏松弛：留出探索和角色互动的时间，事件间隔长一些",
+        41..=60 => "适中：探索和事件交替",
+        61..=80 => "偏紧凑：事件来得更快，常有新的压力和时限",
+        _ => "很紧凑：事情一件接一件，几乎每回合都有新的推进或威胁",
+    };
+    let pull = if s.hint_only { "；玩家偏离剧本时只提示主持人，不要设法把玩家拉回主线，顺着玩家的选择发展" } else { "；玩家偏离主线太远时，可以自然地给出回到主线的机会（不强迫）" };
+    format!("剧情节奏偏好：{pace}{pull}")
 }
 
 pub fn notes(conn: &Connection, campaign_id: &str, limit: usize) -> Result<Vec<DirectorNote>> {

@@ -20,4 +20,8 @@ min_strength: number,
 /**
  * 最多节点数（默认 400）。
  */
-limit: number, };
+limit: number, 
+/**
+ * 剧透模式：显示主持人可见的关系（由程序按全局设置填写，界面传的值会被覆盖）。
+ */
+spoilers: boolean, };

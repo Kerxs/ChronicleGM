@@ -91,7 +91,7 @@ pub fn get_campaign(conn: &Connection, id: &str) -> Result<Campaign> {
 }
 
 pub fn list_campaigns(conn: &Connection) -> Result<Vec<Campaign>> {
-    let mut stmt = conn.prepare("SELECT * FROM campaigns ORDER BY created_at")?;
+    let mut stmt = conn.prepare("SELECT * FROM campaigns WHERE deleted_at IS NULL ORDER BY created_at")?;
     let rows = stmt.query_map([], campaign_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -147,6 +147,21 @@ pub fn create_campaign(world: &mut World, script_id: Option<&str>, name: &str, s
             "INSERT INTO plot_visits (campaign_id, plot_node_id, count, first_turn) VALUES (?1, ?2, 1, 0)",
             params![c.id, n],
         )?;
+    }
+    // 剧本的玩法配置：属性方案、技能对应、检定规则复制进战役规则（之后可以单独修改）。
+    if let Some(sid) = script_id {
+        let script = crate::scripts::require_script(&world.conn, sid)?;
+        let gp = crate::profile::for_script(&script);
+        if !gp.attributes.is_empty() || !gp.skills.is_empty() || gp.check != crate::profile::CheckRules::default() || !gp.currency.is_empty() || !gp.rarity_labels.is_empty() {
+            let mut r = crate::rpg::RuleSet { attributes: gp.attributes.clone(), skill_attrs: gp.skills.clone(), check: gp.check.clone(), rarity_labels: gp.rarity_labels.clone(), ..Default::default() };
+            if !gp.currency.is_empty() {
+                r.currency = gp.currency.clone();
+                r.currency_rates = gp.currency_rates.clone();
+            }
+            if r.validate().is_ok() {
+                apply_effects(world, &c.id, &[chronicle_rules::Effect::SetVar { key: crate::rpg::RULES_VAR.into(), value: serde_json::to_value(&r)? }], "按剧本的玩法配置设置规则")?;
+            }
+        }
     }
     // 起点检查点：回溯可以回到战役开始。
     crate::timeline::checkpoint(&world.conn, &c.id, "start")?;
@@ -793,6 +808,118 @@ pub fn recent_events(conn: &Connection, campaign_id: &str, kinds: &[&str], limit
     Ok(out)
 }
 
+// ===================== 删除（第 21 项） =====================
+
+/// 回收站里的战役。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct DeletedCampaign {
+    pub id: String,
+    pub name: String,
+    pub turn: i64,
+    pub deleted_at: i64,
+}
+
+/// 删除战役：进回收站（数据都还在，可以恢复）。从它分出去的时间线一起进回收站。
+pub fn trash_campaign(conn: &Connection, campaign_id: &str) -> Result<usize> {
+    get_campaign(conn, campaign_id)?;
+    let now = now_ms();
+    let n = conn.execute(
+        "WITH RECURSIVE t(id) AS (SELECT ?1 UNION SELECT c.id FROM campaigns c JOIN t ON c.parent_id = t.id)
+         UPDATE campaigns SET deleted_at = ?2 WHERE id IN (SELECT id FROM t) AND deleted_at IS NULL",
+        params![campaign_id, now],
+    )?;
+    Ok(n)
+}
+
+pub fn restore_campaign(conn: &Connection, campaign_id: &str) -> Result<usize> {
+    let ts: Option<i64> = conn.query_row("SELECT deleted_at FROM campaigns WHERE id = ?1", [campaign_id], |r| r.get(0)).map_err(|_| CoreError::NotFound("战役", campaign_id.into()))?;
+    let Some(ts) = ts else { return Ok(0) };
+    Ok(conn.execute("UPDATE campaigns SET deleted_at = NULL WHERE deleted_at = ?1", [ts])?)
+}
+
+pub fn campaign_trash(conn: &Connection) -> Result<Vec<DeletedCampaign>> {
+    let mut stmt = conn.prepare("SELECT id, name, turn, deleted_at FROM campaigns WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC")?;
+    let rows = stmt.query_map([], |r| Ok(DeletedCampaign { id: r.get(0)?, name: r.get(1)?, turn: r.get(2)?, deleted_at: r.get(3)? }))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// 永久删除回收站里的一个战役：删掉所有带 campaign_id 的表里它的数据（不能恢复）。
+pub fn purge_campaign(conn: &Connection, campaign_id: &str) -> Result<usize> {
+    let deleted: Option<i64> = conn.query_row("SELECT deleted_at FROM campaigns WHERE id = ?1", [campaign_id], |r| r.get(0)).map_err(|_| CoreError::NotFound("战役", campaign_id.into()))?;
+    if deleted.is_none() {
+        return Err(CoreError::Invalid("只能永久删除回收站里的战役".into()));
+    }
+    let children: i64 = conn.query_row("SELECT COUNT(*) FROM campaigns WHERE parent_id = ?1", [campaign_id], |r| r.get(0))?;
+    if children > 0 {
+        return Err(CoreError::Invalid("还有从它分出去的时间线，先永久删除那些时间线".into()));
+    }
+    let tables: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT m.name FROM sqlite_master m WHERE m.type = 'table' AND m.name <> 'campaigns' AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) p WHERE p.name = 'campaign_id')")?;
+        stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+    };
+    // 事件日志平时只能追加（触发器禁止删除）。永久删除整个战役是用户明确要求的操作：
+    // 只在这个事务里暂时去掉禁止删除的触发器，删完立刻按原样恢复。
+    let trigger: Option<String> = conn.query_row("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'event_log_no_delete'", [], |r| r.get(0)).ok();
+    conn.execute_batch("SAVEPOINT purge_campaign")?;
+    let res = (|| -> Result<usize> {
+        if trigger.is_some() {
+            conn.execute_batch("DROP TRIGGER event_log_no_delete")?;
+        }
+        let mut n = 0;
+        for t in &tables {
+            n += conn.execute(&format!("DELETE FROM \"{t}\" WHERE campaign_id = ?1"), [campaign_id])?;
+        }
+        n += conn.execute("DELETE FROM campaigns WHERE id = ?1", [campaign_id])?;
+        if let Some(sql) = &trigger {
+            conn.execute_batch(sql)?;
+        }
+        Ok(n)
+    })();
+    match res {
+        Ok(n) => {
+            conn.execute_batch("RELEASE purge_campaign")?;
+            Ok(n)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO purge_campaign; RELEASE purge_campaign");
+            Err(e)
+        }
+    }
+}
+
+/// 删除一条 NPC 记忆：内容记进事件日志（可以追溯），再从记忆表删掉。
+pub fn delete_npc_memory(conn: &Connection, campaign_id: &str, memory_id: &str) -> Result<()> {
+    let (npc, content): (String, String) = conn
+        .query_row("SELECT npc_id, content FROM npc_memories WHERE id = ?1 AND campaign_id = ?2", [memory_id, campaign_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| CoreError::NotFound("NPC 记忆", memory_id.into()))?;
+    record(conn, campaign_id, "npc_memory_deleted", &serde_json::json!({ "id": memory_id, "npc_id": npc, "content": content }))?;
+    conn.execute("DELETE FROM npc_memories WHERE id = ?1", [memory_id])?;
+    Ok(())
+}
+
+/// 忘掉一条战役事实（事件日志里原来的记录保留，另记一条"忘掉"）。
+pub fn forget_fact(conn: &Connection, campaign_id: &str, fact_seq: i64) -> Result<()> {
+    let kind: String = conn
+        .query_row("SELECT kind FROM event_log WHERE campaign_id = ?1 AND seq = ?2", params![campaign_id, fact_seq], |r| r.get(0))
+        .map_err(|_| CoreError::NotFound("事实", fact_seq.to_string()))?;
+    if kind != "fact" {
+        return Err(CoreError::Invalid("这不是一条事实".into()));
+    }
+    record(conn, campaign_id, "fact_forgotten", &serde_json::json!({ "seq": fact_seq }))?;
+    Ok(())
+}
+
+/// 记住的事实（带序号，已经忘掉的不算）。
+pub fn facts_with_seq(conn: &Connection, campaign_id: &str, limit: i64) -> Result<Vec<(i64, String)>> {
+    let forgotten: std::collections::HashSet<i64> = recent_events(conn, campaign_id, &["fact_forgotten"], 10_000)?.into_iter().filter_map(|e| e.payload.get("seq").and_then(Value::as_i64)).collect();
+    Ok(recent_events(conn, campaign_id, &["fact"], limit + forgotten.len() as i64)?
+        .into_iter()
+        .filter(|e| !forgotten.contains(&e.seq))
+        .filter_map(|e| e.payload.get("text").and_then(Value::as_str).map(|t| (e.seq, t.to_string())))
+        .collect())
+}
+
 /// 记住一条战役事实（例如"玩家答应了村长的请求"）。
 pub fn add_fact(conn: &Connection, campaign_id: &str, text: &str) -> Result<()> {
     let t = text.trim();
@@ -804,10 +931,7 @@ pub fn add_fact(conn: &Connection, campaign_id: &str, text: &str) -> Result<()> 
 }
 
 pub fn facts(conn: &Connection, campaign_id: &str, limit: i64) -> Result<Vec<String>> {
-    Ok(recent_events(conn, campaign_id, &["fact"], limit)?
-        .into_iter()
-        .filter_map(|e| e.payload.get("text").and_then(Value::as_str).map(str::to_string))
-        .collect())
+    Ok(facts_with_seq(conn, campaign_id, limit)?.into_iter().map(|x| x.1).collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -873,10 +997,24 @@ pub struct SessionSummary {
     pub id: String,
     pub session_no: i64,
     pub summary: String,
-    /// draft（待确认）/ confirmed（已确认，GM 会读取）
+    /// draft（待确认）/ confirmed（已确认，GM 会读取）/ auto（自动压缩的，GM 会读取，可以确认、重新生成或删除）
     pub status: String,
     pub upto_seq: i64,
     pub created_at: i64,
+    /// manual（手动生成）/ auto（上下文压缩）
+    #[serde(default)]
+    pub source: String,
+    /// 压缩前的游戏记录 token 数 / 摘要的 token 数。
+    #[serde(default)]
+    pub tokens_before: Option<i64>,
+    #[serde(default)]
+    pub tokens_after: Option<i64>,
+    /// measured（服务端分词实测）/ estimated（估算）
+    #[serde(default)]
+    pub token_method: String,
+    /// 覆盖的事件范围起点（不含）。
+    #[serde(default)]
+    pub from_seq: i64,
 }
 
 fn summary_row(r: &rusqlite::Row) -> rusqlite::Result<SessionSummary> {
@@ -887,6 +1025,11 @@ fn summary_row(r: &rusqlite::Row) -> rusqlite::Result<SessionSummary> {
         status: r.get("status")?,
         upto_seq: r.get("upto_seq")?,
         created_at: r.get("created_at")?,
+        source: r.get("source")?,
+        tokens_before: r.get("tokens_before")?,
+        tokens_after: r.get("tokens_after")?,
+        token_method: r.get("token_method")?,
+        from_seq: r.get("from_seq")?,
     })
 }
 
@@ -899,7 +1042,7 @@ pub fn summaries(conn: &Connection, campaign_id: &str) -> Result<Vec<SessionSumm
 /// 已确认摘要覆盖到的最后一条事件序号（之后的事件需要进入下一次摘要）。
 pub fn summarized_upto(conn: &Connection, campaign_id: &str) -> Result<i64> {
     Ok(conn.query_row(
-        "SELECT COALESCE(MAX(upto_seq), 0) FROM session_summaries WHERE campaign_id = ?1 AND status = 'confirmed'",
+        "SELECT COALESCE(MAX(upto_seq), 0) FROM session_summaries WHERE campaign_id = ?1 AND status IN ('confirmed', 'auto')",
         [campaign_id],
         |r| r.get(0),
     )?)
@@ -918,14 +1061,46 @@ pub fn add_summary_draft(conn: &Connection, campaign_id: &str, summary: &str, up
     Ok(conn.query_row("SELECT * FROM session_summaries WHERE id = ?1", [&id], summary_row)?)
 }
 
+/// 上下文压缩写入的自动摘要（GM 直接使用；玩家可以确认、重新生成或删除）。
+#[allow(clippy::too_many_arguments)]
+pub fn add_auto_summary(conn: &Connection, campaign_id: &str, summary: &str, from_seq: i64, upto_seq: i64, tokens_before: i64, tokens_after: i64, method: &str) -> Result<SessionSummary> {
+    get_campaign(conn, campaign_id)?;
+    let no: i64 = conn.query_row("SELECT COALESCE(MAX(session_no), 0) + 1 FROM session_summaries WHERE campaign_id = ?1", [campaign_id], |r| r.get(0))?;
+    let id = new_id();
+    conn.execute(
+        "INSERT INTO session_summaries (id, campaign_id, session_no, summary, status, created_at, upto_seq, source, tokens_before, tokens_after, token_method, from_seq)
+         VALUES (?1,?2,?3,?4,'auto',?5,?6,'auto',?7,?8,?9,?10)",
+        params![id, campaign_id, no, summary.trim(), now_ms(), upto_seq, tokens_before, tokens_after, method, from_seq],
+    )?;
+    Ok(conn.query_row("SELECT * FROM session_summaries WHERE id = ?1", [&id], summary_row)?)
+}
+
+/// 删除一份草稿或自动摘要（只能删最新的自动摘要，避免中间留下空洞；原始游戏记录一直保留）。
+pub fn delete_summary(conn: &Connection, campaign_id: &str, summary_id: &str) -> Result<()> {
+    let s = conn
+        .query_row("SELECT * FROM session_summaries WHERE id = ?1 AND campaign_id = ?2", [summary_id, campaign_id], summary_row)
+        .map_err(|_| CoreError::NotFound("摘要", summary_id.into()))?;
+    if s.status == "auto" || s.status == "confirmed" {
+        let newer: i64 = conn.query_row("SELECT COUNT(*) FROM session_summaries WHERE campaign_id = ?1 AND status IN ('auto','confirmed') AND upto_seq > ?2", params![campaign_id, s.upto_seq], |r| r.get(0))?;
+        if newer > 0 {
+            return Err(CoreError::Invalid("只能删除最新的一份摘要".into()));
+        }
+    }
+    if s.status == "confirmed" {
+        record(conn, campaign_id, "summary_deleted", &serde_json::json!({ "session_no": s.session_no, "summary": s.summary, "upto_seq": s.upto_seq }))?;
+    }
+    conn.execute("DELETE FROM session_summaries WHERE id = ?1", [summary_id])?;
+    Ok(())
+}
+
 /// 用户确认（可修改文字）后，摘要才会被 GM 作为战役记忆使用。
 pub fn confirm_summary(conn: &Connection, summary_id: &str, text: Option<&str>) -> Result<()> {
     let n = match text {
         Some(t) if !t.trim().is_empty() => conn.execute(
-            "UPDATE session_summaries SET status = 'confirmed', summary = ?2 WHERE id = ?1 AND status = 'draft'",
+            "UPDATE session_summaries SET status = 'confirmed', summary = ?2 WHERE id = ?1 AND status IN ('draft', 'auto')",
             params![summary_id, t.trim()],
         )?,
-        _ => conn.execute("UPDATE session_summaries SET status = 'confirmed' WHERE id = ?1 AND status = 'draft'", [summary_id])?,
+        _ => conn.execute("UPDATE session_summaries SET status = 'confirmed' WHERE id = ?1 AND status IN ('draft', 'auto')", [summary_id])?,
     };
     if n == 0 {
         return Err(CoreError::Invalid("摘要不存在或已经确认".into()));

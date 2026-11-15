@@ -9,4 +9,8 @@ npc: string | null,
 /**
  * 没有对应人物时按等级生成数值。
  */
-level: number, count: number, loot: Array<RecipeInput>, };
+level: number, count: number, loot: Array<RecipeInput>, 
+/**
+ * 首领（首领战无法逃跑）。
+ */
+boss: boolean, };

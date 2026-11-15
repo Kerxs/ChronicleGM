@@ -17,6 +17,7 @@ export const ITEM_KIND: Record<ScriptItemKind, string> = {
   twist: "转折",
   ending: "结局",
   handout: "玩家资料",
+  player_character: "可选角色",
 };
 
 export const QUEST_TYPE: Record<string, string> = { main: "主线", side: "支线", hidden: "隐藏" };

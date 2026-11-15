@@ -7,4 +7,16 @@ export type LlmRequestRecord = { provider_id: string, model: string, task: strin
 /**
  * 已脱敏的错误信息。
  */
-error: string | null, };
+error: string | null, 
+/**
+ * 首个 token 时间（流式才有）。
+ */
+first_token_ms: number | null, prompt_per_second: number | null, predicted_per_second: number | null, 
+/**
+ * 请求时模型的上下文长度（算上下文占用）。
+ */
+context_length: number | null, 
+/**
+ * 语音：合成出的音频时长（毫秒）。
+ */
+audio_ms: number | null, };

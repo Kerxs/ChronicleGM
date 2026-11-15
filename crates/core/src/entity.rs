@@ -239,6 +239,7 @@ impl Entity for Script {
             duration_hours: r.get("duration_hours")?,
             tone: r.get("tone")?,
             scale_profile: jget(r, "scale_profile")?,
+            game_profile: jget(r, "game_profile")?,
             status: eget(r, "status", ContentStatus::parse)?,
             source: r.get("source")?,
             rev: r.get("rev")?,
@@ -251,12 +252,13 @@ impl Entity for Script {
     fn insert(&self, conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT INTO scripts (id, title, genre, premise, background, core_setting, player_count, duration_hours,
-                tone, scale_profile, status, source, rev, created_at, updated_at, deleted_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                tone, scale_profile, status, source, rev, created_at, updated_at, deleted_at, game_profile)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 self.id, self.title, self.genre, self.premise, self.background, self.core_setting,
                 self.player_count, self.duration_hours, self.tone, js(&self.scale_profile),
-                self.status.as_str(), self.source, self.rev, self.created_at, self.updated_at, self.deleted_at
+                self.status.as_str(), self.source, self.rev, self.created_at, self.updated_at, self.deleted_at,
+                js(&self.game_profile)
             ],
         )?;
         Ok(())
@@ -266,12 +268,13 @@ impl Entity for Script {
         conn.execute(
             "UPDATE scripts SET title=?2, genre=?3, premise=?4, background=?5, core_setting=?6, player_count=?7,
                 duration_hours=?8, tone=?9, scale_profile=?10, status=?11, source=?12, rev=?13, created_at=?14,
-                updated_at=?15, deleted_at=?16
+                updated_at=?15, deleted_at=?16, game_profile=?17
              WHERE id=?1",
             params![
                 self.id, self.title, self.genre, self.premise, self.background, self.core_setting,
                 self.player_count, self.duration_hours, self.tone, js(&self.scale_profile),
-                self.status.as_str(), self.source, self.rev, self.created_at, self.updated_at, self.deleted_at
+                self.status.as_str(), self.source, self.rev, self.created_at, self.updated_at, self.deleted_at,
+                js(&self.game_profile)
             ],
         )?;
         Ok(())

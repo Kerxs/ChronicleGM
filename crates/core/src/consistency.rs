@@ -123,6 +123,24 @@ pub fn check_world_profiled(conn: &Connection) -> Result<(Vec<Finding>, Timings)
         });
     }
 
+    // 跨类型重名（例如人物和地点同名），容易让 GM 混淆。
+    let mut stmt = conn.prepare(
+        "SELECT group_concat(DISTINCT n.id), group_concat(DISTINCT n.title), group_concat(DISTINCT n.kind), COUNT(DISTINCT n.kind) c
+         FROM node_names k JOIN nodes n ON n.id = k.node_id AND n.deleted_at IS NULL
+         GROUP BY k.name_key HAVING c > 1 LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([LIMIT], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+    for row in rows {
+        let (ids, titles, kinds) = row?;
+        out.push(Finding {
+            code: "duplicate_name_cross_kind".into(),
+            severity: Severity::Warning,
+            message: format!("不同类型的节点同名：{}（{}）", titles.replace(',', "、"), kinds.replace(',', "、")),
+            node_ids: ids.split(',').map(str::to_string).collect(),
+            relation_ids: vec![],
+        });
+    }
+
     lap("重名", &mut timings);
 
     // 4. 指向已删除节点的关系（正常流程不会出现，出现说明数据异常）。

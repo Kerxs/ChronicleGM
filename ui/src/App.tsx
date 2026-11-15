@@ -1,28 +1,45 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import GlobalSearch from "./components/GlobalSearch";
+import { applyThumbSize } from "./lib/thumbs";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import Icon from "./components/Icon";
 import TitleBar from "./components/TitleBar";
-import Onboarding from "./components/Onboarding";
+import Tutorial from "./components/Tutorial";
 import UpdateDialog from "./components/UpdateDialog";
 import { checkUpdates, openUpdate, useUpdates } from "./lib/updates";
 import { TabbedPage } from "./components/Segmented";
+import { dirBetween, viewTransition } from "./lib/motion";
+import { PageSkeleton } from "./components/Skeleton";
 import { api, type AppInfo, type FinishedEvent, type ProgressEvent, type WorldOverview } from "./api";
 import type { WorldInfo } from "./bindings/WorldInfo";
-const ScriptsPage = lazy(() => import("./pages/Scripts"));
-const ScriptEditor = lazy(() => import("./pages/ScriptEditor"));
-const ReviewPage = lazy(() => import("./pages/Review"));
-const JobsPage = lazy(() => import("./pages/Jobs"));
-const SettingsPage = lazy(() => import("./pages/Settings"));
-const WorldTree = lazy(() => import("./pages/WorldTree"));
-const WorldTools = lazy(() => import("./pages/WorldTools"));
-const PlotEditor = lazy(() => import("./pages/PlotEditor"));
-const GamePage = lazy(() => import("./pages/Game"));
-const PerfPage = lazy(() => import("./pages/Perf"));
-const ArchivePage = lazy(() => import("./pages/Archive"));
-const NetworkPage = lazy(() => import("./pages/Network"));
-const KnowledgeGraph = lazy(() => import("./pages/KnowledgeGraph"));
+const loadScriptsPage = () => import("./pages/Scripts");
+const ScriptsPage = lazy(loadScriptsPage);
+const loadScriptEditor = () => import("./pages/ScriptEditor");
+const ScriptEditor = lazy(loadScriptEditor);
+const loadReviewPage = () => import("./pages/Review");
+const ReviewPage = lazy(loadReviewPage);
+const loadJobsPage = () => import("./pages/Jobs");
+const JobsPage = lazy(loadJobsPage);
+const loadSettingsPage = () => import("./pages/Settings");
+const SettingsPage = lazy(loadSettingsPage);
+const loadWorldTree = () => import("./pages/WorldTree");
+const WorldTree = lazy(loadWorldTree);
+const loadWorldTools = () => import("./pages/WorldTools");
+const WorldTools = lazy(loadWorldTools);
+const loadPlotEditor = () => import("./pages/PlotEditor");
+const PlotEditor = lazy(loadPlotEditor);
+const loadGamePage = () => import("./pages/Game");
+const GamePage = lazy(loadGamePage);
+const loadPerfPage = () => import("./pages/Perf");
+const PerfPage = lazy(loadPerfPage);
+const loadArchivePage = () => import("./pages/Archive");
+const ArchivePage = lazy(loadArchivePage);
+const loadNetworkPage = () => import("./pages/Network");
+const NetworkPage = lazy(loadNetworkPage);
+const loadKnowledgeGraph = () => import("./pages/KnowledgeGraph");
+const KnowledgeGraph = lazy(loadKnowledgeGraph);
 
-export type Page = { name: "game" } | { name: "tree"; focus?: string } | { name: "tools" } | { name: "scripts" } | { name: "script"; id: string } | { name: "plot"; scriptId: string } | { name: "review"; id?: string } | { name: "jobs" } | { name: "settings" } | { name: "perf" } | { name: "archive" } | { name: "network"; focus?: string } | { name: "graph"; focus?: string };
+export type Page = { name: "game"; campaign?: string } | { name: "tree"; focus?: string } | { name: "tools" } | { name: "scripts" } | { name: "script"; id: string } | { name: "plot"; scriptId: string } | { name: "review"; id?: string } | { name: "jobs" } | { name: "settings" } | { name: "perf" } | { name: "archive" } | { name: "network"; focus?: string } | { name: "graph"; focus?: string };
 
 const PAGE_TITLE: Record<Page["name"], string> = {
   game: "游戏",
@@ -44,6 +61,16 @@ const GROUP: Record<Page["name"], string> = {
   review: "review", jobs: "review", tools: "tools", settings: "settings", perf: "settings",
 };
 
+/** 导航顺序（决定页面切换时向左还是向右滑）。 */
+const NAV_ORDER = ["game", "archive", "tree", "graph", "network", "scripts", "script", "plot", "review", "jobs", "tools", "settings", "perf"];
+/** 鼠标停在导航上时预加载的页面代码。 */
+const PRELOAD: Partial<Record<Page["name"], () => Promise<unknown>>> = {
+  game: loadGamePage, archive: loadArchivePage, tree: loadWorldTree, graph: loadKnowledgeGraph, network: loadNetworkPage,
+  scripts: loadScriptsPage, script: loadScriptEditor, plot: loadPlotEditor, review: loadReviewPage, jobs: loadJobsPage,
+  tools: loadWorldTools, settings: loadSettingsPage, perf: loadPerfPage,
+};
+const preload = (n: Page["name"]) => void PRELOAD[n]?.().catch(() => {});
+
 export interface Ctx {
   worldId: string;
   go: (p: Page) => void;
@@ -55,9 +82,9 @@ export interface Ctx {
 }
 
 /** 侧栏导航按钮：图标 + 文字（文字保持原样，便于走查脚本按名称点击），可带数字角标。 */
-function NavButton({ icon, label, active, onClick, count = 0, running = false }: { icon: string; label: string; active: boolean; onClick: () => void; count?: number; running?: boolean }) {
+function NavButton({ icon, label, active, onClick, count = 0, running = false, prefetch }: { icon: string; label: string; active: boolean; onClick: () => void; count?: number; running?: boolean; prefetch?: () => void }) {
   return (
-    <button className={active ? "active" : ""} onClick={onClick} title={label}>
+    <button className={active ? "active" : ""} onClick={onClick} title={label} onMouseEnter={prefetch} onFocus={prefetch} data-tour={`nav-${icon}`}>
       <Icon name={icon} />
       <span className="nav-label">{label}</span>
       {count > 0 && <span className={running ? "count run" : "count"} aria-label={running ? `${count} 个进行中` : `${count} 个待审`}>{count}</span>}
@@ -71,10 +98,29 @@ export default function App() {
   const [worlds, setWorlds] = useState<WorldInfo[]>([]);
   const [worldId, setWorldId] = useState<string | null>(null);
   const [overview, setOverview] = useState<WorldOverview | null>(null);
-  const [page, setPage] = useState<Page>({ name: "scripts" });
+  const [page, setPageRaw] = useState<Page>({ name: "scripts" });
+  // 页面切换都经过这里：用 View Transition 做连贯的过渡（按导航顺序左右滑），同组页面（分段切换）也一样。
+  const pageRef = useRef(page.name);
+  pageRef.current = page.name;
+  const setPage = useCallback((p: Page) => {
+    viewTransition(() => setPageRaw(p), dirBetween(NAV_ORDER, pageRef.current, p.name));
+  }, []);
   // 使用引导：第一次打开时显示。是否看过、侧栏是否收起，存在资料库里（跟着数据目录走，
   // 不用浏览器存储：WebView2 的存储是所有数据目录共用的）。
-  const [guide, setGuide] = useState(false);
+  // 游戏教程：null = 不显示；数字 = 从第几步开始。
+  const [tour, setTour] = useState<number | null>(null);
+  // 全局搜索（Ctrl+K）。
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearching((x) => !x);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const [collapsed, setCollapsed] = useState(false);
   // 启动后自动检查一次更新（可以在「关于」里关闭）；检查失败不打扰（关于卡片里能看到原因）。
   const updates = useUpdates();
@@ -90,12 +136,31 @@ export default function App() {
     return () => clearTimeout(t);
   }, []);
   useEffect(() => {
-    api.uiPref("ui.onboarded").then((v) => setGuide(v !== "1")).catch(() => {});
+    // 第一次打开时自动开始教程（上次暂停的从暂停处接着来）；看完或跳过后不再自动出现。
+    Promise.all([api.uiPref("ui.onboarded"), api.uiPref("ui.tutorial")])
+      .then(([seen, at]) => {
+        if (seen !== "1" && at !== "done") setTour(Number(at) || 0);
+      })
+      .catch(() => {});
     api.uiPref("ui.nav_collapsed").then((v) => setCollapsed(v === "1")).catch(() => {});
+    api.uiPref("ui.thumb_size").then(applyThumbSize).catch(() => {});
+    api
+      .dataDirInfo()
+      .then((d) => d.warning && setTimeout(() => notify(d.warning!, "error"), 1500))
+      .catch(() => {});
   }, []);
-  const closeGuide = () => {
-    setGuide(false);
-    void api.setUiPref("ui.onboarded", "1").catch(() => {});
+  const closeTour = (finished: boolean) => {
+    setTour(null);
+    if (finished) {
+      void api.setUiPref("ui.onboarded", "1").catch(() => {});
+      void api.setUiPref("ui.tutorial", "done").catch(() => {});
+    }
+  };
+  const openTour = () => {
+    api
+      .uiPref("ui.tutorial")
+      .then((at) => setTour(at && at !== "done" ? Number(at) || 0 : 0))
+      .catch(() => setTour(0));
   };
   const [toast, setToast] = useState<{ msg: string; kind: "info" | "error" } | null>(null);
   const [tick, setTick] = useState(0);
@@ -166,9 +231,27 @@ export default function App() {
     }
   }
 
+  // 侧栏选中指示块：量出当前选中项的位置，用 transform 移过去（弹簧曲线）。
+  const sideRef = useRef<HTMLElement>(null);
+  const [ind, setInd] = useState<{ y: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const side = sideRef.current;
+      const el = side?.querySelector<HTMLElement>(".nav button.active");
+      if (!side || !el) return setInd(null);
+      const a = el.getBoundingClientRect();
+      const b = side.getBoundingClientRect();
+      setInd({ y: a.top - b.top + side.scrollTop, h: a.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (sideRef.current) ro.observe(sideRef.current);
+    return () => ro.disconnect();
+  }, [page.name, collapsed, worldId]);
+
   function toggleNav() {
     const next = !collapsed;
-    setCollapsed(next);
+    viewTransition(() => setCollapsed(next));
     void api.setUiPref("ui.nav_collapsed", next ? "1" : "0").catch(() => {});
   }
 
@@ -207,45 +290,45 @@ export default function App() {
         onCreateWorld={create}
         onOpenJobs={() => setPage({ name: "jobs" })}
         onOpenReview={() => setPage({ name: "review" })}
-        onOpenGuide={() => setGuide(true)}
+        onOpenGuide={openTour}
+        onOpenSearch={worldId ? () => setSearching(true) : undefined}
         updateVersion={updates.info?.version ?? null}
         onOpenUpdate={openUpdate}
       />
       <UpdateDialog />
-      {guide && !fatal && (
-        <Onboarding
-          worlds={worlds}
-          onCreateWorld={create}
+      {searching && worldId && <GlobalSearch worldId={worldId} go={setPage} onClose={() => setSearching(false)} />}
+      {tour !== null && !fatal && (
+        <Tutorial
+          worldId={worldId}
+          startAt={tour}
+          go={setPage}
           onSelectWorld={(id) => {
+            void refreshWorlds();
             setWorldId(id);
-            setPage({ name: "tree" });
           }}
-          onOpenModels={() => {
-            closeGuide();
-            setPage({ name: "settings" });
-          }}
-          onClose={closeGuide}
+          onClose={closeTour}
         />
       )}
-      <aside className="sidebar">
+      <aside className="sidebar" ref={sideRef}>
+        {ind && <span className="nav-indicator" style={{ transform: `translateY(${ind.y}px)`, height: ind.h }} aria-hidden="true" />}
         {worldId ? (
           <nav className="nav">
             <div className="side-label">冒险</div>
-            <NavButton icon="game" label="游戏" active={is("game")} onClick={() => setPage({ name: "game" })} />
-            <NavButton icon="archive" label="战役档案馆" active={is("archive")} onClick={() => setPage({ name: "archive" })} />
+            <NavButton icon="game" label="游戏" prefetch={() => preload("game")} active={is("game")} onClick={() => setPage({ name: "game" })} />
+            <NavButton icon="archive" label="战役档案馆" prefetch={() => preload("archive")} active={is("archive")} onClick={() => setPage({ name: "archive" })} />
             <div className="side-label">创作</div>
-            <NavButton icon="tree" label="世界树" active={is("tree")} onClick={() => setPage({ name: "tree" })} />
-            <NavButton icon="graph" label="图谱" active={is("graph", "network")} onClick={() => setPage({ name: "graph" })} />
-            <NavButton icon="script" label="剧本" active={is("scripts", "script", "plot")} onClick={() => setPage({ name: "scripts" })} />
-            <NavButton icon="review" label="审阅与任务" count={pending + running} running={running > 0 && pending === 0} active={is("review", "jobs")} onClick={() => setPage(pending === 0 && running > 0 ? { name: "jobs" } : { name: "review" })} />
-            <NavButton icon="tools" label="世界工具" active={is("tools")} onClick={() => setPage({ name: "tools" })} />
+            <NavButton icon="tree" label="世界树" prefetch={() => preload("tree")} active={is("tree")} onClick={() => setPage({ name: "tree" })} />
+            <NavButton icon="graph" label="图谱" prefetch={() => preload("graph")} active={is("graph", "network")} onClick={() => setPage({ name: "graph" })} />
+            <NavButton icon="script" label="剧本" prefetch={() => preload("scripts")} active={is("scripts", "script", "plot")} onClick={() => setPage({ name: "scripts" })} />
+            <NavButton icon="review" label="审阅与任务" prefetch={() => preload("review")} count={pending + running} running={running > 0 && pending === 0} active={is("review", "jobs")} onClick={() => setPage(pending === 0 && running > 0 ? { name: "jobs" } : { name: "review" })} />
+            <NavButton icon="tools" label="世界工具" prefetch={() => preload("tools")} active={is("tools")} onClick={() => setPage({ name: "tools" })} />
           </nav>
         ) : (
           <p className="hint nav-empty">在顶部选择或新建一个世界。</p>
         )}
         <nav className="nav nav-bottom">
           <div className="side-label">系统</div>
-          <NavButton icon="models" label="模型与性能" active={is("settings", "perf")} onClick={() => setPage({ name: "settings" })} />
+          <NavButton icon="models" label="模型与性能" prefetch={() => preload("settings")} active={is("settings", "perf")} onClick={() => setPage({ name: "settings" })} />
           <button className="nav-toggle" onClick={toggleNav} title={collapsed ? "展开侧栏" : "收起侧栏"} aria-label={collapsed ? "展开侧栏" : "收起侧栏"}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d={collapsed ? "M9 6l6 6-6 6" : "M15 6l-6 6 6 6"} /></svg>
             <span className="nav-label">收起侧栏</span>
@@ -258,7 +341,7 @@ export default function App() {
             {toast.msg}
           </div>
         )}
-        <Suspense fallback={<div className="page-loading"><span className="tb-spinner" /></div>}>
+        <Suspense fallback={<PageSkeleton />}>
         <div key={GROUP[page.name]} className="page-anim">
         {page.name === "settings" || page.name === "perf" ? (
           <TabbedPage
@@ -274,7 +357,7 @@ export default function App() {
             <img className="app-icon-hero" src="/app-icon.png" alt="Chronicle GM" draggable={false} />
             <h2>欢迎使用 Chronicle GM</h2>
             <p className="hint">在顶部标题栏的世界菜单里选择或新建一个世界。</p>
-            <button className="primary" onClick={() => setGuide(true)}>打开使用引导</button>
+            <button className="primary" onClick={openTour} data-tour="welcome-tour">开始游戏教程</button>
           </div>
         ) : page.name === "network" || page.name === "graph" ? (
           <TabbedPage
@@ -315,7 +398,7 @@ export default function App() {
         ) : page.name === "scripts" ? (
           <ScriptsPage ctx={ctx} overview={overview} />
         ) : page.name === "game" ? (
-          <GamePage ctx={ctx} />
+          <GamePage ctx={ctx} campaign={page.campaign} />
         ) : page.name === "plot" ? (
           <PlotEditor ctx={ctx} scriptId={page.scriptId} />
         ) : page.name === "script" ? (

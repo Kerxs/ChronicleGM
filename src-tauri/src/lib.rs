@@ -2,6 +2,7 @@
 
 mod applog;
 mod perf;
+mod datadir;
 mod secrets;
 mod update;
 mod voice;
@@ -155,11 +156,57 @@ fn lock(w: &Arc<Mutex<World>>) -> Res<MutexGuard<'_, World>> {
 }
 
 /// 应用数据目录：默认 `%LOCALAPPDATA%\ChronicleGM`，可用环境变量 `CHRONICLE_DATA_DIR` 覆盖（开发与测试用）。
+/// 设置里可以迁移到别的位置（见 datadir.rs）。
 fn data_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("CHRONICLE_DATA_DIR") {
-        return PathBuf::from(d);
+    datadir::resolve().0
+}
+
+#[derive(Serialize)]
+struct DataDirInfo {
+    current: String,
+    default: String,
+    /// 设置过的位置（没设置为空）。
+    configured: Option<String>,
+    /// 启动时的问题（设置的目录找不到等）。
+    warning: Option<String>,
+    /// 用环境变量指定了目录（开发 / 测试），不能在设置里改。
+    env_override: bool,
+}
+
+#[tauri::command]
+fn data_dir_info() -> DataDirInfo {
+    let (cur, warning) = datadir::resolve();
+    DataDirInfo {
+        current: cur.display().to_string(),
+        default: datadir::default_dir().display().to_string(),
+        configured: datadir::pointer().map(|p| p.display().to_string()),
+        warning,
+        env_override: std::env::var_os("CHRONICLE_DATA_DIR").is_some(),
     }
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("ChronicleGM")
+}
+
+/// 迁移数据目录：复制 → 校验 → 切换（重启后生效）。有 AI 任务在运行时不迁移。
+#[tauri::command]
+async fn migrate_data_dir(app: AppHandle, target: String) -> Res<datadir::MigrateReport> {
+    let state = app.state::<AppState>();
+    if std::env::var_os("CHRONICLE_DATA_DIR").is_some() {
+        return Err("现在用环境变量 CHRONICLE_DATA_DIR 指定了数据目录，不能在这里迁移".into());
+    }
+    if !state.running.lock().map_err(err)?.is_empty() {
+        return Err("还有 AI 任务在运行，等它们结束后再迁移".into());
+    }
+    let current = data_dir();
+    let res = tauri::async_runtime::spawn_blocking(move || datadir::migrate(&current, std::path::Path::new(target.trim()))).await.map_err(err)?;
+    match &res {
+        Ok(r) => applog::info(&format!("数据目录已复制到 {}（{} 个文件，{} 个数据库），重启后生效", r.target, r.files, r.databases)),
+        Err(e) => applog::error(e),
+    }
+    res
+}
+
+#[tauri::command]
+fn reset_data_dir() -> Res<()> {
+    datadir::reset()
 }
 
 // ===================== 资料库与世界 =====================
@@ -218,6 +265,228 @@ fn create_world(state: State<AppState>, name: String) -> Res<WorldInfo> {
     Ok(info)
 }
 
+// ===================== 联网搜索（可选，默认关闭） =====================
+
+const SEARCH_KEY: &str = "search.config";
+
+fn search_config_of(state: &AppState) -> chronicle_llm::search::SearchConfig {
+    state.lib().ok().and_then(|l| l.setting(SEARCH_KEY).ok().flatten()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// 搜索服务的 Key 也放在凭据管理器（和模型服务的 Key 分开命名）。
+fn search_secret_id(provider_id: &str) -> String {
+    format!("search-{provider_id}")
+}
+
+fn run_search(state: &AppState, query: &str) -> Res<Vec<chronicle_llm::search::SearchResult>> {
+    let cfg = search_config_of(state);
+    let p = cfg.active().ok_or("联网搜索没有打开：请在「模型服务」里添加搜索服务并打开开关")?.clone();
+    let key = state.secrets.get(&search_secret_id(&p.id))?;
+    chronicle_llm::search::search(&p, key.as_deref(), query, cfg.max_results, std::time::Duration::from_secs(20)).map_err(|e| e.to_string())
+}
+
+/// GM 用的搜索：每小时最多 per_hour 次（超过就返回失败，GM 用自己的知识）。
+fn gm_web_search(state: &AppState) -> Option<chronicle_gm::WebSearch> {
+    static RECENT: std::sync::Mutex<Vec<std::time::Instant>> = std::sync::Mutex::new(Vec::new());
+    let cfg = search_config_of(state);
+    if !cfg.gm_can_search {
+        return None;
+    }
+    let p = cfg.active()?.clone();
+    let key = state.secrets.get(&search_secret_id(&p.id)).ok().flatten();
+    let (max, per_hour) = (cfg.max_results, cfg.per_hour.max(1) as usize);
+    Some(chronicle_gm::WebSearch(Arc::new(move |q: &str| {
+        {
+            let mut r = RECENT.lock().map_err(|e| e.to_string())?;
+            r.retain(|t| t.elapsed() < std::time::Duration::from_secs(3600));
+            if r.len() >= per_hour {
+                return Err(format!("这一小时的搜索次数已经用完（每小时 {per_hour} 次）"));
+            }
+            r.push(std::time::Instant::now());
+        }
+        chronicle_llm::search::search(&p, key.as_deref(), q, max, std::time::Duration::from_secs(20)).map_err(|e| e.to_string())
+    })))
+}
+
+#[derive(Serialize)]
+struct SearchSettingsView {
+    config: chronicle_llm::search::SearchConfig,
+    /// 已经保存了 Key 的搜索服务。
+    has_key: Vec<String>,
+}
+
+#[tauri::command]
+fn search_settings(state: State<AppState>) -> Res<SearchSettingsView> {
+    let config = search_config_of(&state);
+    let has_key = config.providers.iter().filter(|p| state.secrets.get(&search_secret_id(&p.id)).ok().flatten().is_some()).map(|p| p.id.clone()).collect();
+    Ok(SearchSettingsView { config, has_key })
+}
+
+#[tauri::command]
+fn save_search_settings(state: State<AppState>, config: chronicle_llm::search::SearchConfig, keys: std::collections::HashMap<String, String>) -> Res<()> {
+    for p in &config.providers {
+        if p.kind == chronicle_llm::search::SearchKind::Searxng && p.base_url.trim().is_empty() {
+            return Err(format!("「{}」是 SearXNG，需要填写地址", p.name));
+        }
+    }
+    for (id, k) in keys {
+        if k.trim().is_empty() {
+            state.secrets.delete(&search_secret_id(&id))?;
+        } else {
+            state.secrets.set(&search_secret_id(&id), k.trim())?;
+        }
+    }
+    state.lib()?.set_setting(SEARCH_KEY, &serde_json::to_string(&config).map_err(err)?).map_err(err)
+}
+
+/// 手动搜索（结果只显示，不写进剧本）。
+#[tauri::command]
+async fn web_search(app: AppHandle, query: String) -> Res<Vec<chronicle_llm::search::SearchResult>> {
+    tauri::async_runtime::spawn_blocking(move || run_search(&app.state::<AppState>(), &query)).await.map_err(err)?
+}
+
+/// 剧透模式（全局，默认关闭）：关闭时程序在返回数据前去掉主持人信息。
+const SPOILER_KEY: &str = "ui.spoiler_mode";
+
+fn spoiler_on(state: &AppState) -> bool {
+    state.lib().ok().and_then(|l| l.setting(SPOILER_KEY).ok().flatten()).as_deref() == Some("1")
+}
+
+#[tauri::command]
+fn spoiler_mode(state: State<AppState>) -> bool {
+    spoiler_on(&state)
+}
+
+#[tauri::command]
+fn set_spoiler_mode(state: State<AppState>, on: bool) -> Res<()> {
+    state.lib()?.set_setting(SPOILER_KEY, if on { "1" } else { "0" }).map_err(err)?;
+    applog::info(if on { "打开了剧透模式" } else { "关闭了剧透模式" });
+    Ok(())
+}
+
+fn need_spoilers(state: &AppState) -> Res<()> {
+    if spoiler_on(state) { Ok(()) } else { Err("这是主持人信息：请先打开剧透模式".into()) }
+}
+
+/// 多条件筛选节点（关闭剧透模式时去掉主持人信息）。
+#[tauri::command]
+fn filter_nodes(state: State<AppState>, world_id: String, filter: chronicle_core::search::NodeFilter) -> Res<Vec<chronicle_core::Node>> {
+    let w = state.world(&world_id)?;
+    let mut list = chronicle_core::search::filter_nodes(lock(&w)?.conn(), &filter).map_err(err)?;
+    if !spoiler_on(&state) {
+        list.iter_mut().for_each(chronicle_core::spoiler::strip_node);
+    }
+    Ok(list)
+}
+
+#[tauri::command]
+fn payload_fields(state: State<AppState>, world_id: String, kind: Option<chronicle_core::NodeKind>) -> Res<Vec<chronicle_core::search::FieldInfo>> {
+    let w = state.world(&world_id)?;
+    chronicle_core::search::payload_fields(lock(&w)?.conn(), kind).map_err(err)
+}
+
+// ===================== 删除与回收站（第 21 项） =====================
+
+#[tauri::command]
+fn trash_campaign(state: State<AppState>, world_id: String, campaign_id: String) -> Res<usize> {
+    let w = state.world(&world_id)?;
+    chronicle_core::campaign::trash_campaign(lock(&w)?.conn(), &campaign_id).map_err(err)
+}
+
+#[tauri::command]
+fn restore_campaign(state: State<AppState>, world_id: String, campaign_id: String) -> Res<usize> {
+    let w = state.world(&world_id)?;
+    chronicle_core::campaign::restore_campaign(lock(&w)?.conn(), &campaign_id).map_err(err)
+}
+
+#[tauri::command]
+fn campaign_trash(state: State<AppState>, world_id: String) -> Res<Vec<chronicle_core::campaign::DeletedCampaign>> {
+    let w = state.world(&world_id)?;
+    chronicle_core::campaign::campaign_trash(lock(&w)?.conn()).map_err(err)
+}
+
+/// 永久删除回收站里的战役（先自动备份世界）。
+#[tauri::command]
+fn purge_campaign(state: State<AppState>, world_id: String, campaign_id: String) -> Res<usize> {
+    let w = state.world(&world_id)?;
+    let g = lock(&w)?;
+    chronicle_core::backup::auto_backup(&g, AUTO_BACKUP_KEEP, 0).map_err(err)?;
+    chronicle_core::campaign::purge_campaign(g.conn(), &campaign_id).map_err(err)
+}
+
+/// NPC 的记忆（主持人信息：需要剧透模式）。
+#[tauri::command]
+fn npc_memory_list(state: State<AppState>, world_id: String, campaign_id: String, npc_id: String) -> Res<Vec<chronicle_core::campaign::NpcMemory>> {
+    need_spoilers(&state)?;
+    let w = state.world(&world_id)?;
+    chronicle_core::campaign::npc_memories(lock(&w)?.conn(), &campaign_id, &npc_id, 100).map_err(err)
+}
+
+#[tauri::command]
+fn delete_npc_memory(state: State<AppState>, world_id: String, campaign_id: String, memory_id: String) -> Res<()> {
+    let w = state.world(&world_id)?;
+    chronicle_core::campaign::delete_npc_memory(lock(&w)?.conn(), &campaign_id, &memory_id).map_err(err)
+}
+
+#[tauri::command]
+fn forget_fact(state: State<AppState>, world_id: String, campaign_id: String, seq: i64) -> Res<()> {
+    let w = state.world(&world_id)?;
+    chronicle_core::campaign::forget_fact(lock(&w)?.conn(), &campaign_id, seq).map_err(err)
+}
+
+#[tauri::command]
+fn delete_backup(state: State<AppState>, world_id: String, file_name: String) -> Res<()> {
+    let w = state.world(&world_id)?;
+    chronicle_core::backup::delete_backup(&*lock(&w)?, &file_name).map_err(err)
+}
+
+/// 删除世界：先关闭，再把文件移到回收站（可以恢复）。有任务在运行时不删。
+#[tauri::command]
+fn trash_world(state: State<AppState>, world_id: String) -> Res<()> {
+    if state.running.lock().map_err(err)?.keys().any(|k| k.contains(&world_id)) {
+        return Err("这个世界还有任务在运行，等它们结束后再删除".into());
+    }
+    let handle = state.worlds.lock().map_err(err)?.remove(&world_id);
+    if let Some(h) = handle {
+        if Arc::strong_count(&h) > 1 {
+            state.worlds.lock().map_err(err)?.insert(world_id.clone(), h);
+            return Err("世界正在使用中（有后台任务），稍后再删除".into());
+        }
+        drop(h);
+    }
+    state.lib()?.trash_world(&world_id).map_err(err)
+}
+
+#[tauri::command]
+fn world_trash(state: State<AppState>) -> Res<Vec<WorldInfo>> {
+    state.lib()?.world_trash().map_err(err)
+}
+
+#[tauri::command]
+fn restore_world(state: State<AppState>, world_id: String) -> Res<WorldInfo> {
+    state.lib()?.restore_world(&world_id).map_err(err)
+}
+
+/// 全局搜索（按剧透模式过滤主持人信息）。
+#[tauri::command]
+fn global_search(state: State<AppState>, world_id: String, query: String) -> Res<Vec<chronicle_core::search::GlobalHit>> {
+    let w = state.world(&world_id)?;
+    chronicle_core::search::global_search(lock(&w)?.conn(), &query, spoiler_on(&state), 12).map_err(err)
+}
+
+/// 打开示例世界（教程用）：已经有同名世界就直接用它，否则新建并写入示例内容。不会覆盖已有的世界。
+#[tauri::command]
+fn open_demo_world(state: State<AppState>) -> Res<WorldInfo> {
+    let lib = state.lib()?;
+    if let Some(info) = lib.list_worlds().map_err(err)?.into_iter().find(|w| w.name == chronicle_core::demo::DEMO_WORLD_NAME) {
+        return Ok(info);
+    }
+    let (info, mut w) = lib.create_world(chronicle_core::demo::DEMO_WORLD_NAME).map_err(err)?;
+    chronicle_core::demo::populate(&mut w).map_err(err)?;
+    state.worlds.lock().map_err(err)?.insert(info.id.clone(), Arc::new(Mutex::new(w)));
+    Ok(info)
+}
+
 #[derive(Serialize)]
 struct WorldOverview {
     info: WorldInfo,
@@ -257,6 +526,165 @@ fn undo_commit(state: State<AppState>, world_id: String, commit_id: String) -> R
 }
 
 // ===================== 剧本 =====================
+
+/// 剧本检查（程序）：完整性、引用、玩法配置与内容是否相符、可能需要复查的世界树节点。不修改剧本。
+#[tauri::command]
+fn check_script(state: State<AppState>, world_id: String, script_id: String) -> Res<Vec<chronicle_core::scripts::ScriptFinding>> {
+    let w = state.world(&world_id)?;
+    chronicle_core::scripts::check_script(lock(&w)?.conn(), &script_id).map_err(err)
+}
+
+/// 剧本的 AI 逻辑检查（人物前后一致、剧情连贯、达成路径、可选角色与主线的关联）。只返回建议，不修改剧本。
+#[tauri::command]
+async fn review_script(app: AppHandle, world_id: String, script_id: String) -> Res<Vec<chronicle_core::scripts::ScriptFinding>> {
+    let state = app.state::<AppState>();
+    let (cfg, client, opts) = task_provider(&state, "script_gen")?;
+    let client = state.scheduled(client, &cfg, Priority::P1, "review");
+    let world = state.world(&world_id)?;
+    let templates = state.templates.clone();
+    tauri::async_runtime::spawn_blocking(move || chronicle_gm::review::review_script(&world, &client, &templates, &opts, &script_id, &CancelToken::new()))
+        .await
+        .map_err(err)?
+        .map_err(|e| e.to_string())
+}
+
+/// 删除剧本（连同条目、角色、剧情图进回收站；删除前自动保存一个版本）。
+#[tauri::command]
+fn delete_script(state: State<AppState>, world_id: String, script_id: String) -> Res<usize> {
+    let w = state.world(&world_id)?;
+    let mut g = lock(&w)?;
+    let using = chronicle_core::script_admin::campaigns_using(g.conn(), &script_id).map_err(err)?;
+    if using.is_empty() {
+        chronicle_core::script_admin::create_script_version(&g, &script_id, "删除前自动保存", "自动").map_err(err)?;
+    }
+    Ok(g.write(&Author::User, "删除剧本", |x| x.delete_script_cascade(&script_id)).map_err(err)?.0)
+}
+
+#[tauri::command]
+fn restore_script(state: State<AppState>, world_id: String, script_id: String) -> Res<usize> {
+    let w = state.world(&world_id)?;
+    Ok(lock(&w)?.write(&Author::User, "恢复剧本", |x| x.restore_script(&script_id)).map_err(err)?.0)
+}
+
+#[tauri::command]
+fn script_trash(state: State<AppState>, world_id: String) -> Res<Vec<chronicle_core::script_admin::DeletedScript>> {
+    let w = state.world(&world_id)?;
+    chronicle_core::script_admin::script_trash(lock(&w)?.conn()).map_err(err)
+}
+
+#[tauri::command]
+fn copy_script(state: State<AppState>, world_id: String, script_id: String, title: String) -> Res<Script> {
+    let w = state.world(&world_id)?;
+    Ok(lock(&w)?.write(&Author::User, "复制剧本", |x| x.copy_script(&script_id, &title)).map_err(err)?.0)
+}
+
+#[tauri::command]
+fn script_versions(state: State<AppState>, world_id: String, script_id: String) -> Res<Vec<chronicle_core::script_admin::ScriptVersion>> {
+    let w = state.world(&world_id)?;
+    chronicle_core::script_admin::list_script_versions(lock(&w)?.conn(), &script_id).map_err(err)
+}
+
+#[tauri::command]
+fn create_script_version(state: State<AppState>, world_id: String, script_id: String, name: String) -> Res<chronicle_core::script_admin::ScriptVersion> {
+    let w = state.world(&world_id)?;
+    chronicle_core::script_admin::create_script_version(&*lock(&w)?, &script_id, &name, "手动").map_err(err)
+}
+
+#[tauri::command]
+fn diff_script_version(state: State<AppState>, world_id: String, version_id: String) -> Res<chronicle_core::script_admin::VersionDiff> {
+    let w = state.world(&world_id)?;
+    chronicle_core::script_admin::diff_script_version(lock(&w)?.conn(), &version_id).map_err(err)
+}
+
+#[tauri::command]
+fn restore_script_version(state: State<AppState>, world_id: String, version_id: String) -> Res<usize> {
+    let w = state.world(&world_id)?;
+    let mut g = lock(&w)?;
+    chronicle_core::script_admin::restore_script_version(&mut g, &version_id).map_err(err)
+}
+
+#[tauri::command]
+fn delete_script_version(state: State<AppState>, world_id: String, version_id: String) -> Res<()> {
+    let w = state.world(&world_id)?;
+    chronicle_core::script_admin::delete_script_version(&*lock(&w)?, &version_id).map_err(err)
+}
+
+/// 剧本条目修改后，可能需要复查的世界树节点。
+#[tauri::command]
+fn script_item_related_nodes(state: State<AppState>, world_id: String, item_id: String) -> Res<Vec<chronicle_core::Node>> {
+    let w = state.world(&world_id)?;
+    chronicle_core::scripts::related_nodes(lock(&w)?.conn(), &item_id).map_err(err)
+}
+
+/// 剧本里的可选角色。
+#[tauri::command]
+fn script_player_characters(state: State<AppState>, world_id: String, script_id: String) -> Res<Vec<chronicle_core::pc::PlayerCharacter>> {
+    let w = state.world(&world_id)?;
+    let g = lock(&w)?;
+    let items = chronicle_core::scripts::items_by_kind(g.conn(), &script_id, chronicle_core::model::ScriptItemKind::PlayerCharacter).map_err(err)?;
+    Ok(items.iter().map(chronicle_core::pc::from_script_item).collect())
+}
+
+/// AI 按剧本生成一个新的玩家角色（不写入剧本）。
+#[tauri::command]
+async fn generate_pc(app: AppHandle, world_id: String, script_id: String, hint: String) -> Res<chronicle_core::pc::PlayerCharacter> {
+    let state = app.state::<AppState>();
+    let (cfg, client, opts) = task_provider(&state, "script_gen")?;
+    let client = state.scheduled(client, &cfg, Priority::P1, "pc");
+    let world = state.world(&world_id)?;
+    let templates = state.templates.clone();
+    tauri::async_runtime::spawn_blocking(move || chronicle_gm::pcgen::generate_pc(&world, &client, &templates, &opts, &script_id, &hint, &CancelToken::new()))
+        .await
+        .map_err(err)?
+        .map_err(|e| e.to_string())
+}
+
+/// AI 生成任务（mode: situation 根据当前剧情 / worldview 根据剧本世界观）。只返回提案和冲突检查，不写入。
+#[tauri::command]
+async fn generate_quest(app: AppHandle, world_id: String, campaign_id: String, mode: String, hint: String) -> Res<chronicle_gm::questgen::QuestProposal> {
+    let state = app.state::<AppState>();
+    let (cfg, client, opts) = task_provider(&state, "narration")?;
+    let client = state.scheduled(client, &cfg, Priority::P1, "quest");
+    let world = state.world(&world_id)?;
+    let templates = state.templates.clone();
+    tauri::async_runtime::spawn_blocking(move || chronicle_gm::questgen::generate_quest(&world, &client, &templates, &opts, &campaign_id, &mode, &hint, &CancelToken::new()))
+        .await
+        .map_err(err)?
+        .map_err(|e| e.to_string())
+}
+
+/// 确认后把任务加入战役（立即开始）。
+#[tauri::command]
+fn quest_add(state: State<AppState>, world_id: String, campaign_id: String, quest: chronicle_core::quests::NewQuest) -> Res<String> {
+    let w = state.world(&world_id)?;
+    let mut g = lock(&w)?;
+    let title = quest.title.clone();
+    chronicle_core::quests::add_quest(&mut g, &campaign_id, &quest, &format!("玩家确认了生成的任务「{title}」")).map_err(err)
+}
+
+/// 战役的玩家角色（没有设定时为空）。
+#[tauri::command]
+fn campaign_pc(state: State<AppState>, world_id: String, campaign_id: String) -> Res<Option<chronicle_core::pc::PlayerCharacter>> {
+    let w = state.world(&world_id)?;
+    Ok(chronicle_core::pc::get(lock(&w)?.conn(), &campaign_id))
+}
+
+/// 设定战役的玩家角色（只能在第 0 回合）。
+#[tauri::command]
+fn campaign_set_pc(state: State<AppState>, world_id: String, campaign_id: String, pc: chronicle_core::pc::PlayerCharacter) -> Res<()> {
+    let w = state.world(&world_id)?;
+    let mut g = lock(&w)?;
+    chronicle_core::pc::set(&mut g, &campaign_id, &pc).map_err(err)
+}
+
+/// 剧本的玩法配置（保存的，或按题材推断的）。
+#[tauri::command]
+fn script_game_profile(state: State<AppState>, world_id: String, script_id: String) -> Res<chronicle_core::profile::GameProfile> {
+    let w = state.world(&world_id)?;
+    let g = lock(&w)?;
+    let s = chronicle_core::scripts::get_script(g.conn(), &script_id).map_err(err)?.ok_or("剧本不存在")?;
+    Ok(chronicle_core::profile::for_script(&s))
+}
 
 #[tauri::command]
 fn list_scripts(state: State<AppState>, world_id: String) -> Res<Vec<Script>> {
@@ -468,14 +896,23 @@ fn relation_types() -> Vec<chronicle_core::relations::RelationType> {
 
 #[tauri::command]
 fn search_nodes(state: State<AppState>, world_id: String, query: String, options: chronicle_core::search::SearchOptions) -> Res<Vec<chronicle_core::search::SearchHit>> {
+    let spoilers = spoiler_on(&state);
     let w = state.world(&world_id)?;
-    chronicle_core::search::search_nodes(lock(&w)?.conn(), &query, &options).map_err(err)
+    let mut hits = chronicle_core::search::search_nodes(lock(&w)?.conn(), &query, &options).map_err(err)?;
+    if !spoilers {
+        for h in hits.iter_mut() {
+            chronicle_core::spoiler::strip_node(&mut h.node);
+        }
+    }
+    Ok(hits)
 }
 
 #[tauri::command]
 fn node_graph(state: State<AppState>, world_id: String, center: String, depth: u32, limit: usize) -> Res<chronicle_core::relations::Graph> {
     let w = state.world(&world_id)?;
-    chronicle_core::relations::neighborhood(lock(&w)?.conn(), &center, depth.clamp(1, 3), limit.clamp(5, 300)).map_err(err)
+    let mut g = chronicle_core::relations::neighborhood(lock(&w)?.conn(), &center, depth.clamp(1, 3), limit.clamp(5, 300)).map_err(err)?;
+    chronicle_core::spoiler::filter_graph(&mut g.nodes, &mut g.relations, spoiler_on(&state));
+    Ok(g)
 }
 
 #[tauri::command]
@@ -744,6 +1181,7 @@ fn add_cast_member(state: State<AppState>, world_id: String, script_id: String, 
 
 #[tauri::command]
 fn investigation_board(state: State<AppState>, world_id: String, campaign_id: String, gm_view: bool) -> Res<chronicle_core::investigation::Board> {
+    let gm_view = gm_view && spoiler_on(&state);
     let w = state.world(&world_id)?;
     chronicle_core::investigation::board(lock(&w)?.conn(), &campaign_id, gm_view).map_err(err)
 }
@@ -786,6 +1224,7 @@ fn board_delete_hypothesis(state: State<AppState>, world_id: String, campaign_id
 
 #[tauri::command]
 fn quest_list(state: State<AppState>, world_id: String, campaign_id: String, gm_view: bool) -> Res<Vec<chronicle_core::quests::QuestView>> {
+    let gm_view = gm_view && spoiler_on(&state);
     let w = state.world(&world_id)?;
     chronicle_core::quests::quests(lock(&w)?.conn(), &campaign_id, gm_view).map_err(err)
 }
@@ -919,11 +1358,36 @@ async fn voice_speak(app: AppHandle, world_id: String, speaker: Option<String>, 
         None => narrator_voice(&state),
     };
     let base = route.target;
+    let service = base.base_url.clone();
     let (sched, models) = (state.sched.clone(), state.models.clone());
     let cache = voice_cache_dir();
-    tauri::async_runtime::spawn_blocking(move || voice::speak(&sched, &models, &cache, voice::DEFAULT_CACHE_MB * 1024 * 1024, &base, &text, &spec, &CancelToken::new()))
+    let res = tauri::async_runtime::spawn_blocking(move || voice::speak(&sched, &models, &cache, voice::DEFAULT_CACHE_MB * 1024 * 1024, &base, &text, &spec, &CancelToken::new()))
         .await
-        .map_err(err)?
+        .map_err(err)?;
+    // 运行监控：记录真正合成（不是缓存）的耗时和音频时长（只有 WAV 能算时长，其他格式记为空）。
+    if let (Ok(r), Ok(lib)) = (&res, state.lib())
+        && !r.cached
+    {
+        let _ = lib.log_request(&LlmRequestRecord {
+            provider_id: service,
+            model: String::new(),
+            task: "tts".into(),
+            ok: true,
+            attempts: 1,
+            latency_ms: Some(r.ms as i64),
+            audio_ms: (r.seconds > 0.0).then_some((r.seconds * 1000.0) as i64),
+            ..Default::default()
+        });
+    }
+    res
+}
+
+/// 运行监控：最近的请求与按服务、任务汇总的统计（`hours` 小时以内）。
+#[tauri::command]
+fn run_monitor(state: State<AppState>, hours: i64, recent: i64) -> Res<(Vec<chronicle_core::library::RecentRequest>, Vec<chronicle_core::library::RunStats>)> {
+    let lib = state.lib()?;
+    let since = if hours <= 0 { 0 } else { chronicle_core::util::now_ms() - hours * 3_600_000 };
+    Ok((lib.recent_requests(recent.clamp(1, 200)).map_err(err)?, lib.run_stats(since).map_err(err)?))
 }
 
 #[derive(Serialize)]
@@ -976,6 +1440,7 @@ fn voice_clear_cache() -> Res<usize> {
 /// 控制台数据（只给主持人看）。
 #[tauri::command]
 fn gm_console(state: State<AppState>, world_id: String, campaign_id: String) -> Res<chronicle_core::console::GmConsole> {
+    need_spoilers(&state)?;
     let w = state.world(&world_id)?;
     chronicle_core::console::console(lock(&w)?.conn(), &campaign_id).map_err(err)
 }
@@ -983,6 +1448,7 @@ fn gm_console(state: State<AppState>, world_id: String, campaign_id: String) -> 
 /// 主持人手动修改游戏状态（必须写明原因，写入事件日志）。
 #[tauri::command]
 fn console_apply(state: State<AppState>, world_id: String, campaign_id: String, effects: Vec<chronicle_core::rules::Effect>, reason: String) -> Res<usize> {
+    need_spoilers(&state)?;
     let w = state.world(&world_id)?;
     let mut w = lock(&w)?;
     chronicle_core::console::apply_manual(&mut w, &campaign_id, &effects, &reason).map_err(err)
@@ -1033,6 +1499,117 @@ struct DirectorEvent {
 }
 
 /// 回合结束后：停滞、重复或到了例行间隔时，在后台分析（低优先级，不阻塞 GM 回复），完成后通知界面。
+/// 新的一天开始后，在后台让有目标的人物主动做点什么（每个故事日最多一次模型调用）。
+fn maybe_npc_day(app: &AppHandle, world_id: &str, campaign_id: &str) {
+    let state = app.state::<AppState>();
+    let Ok(world) = state.world(world_id) else { return };
+    let Ok((_cfg, client, opts)) = director_client(&state, true) else { return };
+    let templates = state.templates.clone();
+    let (app, world_id, campaign_id) = (app.clone(), world_id.to_string(), campaign_id.to_string());
+    std::thread::spawn(move || match chronicle_gm::npcday::maybe_run(&world, &client, &templates, &opts, &campaign_id, &CancelToken::new()) {
+        Ok(Some(notes)) if !notes.is_empty() => {
+            applog::info(&format!("人物的主动行动（战役 {campaign_id}）：{}", notes.join("；")));
+            let _ = app.emit("world-events", serde_json::json!({ "world_id": world_id, "campaign_id": campaign_id }));
+        }
+        Ok(_) => {}
+        Err(chronicle_gm::GmError::Cancelled) => {}
+        Err(e) => applog::error(&format!("人物每日推演失败（战役 {campaign_id}）：{e}")),
+    });
+}
+
+/// token 计数：llama-server 用服务端分词实测，其他服务估算。
+fn token_counter(cfg: &ProviderConfig) -> impl Fn(&str) -> (usize, bool) + use<> {
+    let llama = cfg.server_kind == Some(chronicle_llm::ServerKind::LlamaServer);
+    let base = cfg.base_url.clone();
+    move |text: &str| {
+        if llama && let Some(n) = chronicle_llm::discovery::tokenize_count(&base, text, std::time::Duration::from_secs(10)) {
+            return (n, true);
+        }
+        (chronicle_core::util::estimate_tokens(text), false)
+    }
+}
+
+/// 回合结束后在后台检查是否需要压缩上下文（达到阈值才调用模型；失败只写日志，原始记录不变）。
+fn maybe_compress(app: &AppHandle, world_id: &str, campaign_id: &str) {
+    let state = app.state::<AppState>();
+    let Ok(world) = state.world(world_id) else { return };
+    let Ok((cfg, client, opts)) = task_provider(&state, "narration") else { return };
+    let client = state.scheduled(client, &cfg, Priority::P3, "memory");
+    let templates = state.templates.clone();
+    let (app, world_id, campaign_id) = (app.clone(), world_id.to_string(), campaign_id.to_string());
+    std::thread::spawn(move || {
+        let count = token_counter(&cfg);
+        match chronicle_gm::compress::maybe_compress(&world, &client, &templates, &opts, &campaign_id, false, &count, &CancelToken::new()) {
+            Ok(Some(s)) => {
+                applog::info(&format!("上下文压缩（战役 {campaign_id}）：{:?} → {:?} token", s.tokens_before, s.tokens_after));
+                let _ = app.emit("memory-compressed", serde_json::json!({ "world_id": world_id, "campaign_id": campaign_id }));
+            }
+            Ok(None) => {}
+            Err(chronicle_gm::GmError::Cancelled) => {}
+            Err(e) => applog::error(&format!("上下文压缩失败（战役 {campaign_id}），原始记录保持不变：{e}")),
+        }
+    });
+}
+
+#[tauri::command]
+fn memory_settings(state: State<AppState>, world_id: String, campaign_id: String) -> Res<chronicle_gm::compress::MemorySettings> {
+    let w = state.world(&world_id)?;
+    Ok(chronicle_gm::compress::settings(&*lock(&w)?, &campaign_id))
+}
+
+#[tauri::command]
+fn set_memory_settings(state: State<AppState>, world_id: String, campaign_id: String, settings: chronicle_gm::compress::MemorySettings) -> Res<()> {
+    let w = state.world(&world_id)?;
+    chronicle_gm::compress::set_settings(&mut *lock(&w)?, &campaign_id, &settings).map_err(err)
+}
+
+/// 立即压缩（重新生成最新的自动摘要时先删掉它）。
+#[tauri::command]
+async fn compress_memory(app: AppHandle, world_id: String, campaign_id: String, replace: Option<String>) -> Res<chronicle_core::campaign::SessionSummary> {
+    let state = app.state::<AppState>();
+    let world = state.world(&world_id)?;
+    let (cfg, client, opts) = task_provider(&state, "narration")?;
+    let client = state.scheduled(client, &cfg, Priority::P1, "memory");
+    let templates = state.templates.clone();
+    // 重新生成：先把要替换的自动摘要的内容记下来，失败时恢复（原始记录始终保留）。
+    let backup = match &replace {
+        Some(id) => {
+            let g = lock(&world)?;
+            let old = chronicle_core::campaign::summaries(g.conn(), &campaign_id).map_err(err)?.into_iter().find(|s| &s.id == id).ok_or("摘要不存在")?;
+            chronicle_core::campaign::delete_summary(g.conn(), &campaign_id, id).map_err(err)?;
+            Some(old)
+        }
+        None => None,
+    };
+    let cid = campaign_id.clone();
+    let w2 = world.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let count = token_counter(&cfg);
+        chronicle_gm::compress::maybe_compress(&w2, &client, &templates, &opts, &cid, true, &count, &CancelToken::new())
+    })
+    .await
+    .map_err(err)?;
+    match res {
+        Ok(Some(s)) => Ok(s),
+        other => {
+            if let Some(old) = backup {
+                let g = lock(&world)?;
+                let _ = chronicle_core::campaign::add_auto_summary(g.conn(), &campaign_id, &old.summary, old.from_seq, old.upto_seq, old.tokens_before.unwrap_or(0), old.tokens_after.unwrap_or(0), &old.token_method);
+            }
+            Err(match other {
+                Err(e) => format!("压缩失败，原来的摘要和原始记录都保留：{e}"),
+                _ => "没有需要压缩的记录".into(),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+fn delete_summary(state: State<AppState>, world_id: String, campaign_id: String, summary_id: String) -> Res<()> {
+    let w = state.world(&world_id)?;
+    chronicle_core::campaign::delete_summary(lock(&w)?.conn(), &campaign_id, &summary_id).map_err(err)
+}
+
 fn maybe_run_director(app: &AppHandle, world_id: &str, campaign_id: &str) {
     let state = app.state::<AppState>();
     let Ok(world) = state.world(world_id) else { return };
@@ -1234,6 +1811,7 @@ struct WorldSimOverview {
 /// 世界页：环境、地图（玩家视角不含未知地点）、附近地点、势力（仅主持人视角）、世界事件。
 #[tauri::command]
 fn world_sim_overview(state: State<AppState>, world_id: String, campaign_id: String, gm_view: bool) -> Res<WorldSimOverview> {
+    let gm_view = gm_view && spoiler_on(&state);
     use chronicle_core::worldsim as ws;
     let w = state.world(&world_id)?;
     let w = lock(&w)?;
@@ -1318,6 +1896,8 @@ fn find_places(state: State<AppState>, world_id: String, query: String) -> Res<V
 #[tauri::command]
 fn relation_network(state: State<AppState>, world_id: String, query: chronicle_core::network::NetworkQuery) -> Res<chronicle_core::network::Network> {
     let w = state.world(&world_id)?;
+    let mut query = query;
+    query.spoilers = spoiler_on(&state);
     chronicle_core::network::network(lock(&w)?.conn(), &query).map_err(err)
 }
 
@@ -1336,7 +1916,9 @@ fn person_bonds(state: State<AppState>, world_id: String, campaign_id: String, i
 #[tauri::command]
 fn relations_among(state: State<AppState>, world_id: String, ids: Vec<String>) -> Res<Vec<Relation>> {
     let w = state.world(&world_id)?;
-    chronicle_core::network::relations_among(lock(&w)?.conn(), &ids).map_err(err)
+    let mut rels = chronicle_core::network::relations_among(lock(&w)?.conn(), &ids).map_err(err)?;
+    chronicle_core::spoiler::filter_graph(&mut [], &mut rels, spoiler_on(&state));
+    Ok(rels)
 }
 
 // ===================== 剧情回溯与多时间线 =====================
@@ -1351,6 +1933,23 @@ fn end_campaign(state: State<AppState>, world_id: String, campaign_id: String, e
 fn timeline_fork_points(state: State<AppState>, world_id: String, campaign_id: String) -> Res<Vec<chronicle_core::timeline::ForkPoint>> {
     let w = state.world(&world_id)?;
     chronicle_core::timeline::fork_points(lock(&w)?.conn(), &campaign_id).map_err(err)
+}
+
+/// 手动存档 / 快速存档（名字为空时是快速存档）。
+#[tauri::command]
+fn save_point(state: State<AppState>, world_id: String, campaign_id: String, name: String) -> Res<chronicle_core::timeline::Checkpoint> {
+    let w = state.world(&world_id)?;
+    chronicle_core::timeline::save_point(&mut *lock(&w)?, &campaign_id, &name).map_err(err)
+}
+
+/// 快速读档：从最近一次快速存档开出新时间线（原时间线保留）。
+#[tauri::command]
+fn quick_load(state: State<AppState>, world_id: String, campaign_id: String) -> Res<chronicle_core::campaign::Campaign> {
+    let w = state.world(&world_id)?;
+    let mut g = lock(&w)?;
+    let cp = chronicle_core::timeline::last_quicksave(g.conn(), &campaign_id).map_err(err)?.ok_or("还没有快速存档")?;
+    let name = format!("读档：第 {} 回合", cp.turn);
+    chronicle_core::timeline::fork(&mut g, &campaign_id, cp.id, &name, false).map_err(err)
 }
 
 #[tauri::command]
@@ -1584,8 +2183,13 @@ fn archive_save_chronicle(state: State<AppState>, world_id: String, campaign_id:
 
 #[tauri::command]
 fn archive_search(state: State<AppState>, world_id: String, filter: chronicle_core::archive::SearchFilter) -> Res<Vec<chronicle_core::archive::EventHit>> {
+    let spoilers = spoiler_on(&state);
     let w = state.world(&world_id)?;
-    chronicle_core::archive::search_events(lock(&w)?.conn(), &filter).map_err(err)
+    let mut hits = chronicle_core::archive::search_events(lock(&w)?.conn(), &filter).map_err(err)?;
+    if !spoilers {
+        hits.retain(|h| !chronicle_core::spoiler::gm_only_event(&h.kind));
+    }
+    Ok(hits)
 }
 
 /// 导出战役（可连同后代时间线）为 JSON 文件。返回导出的时间线数量。
@@ -1637,6 +2241,9 @@ fn task_provider(state: &AppState, task: &str) -> Res<(ProviderConfig, OpenAiCli
         temperature: 0.8,
         max_tokens: (ctx / 2).clamp(1024, 16000) as u32,
         context_budget: (ctx / 3).clamp(1500, 8000),
+        stream: caps.streaming,
+        // GM 回合可以联网搜索：只有用户打开搜索、并允许 GM 搜索时才有。
+        web_search: if task == "narration" { gm_web_search(state) } else { None },
     };
     Ok((cfg, client, opts))
 }
@@ -1655,6 +2262,11 @@ fn log_requests(state: &AppState, cfg: &ProviderConfig, task: &str, logs: &[chro
                 completion_tokens: l.completion_tokens.map(|v| v as i64),
                 latency_ms: l.latency_ms.map(|v| v as i64),
                 error: l.error.clone(),
+                first_token_ms: l.first_token_ms.map(|v| v as i64),
+                prompt_per_second: l.prompt_per_second,
+                predicted_per_second: l.predicted_per_second,
+                context_length: cfg.capabilities.as_ref().and_then(|c| c.context_length).map(|v| v as i64),
+                audio_ms: None,
             });
         }
     }
@@ -1677,8 +2289,14 @@ async fn gm_turn(app: AppHandle, world_id: String, campaign_id: String, input: S
     let res = tauri::async_runtime::spawn_blocking(move || {
         let engine = chronicle_gm::Engine { gm: &gm, npc: &npc, templates: &templates, opts: &opts };
         // 回合阶段推送给界面（GM 玻璃球下方显示"理解你的行动 / 程序判定 / 组织叙述 / NPC 回应"）。
+        // 检定结果（check:<JSON>）单独推送：玻璃球展开显示骰子与判定。
         let stage = |s: &str| {
-            let _ = app2.emit("gm-stage", serde_json::json!({ "campaign_id": cid, "stage": s }));
+            if let Some(json) = s.strip_prefix("check:") {
+                let check: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
+                let _ = app2.emit("gm-check", serde_json::json!({ "campaign_id": cid, "check": check }));
+            } else {
+                let _ = app2.emit("gm-stage", serde_json::json!({ "campaign_id": cid, "stage": s }));
+            }
         };
         chronicle_gm::run_turn_with_stages(&world, &engine, &cid, &input, &cancel, &stage)
     })
@@ -1692,6 +2310,9 @@ async fn gm_turn(app: AppHandle, world_id: String, campaign_id: String, input: S
             // GM 与 NPC 的请求一起记在 GM 叙述的服务名下。
             log_requests(&state, &gcfg, "narration", &r.requests);
             maybe_run_director(&app, &world_id, &campaign_id);
+            maybe_compress(&app, &world_id, &campaign_id);
+            maybe_npc_day(&app, &world_id, &campaign_id);
+            maybe_auto_media(&app, &world_id, &campaign_id, &r.narration);
             Ok(r)
         }
         Err(e) => {
@@ -1717,13 +2338,17 @@ fn cancel_gm_turn(state: State<AppState>, campaign_id: String) -> Res<bool> {
 #[tauri::command]
 fn campaign_log(state: State<AppState>, world_id: String, campaign_id: String, after_seq: i64) -> Res<Vec<chronicle_core::campaign::EventEntry>> {
     let w = state.world(&world_id)?;
-    chronicle_core::campaign::events(lock(&w)?.conn(), &campaign_id, after_seq, 5000).map_err(err)
+    let mut ev = chronicle_core::campaign::events(lock(&w)?.conn(), &campaign_id, after_seq, 5000).map_err(err)?;
+    chronicle_core::spoiler::filter_events(&mut ev, spoiler_on(&state));
+    Ok(ev)
 }
 
 #[derive(Serialize)]
 struct CampaignMemory {
     summaries: Vec<chronicle_core::campaign::SessionSummary>,
     facts: Vec<String>,
+    /// 事实的事件序号（和 facts 一一对应，用来删除）。
+    fact_seqs: Vec<i64>,
     entities: Vec<chronicle_core::campaign::CampaignEntity>,
 }
 
@@ -1731,9 +2356,11 @@ struct CampaignMemory {
 fn campaign_memory(state: State<AppState>, world_id: String, campaign_id: String) -> Res<CampaignMemory> {
     let w = state.world(&world_id)?;
     let w = lock(&w)?;
+    let facts = chronicle_core::campaign::facts_with_seq(w.conn(), &campaign_id, 100).map_err(err)?;
     Ok(CampaignMemory {
         summaries: chronicle_core::campaign::summaries(w.conn(), &campaign_id).map_err(err)?,
-        facts: chronicle_core::campaign::facts(w.conn(), &campaign_id, 100).map_err(err)?,
+        facts: facts.iter().map(|f| f.1.clone()).collect(),
+        fact_seqs: facts.iter().map(|f| f.0).collect(),
         entities: chronicle_core::campaign::campaign_entities(w.conn(), &campaign_id).map_err(err)?,
     })
 }
@@ -1879,6 +2506,11 @@ fn spawn_job(app: AppHandle, state: &AppState, world_id: String, prepared: runne
                     completion_tokens: l.completion_tokens.map(|v| v as i64),
                     latency_ms: l.latency_ms.map(|v| v as i64),
                     error: l.error.clone(),
+                    first_token_ms: l.first_token_ms.map(|v| v as i64),
+                    prompt_per_second: l.prompt_per_second,
+                    predicted_per_second: l.predicted_per_second,
+                    context_length: cfg.capabilities.as_ref().and_then(|c| c.context_length).map(|v| v as i64),
+                    audio_ms: None,
                 });
             }
         }
@@ -2158,18 +2790,14 @@ struct GeneratedImageOut {
     ms: u64,
 }
 
-/// 用生图服务生成一张图片（不保存；界面预览后由用户决定是否存到节点）。
-#[tauri::command]
-async fn generate_image(state: State<'_, AppState>, prompt: String, size: Option<String>) -> Res<GeneratedImageOut> {
-    let routed = state.lib()?.route_exact("image").map_err(err)?;
+/// 某类媒体服务（生图 / 语音识别）：有路由用路由，否则用第一个这种类型的服务。返回配置与 Key。
+fn media_provider(state: &AppState, route: &str, service: chronicle_llm::types::ServiceType, missing: &str) -> Res<(ProviderConfig, Option<String>)> {
+    let routed = state.lib()?.route_exact(route).map_err(err)?;
     let cfg = match routed {
         Some(id) => state.provider(&id)?,
         None => {
             let all = state.lib()?.providers().map_err(err)?;
-            all.into_iter()
-                .filter_map(|v| serde_json::from_value::<ProviderConfig>(v).ok())
-                .find(|c| c.service == chronicle_llm::types::ServiceType::Image)
-                .ok_or("还没有设置生图服务：请在「模型服务」里添加（服务类型选「生成图片」）")?
+            all.into_iter().filter_map(|v| serde_json::from_value::<ProviderConfig>(v).ok()).find(|c| c.service == service).ok_or(missing.to_string())?
         }
     };
     if !cfg.is_loopback() && !cfg.allow_campaign_content {
@@ -2179,6 +2807,207 @@ async fn generate_image(state: State<'_, AppState>, prompt: String, size: Option
     if cfg.needs_key && key.is_none() {
         return Err(format!("「{}」需要 API Key，请先在设置中填写", cfg.name));
     }
+    Ok((cfg, key))
+}
+
+const NO_IMAGE_SERVICE: &str = "还没有设置生图服务：请在「模型服务」里添加（服务类型选「生成图片」）";
+
+// ===================== 媒体（第 36 项）：自动插图、立绘、语音预生成、语音输入 =====================
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct AutoMedia {
+    /// 进入新地点时在后台生成场景插图（并预生成最近一个可到达地点的插图）。
+    scene_images: bool,
+    /// 人物第一次出场时按设定生成立绘。
+    portraits: bool,
+    /// 每回合在后台先合成叙述的语音（点朗读时不用等）。
+    pre_voice: bool,
+}
+
+const AUTO_MEDIA_KEY: &str = "media.auto";
+
+fn auto_media(state: &AppState) -> AutoMedia {
+    state.lib().ok().and_then(|l| l.setting(AUTO_MEDIA_KEY).ok().flatten()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn auto_media_settings(state: State<AppState>) -> serde_json::Value {
+    serde_json::to_value(auto_media(&state)).unwrap_or_default()
+}
+
+#[tauri::command]
+fn set_auto_media_settings(state: State<AppState>, settings: serde_json::Value) -> Res<()> {
+    let s: AutoMedia = serde_json::from_value(settings).map_err(err)?;
+    state.lib()?.set_setting(AUTO_MEDIA_KEY, &serde_json::to_string(&s).map_err(err)?).map_err(err)
+}
+
+/// 待玩家确认的图片请求（每个世界一份，存在世界文件的元数据里）。玩家点「生成」才调用生图服务，
+/// 看过预览点「保存」才写进节点。
+const PENDING_IMAGES_KEY: &str = "pending_images";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingImage {
+    node_id: String,
+    title: String,
+    /// scene / portrait
+    kind: String,
+    prompt: String,
+    created_at: i64,
+}
+
+fn pending_images_of(w: &World) -> Vec<PendingImage> {
+    w.meta(PENDING_IMAGES_KEY).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn save_pending_images(w: &World, list: &[PendingImage]) -> Res<()> {
+    w.set_meta(PENDING_IMAGES_KEY, &serde_json::to_string(list).map_err(err)?).map_err(err)
+}
+
+/// 生图提示词：只用玩家可见的描述（不把秘密发给生图服务）。
+fn image_prompt(node: &chronicle_core::Node, kind: &str, style: &str) -> String {
+    let desc = [node.summary.as_str(), node.player_text.as_str(), node.payload.get("appearance").and_then(|v| v.as_str()).unwrap_or("")].iter().filter(|s| !s.trim().is_empty()).cloned().collect::<Vec<_>>().join("。");
+    let style = if style.is_empty() { "写实插画" } else { style };
+    if kind == "portrait" {
+        format!("人物立绘，半身像，{}：{}。画风：{style}，不要文字", node.title, desc)
+    } else {
+        format!("场景插图，{}：{}。画风：{style}，不要文字和人物特写", node.title, desc)
+    }
+}
+
+/// 建议给一个没有图片的节点生成插图 / 立绘（只记下请求，等玩家确认）。
+fn suggest_image_for(app: &AppHandle, world_id: &str, node_id: &str, kind: &str, style: &str) {
+    let state = app.state::<AppState>();
+    let Ok(w) = state.world(world_id) else { return };
+    let Ok(g) = w.lock() else { return };
+    if chronicle_core::images::list_images(g.conn(), node_id).map(|l| !l.is_empty()).unwrap_or(true) {
+        return;
+    }
+    let Ok(Some(node)) = chronicle_core::nodes::get_node(g.conn(), node_id) else { return };
+    let mut list = pending_images_of(&g);
+    if list.iter().any(|p| p.node_id == node_id) {
+        return;
+    }
+    list.push(PendingImage { node_id: node_id.into(), title: node.title.clone(), kind: kind.into(), prompt: image_prompt(&node, kind, style), created_at: chronicle_core::util::now_ms() });
+    let keep = list.len().saturating_sub(12);
+    list.drain(..keep);
+    if save_pending_images(&g, &list).is_ok() {
+        let _ = app.emit("pending-images", serde_json::json!({ "world_id": world_id }));
+    }
+}
+
+#[tauri::command]
+fn pending_images(state: State<AppState>, world_id: String) -> Res<Vec<serde_json::Value>> {
+    let w = state.world(&world_id)?;
+    let g = lock(&w)?;
+    Ok(pending_images_of(&g).into_iter().map(|p| serde_json::to_value(p).unwrap_or_default()).collect())
+}
+
+/// 处理完（保存或不要）一条图片请求。
+#[tauri::command]
+fn dismiss_pending_image(state: State<AppState>, world_id: String, node_id: String) -> Res<()> {
+    let w = state.world(&world_id)?;
+    let g = lock(&w)?;
+    let mut list = pending_images_of(&g);
+    list.retain(|p| p.node_id != node_id);
+    save_pending_images(&g, &list)
+}
+
+/// 回合结束后的媒体：场景插图（当前地点 + 最近一个可到达的地点）、出场人物立绘（每回合最多 1 个）、叙述语音预生成。全部默认关闭。
+fn maybe_auto_media(app: &AppHandle, world_id: &str, campaign_id: &str, narration: &str) {
+    let state = app.state::<AppState>();
+    let cfg = auto_media(&state);
+    if !cfg.scene_images && !cfg.portraits && !cfg.pre_voice {
+        return;
+    }
+    let Ok(w) = state.world(world_id) else { return };
+    let (loc, near, npcs, style) = {
+        let Ok(g) = w.lock() else { return };
+        let conn = g.conn();
+        let loc = chronicle_core::worldsim::party_location(conn, campaign_id).ok().flatten();
+        let near = chronicle_core::worldsim::reachable(conn, campaign_id, 1).ok().and_then(|r| r.into_iter().next()).map(|r| r.id);
+        let npcs: Vec<String> = chronicle_gm::context::scene_view(&g, campaign_id).map(|s| s.npcs.into_iter().map(|n| n.node_id).collect()).unwrap_or_default();
+        let style = chronicle_core::campaign::get_campaign(conn, campaign_id)
+            .ok()
+            .and_then(|c| c.script_id)
+            .and_then(|sid| chronicle_core::scripts::get_script(conn, &sid).ok().flatten())
+            .map(|s| chronicle_core::profile::for_script(&s).style.tone)
+            .unwrap_or_default();
+        (loc, near, npcs, style)
+    };
+    // 图片只建议、不自动生成：玩家确认后才调用生图服务、看过预览才保存。
+    if cfg.scene_images {
+        for id in [loc, near].into_iter().flatten() {
+            suggest_image_for(app, world_id, &id, "scene", &style);
+        }
+    }
+    if cfg.portraits
+        && let Some(id) = npcs.first()
+    {
+        suggest_image_for(app, world_id, id, "portrait", &style);
+    }
+    if cfg.pre_voice && !narration.trim().is_empty() {
+        let (app, text) = (app.clone(), narration.to_string());
+        std::thread::spawn(move || {
+            let state = app.state::<AppState>();
+            let Ok(route) = speech_route(&state) else { return };
+            let spec = narrator_voice(&state);
+            let _ = voice::speak(&state.sched, &state.models, &voice_cache_dir(), voice::DEFAULT_CACHE_MB * 1024 * 1024, &route.target, &text, &spec, &CancelToken::new());
+        });
+    }
+}
+
+/// WebView2 的权限请求：只给本程序自己的页面（tauri.localhost / 开发时的 localhost）开麦克风，用于语音输入；其他权限照默认处理。
+#[cfg(windows)]
+fn allow_own_microphone(win: &tauri::WebviewWindow) {
+    let _ = win.with_webview(|wv| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let handler = webview2_com::PermissionRequestedEventHandler::create(Box::new(|_, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+            args.PermissionKind(&mut kind)?;
+            let mut uri = windows_core::PWSTR::null();
+            args.Uri(&mut uri)?;
+            let origin = webview2_com::take_pwstr(uri);
+            let own = origin.starts_with("http://tauri.localhost") || origin.starts_with("https://tauri.localhost") || origin.starts_with("tauri://") || origin.starts_with("http://localhost:");
+            if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE && own {
+                args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        let _ = core.add_PermissionRequested(&handler, &mut token);
+    });
+}
+
+/// 有没有可用的语音识别服务（界面据此显示麦克风按钮）。
+#[tauri::command]
+fn transcription_available(state: State<AppState>) -> bool {
+    media_provider(&state, "transcription", chronicle_llm::types::ServiceType::Transcription, "").is_ok()
+}
+
+/// 语音输入：把录音（base64）转成文字。
+#[tauri::command]
+async fn transcribe_audio(app: AppHandle, audio_base64: String, mime: String) -> Res<String> {
+    let state = app.state::<AppState>();
+    let (cfg, key) = media_provider(&state, "transcription", chronicle_llm::types::ServiceType::Transcription, "还没有设置语音识别服务：请在「模型服务」里添加（服务类型选「语音识别」）")?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(audio_base64.trim()).map_err(|e| format!("录音数据不对：{e}"))?;
+    let target = chronicle_llm::transcribe::TranscribeTarget { base_url: cfg.base_url.clone(), api_key: key, model: cfg.model.clone() };
+    let timeout = std::time::Duration::from_secs(cfg.timeout_secs.clamp(30, 300));
+    let started = std::time::Instant::now();
+    let text = tauri::async_runtime::spawn_blocking(move || chronicle_llm::transcribe::transcribe(&target, &bytes, &mime, "zh", timeout).map_err(|e| e.to_string())).await.map_err(err)??;
+    if let Ok(lib) = state.lib() {
+        let _ = lib.log_request(&LlmRequestRecord { provider_id: cfg.id.clone(), model: cfg.model.clone(), task: "transcription".into(), ok: true, attempts: 1, latency_ms: Some(started.elapsed().as_millis() as i64), ..Default::default() });
+    }
+    Ok(text)
+}
+
+/// 用生图服务生成一张图片（不保存；界面预览后由用户决定是否存到节点）。
+#[tauri::command]
+async fn generate_image(state: State<'_, AppState>, prompt: String, size: Option<String>) -> Res<GeneratedImageOut> {
+    let (cfg, key) = media_provider(&state, "image", chronicle_llm::types::ServiceType::Image, NO_IMAGE_SERVICE)?;
     let target = chronicle_llm::image::ImageTarget {
         base_url: cfg.base_url.clone(),
         api_key: key,
@@ -2273,6 +3102,10 @@ pub fn run() {
         })
         .setup(|app| {
             perf::sync_profiles(&app.state::<AppState>());
+            #[cfg(windows)]
+            for (_, w) in app.webview_windows() {
+                allow_own_microphone(&w);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2325,6 +3158,61 @@ pub fn run() {
             list_commits,
             undo_commit,
             list_scripts,
+            script_game_profile,
+            check_script,
+            review_script,
+            script_player_characters,
+            generate_pc,
+            campaign_pc,
+            campaign_set_pc,
+            generate_quest,
+            pending_images,
+            dismiss_pending_image,
+            global_search,
+            script_item_related_nodes,
+            auto_media_settings,
+            set_auto_media_settings,
+            transcription_available,
+            transcribe_audio,
+            save_point,
+            quick_load,
+            trash_campaign,
+            restore_campaign,
+            campaign_trash,
+            purge_campaign,
+            delete_npc_memory,
+            npc_memory_list,
+            forget_fact,
+            delete_backup,
+            trash_world,
+            world_trash,
+            restore_world,
+            filter_nodes,
+            payload_fields,
+            data_dir_info,
+            migrate_data_dir,
+            reset_data_dir,
+            search_settings,
+            save_search_settings,
+            web_search,
+            spoiler_mode,
+            set_spoiler_mode,
+            memory_settings,
+            set_memory_settings,
+            compress_memory,
+            delete_summary,
+            run_monitor,
+            open_demo_world,
+            delete_script,
+            restore_script,
+            script_trash,
+            copy_script,
+            script_versions,
+            create_script_version,
+            diff_script_version,
+            restore_script_version,
+            delete_script_version,
+            quest_add,
             get_script,
             create_script,
             update_script,

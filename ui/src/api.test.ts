@@ -44,7 +44,7 @@ describe("api (mock IPC)", () => {
     });
     await api.rpgOverview("W", "C");
     await api.rpgAction("W", "C", "buy", "M", "I", 2, "");
-    await api.combatStart("W", "C", [{ name: "狼", npc: null, level: 1, count: 2, loot: [] }], [], "遭遇");
+    await api.combatStart("W", "C", [{ name: "狼", npc: null, level: 1, count: 2, loot: [], boss: false }], [], "遭遇");
     await api.combatAct("W", "C", { kind: "attack", target: "e1", item: "", x: null, y: null, custom: "" });
     expect(calls.map((c) => c[0])).toEqual(["rpg_overview", "rpg_action", "combat_start", "combat_act"]);
     expect(calls[1][1]).toMatchObject({ input: { kind: "buy", target: "M", item: "I", qty: 2 } });

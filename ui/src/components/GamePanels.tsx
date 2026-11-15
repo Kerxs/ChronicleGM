@@ -1,4 +1,7 @@
 // 游戏页的面板：调查板、任务、人物（日程与情绪）、世界（环境、地图、旅行、势力、世界事件）。只调用后端命令，规则都在 Rust 里。
+import type { NpcMemory } from "../bindings/NpcMemory";
+import type { QuestProposal } from "../bindings/QuestProposal";
+import { PanelSkeleton } from "./Skeleton";
 import { useEffect, useState } from "react";
 import type React from "react";
 import { api, type NpcStates, type WorldSimOverview } from "../api";
@@ -28,18 +31,28 @@ export function InvestigationPanel({ ctx, campaignId, gmView, ended, refreshKey 
   const load = () => api.investigationBoard(ctx.worldId, campaignId, gmView).then(setB).catch((e: Error) => ctx.notify(e.message, "error"));
   useEffect(() => void load(), [campaignId, gmView, refreshKey]);
   const run = (f: () => Promise<unknown>) => void f().then(load).catch((e: Error) => ctx.notify(e.message, "error"));
-  if (!b) return <p className="hint">加载中…</p>;
+  if (!b) return <PanelSkeleton />;
   const name = (id: string) => b.clues.find((c) => c.id === id)?.title ?? "（已删除）";
   return (
     <div className="card board">
-      <h3>线索（{b.clues.length}）</h3>
+      <h3>
+        线索（{b.clues.length}）
+        {b.clues.some((c) => c.unresolved) && <small className="hint">　未解决 {b.clues.filter((c) => c.unresolved).length} 条（还没被任何推理用到）</small>}
+      </h3>
       {b.clues.length === 0 && <p className="hint">还没有线索。剧本线索被揭示、GM 记录的新发现会自动出现在这里，你也可以记自己的笔记。</p>}
       <ul className="list">
         {b.clues.map((c) => (
           <li key={c.id}>
             <span className={`kind src-${c.source}`}>{SOURCE[c.source] ?? c.source}</span>
             <strong>{c.title}</strong> <small className="hint">第 {c.turn + 1} 回合</small>
+            {c.unresolved && <span className="badge">未解决</span>}
             {c.detail && <div>{c.detail}</div>}
+            {(c.found_at || c.related.length > 0) && (
+              <div className="hint">
+                {c.found_at && <>发现于：{c.found_at}　</>}
+                {c.related.length > 0 && <>相关人物：{c.related.join("、")}</>}
+              </div>
+            )}
             {gmView && c.gm_note && <div className="gm">主持人：{c.gm_note}</div>}
             {c.source === "player" && !ended && <button className="link danger" onClick={() => run(() => api.boardRemoveNote(ctx.worldId, campaignId, c.id))}>删除</button>}
           </li>
@@ -50,6 +63,24 @@ export function InvestigationPanel({ ctx, campaignId, gmView, ended, refreshKey 
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="记一条笔记（标题）" />
           <input value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="内容（可空）" style={{ flex: 1 }} />
           <button disabled={!title.trim()} onClick={() => run(async () => { await api.boardAddNote(ctx.worldId, campaignId, title, detail); setTitle(""); setDetail(""); })}>记下</button>
+        </div>
+      )}
+
+      {gmView && b.hidden.length > 0 && (
+        <div className="gm">
+          <strong>还没发现的线索（{b.hidden.length}，剧透）</strong>
+          <ul className="list">
+            {b.hidden.map((h) => (
+              <li key={h.id}>
+                {h.title}
+                <small className="hint">
+                  {h.found_at && `　在：${h.found_at}`}
+                  {h.related.length > 0 && `　相关：${h.related.join("、")}`}
+                  {h.unlock && `　解锁：${h.unlock}`}
+                </small>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -122,20 +153,140 @@ export function InvestigationPanel({ ctx, campaignId, gmView, ended, refreshKey 
 const QTYPE: Record<string, string> = { main: "主线", side: "支线", hidden: "隐藏" };
 const QSTATUS: Record<string, string> = { "": "未开始", active: "进行中", done: "已完成", failed: "已失败" };
 
+type QuestMode = "current" | "all" | "hidden";
+const QMODES: [QuestMode, string][] = [
+  ["current", "当前任务"],
+  ["all", "全部已解锁"],
+  ["hidden", "不显示"],
+];
+
+function QuestGenerator({ ctx, campaignId, onAdded }: { ctx: Ctx; campaignId: string; onAdded: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [hint, setHint] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [prop, setProp] = useState<QuestProposal | null>(null);
+  async function gen(mode: "situation" | "worldview") {
+    setBusy(mode);
+    setProp(null);
+    try {
+      setProp(await api.generateQuest(ctx.worldId, campaignId, mode, hint));
+    } catch (e) {
+      ctx.notify((e as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+  if (!open)
+    return (
+      <button className="small" onClick={() => setOpen(true)} data-tour="quest-gen">
+        生成任务…
+      </button>
+    );
+  return (
+    <div className="quest-gen card">
+      <div className="row">
+        <input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="想要什么样的任务？（可选）" disabled={busy !== null} />
+        <button disabled={busy !== null} onClick={() => void gen("situation")} title="结合当前场景、刚做过的事、人物关系和世界状态">
+          {busy === "situation" ? "生成中…" : "根据当前剧情"}
+        </button>
+        <button disabled={busy !== null} onClick={() => void gen("worldview")} title="结合主线、背景事件和尚未触发的内容">
+          {busy === "worldview" ? "生成中…" : "根据剧本世界观"}
+        </button>
+        <button className="link" onClick={() => setOpen(false)}>
+          收起
+        </button>
+      </div>
+      {prop && (
+        <div className="proposal">
+          <strong>{prop.quest.title}</strong> <span className="hint">{prop.quest.quest_type === "main" ? "主线" : "支线"} · {prop.mode === "situation" ? "根据当前剧情" : "根据剧本世界观"}</span>
+          {prop.quest.background && <p>{prop.quest.background}</p>}
+          <div className="bs-row"><span className="bs-k">目标</span><span>{prop.quest.objective || "—"}</span></div>
+          <div className="bs-row"><span className="bs-k">完成条件</span><span>{prop.quest.completion || "—"}</span></div>
+          <div className="bs-row gm"><span className="bs-k">后果</span><span>{prop.quest.consequences || "—"}</span></div>
+          {(prop.npc_names.length > 0 || prop.location_name) && (
+            <div className="hint">
+              {prop.npc_names.length > 0 && <>相关人物：{prop.npc_names.join("、")}　</>}
+              {prop.location_name && <>地点：{prop.location_name}</>}
+            </div>
+          )}
+          {prop.conflicts.length > 0 ? (
+            <ul className="findings">
+              {prop.conflicts.map((c, i) => (
+                <li key={i} className="finding sev-warning">
+                  <span className="sev">注意</span>
+                  <div>{c}</div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="hint">程序检查：没有发现和已有事实的冲突。</p>
+          )}
+          <div className="row">
+            <button
+              className="primary"
+              onClick={() =>
+                void api
+                  .questAdd(ctx.worldId, campaignId, prop.quest)
+                  .then(() => {
+                    ctx.notify("已加入任务「" + prop.quest.title + "」");
+                    setProp(null);
+                    onAdded();
+                  })
+                  .catch((e: Error) => ctx.notify(e.message, "error"))
+              }
+            >
+              加入任务
+            </button>
+            <button onClick={() => setProp(null)}>不要</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function QuestPanel({ ctx, campaignId, gmView, names, refreshKey }: { ctx: Ctx; campaignId: string; gmView: boolean; names: Names; refreshKey: number }) {
   const [qs, setQs] = useState<QuestView[]>([]);
+  const [mode, setMode] = useState<QuestMode>(() => {
+    try {
+      return (localStorage.getItem("questMode") as QuestMode) || "all";
+    } catch {
+      return "all";
+    }
+  });
   useEffect(() => {
     api.questList(ctx.worldId, campaignId, gmView).then(setQs).catch((e: Error) => ctx.notify(e.message, "error"));
   }, [campaignId, gmView, refreshKey]);
   const cond = (c: unknown) => (c ? describeCondition(c as Condition, names) : null);
+  const pick = (m: QuestMode) => {
+    setMode(m);
+    try {
+      localStorage.setItem("questMode", m);
+    } catch {
+      /* 浏览器存储不可用时只在本次有效 */
+    }
+  };
+  // 主持人视角显示全部；玩家视角按模式筛选（隐藏只影响显示，任务照常运行）。
+  const shown = gmView ? qs : mode === "hidden" ? [] : mode === "current" ? qs.filter((q) => q.status === "active") : qs.filter((q) => q.status !== "");
   return (
     <div className="card">
-      {qs.length === 0 && <p className="hint">还没有任务。</p>}
+      <div className="row quest-head">
+        <div className="seg-mini">
+          {QMODES.map(([m, label]) => (
+            <button key={m} className={mode === m ? "on" : ""} onClick={() => pick(m)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <QuestGenerator ctx={ctx} campaignId={campaignId} onAdded={ctx.bump} />
+      </div>
+      {!gmView && mode === "hidden" && <p className="hint">任务信息已隐藏，任务照常在后台推进。</p>}
+      {shown.length === 0 && (gmView || mode !== "hidden") && <p className="hint">{mode === "current" && !gmView ? "现在没有进行中的任务。" : "还没有任务。"}</p>}
       <ul className="list quests">
-        {qs.map((q) => (
+        {shown.map((q) => (
           <li key={q.id} className={`q-${q.status || "none"}`}>
             <span className="kind">{QTYPE[q.quest_type] ?? q.quest_type}</span>
-            <strong>{q.title}</strong> <span className="hint">{QSTATUS[q.status] ?? q.status}{q.source === "gm" && " · 游戏中出现"}</span>
+            <strong>{q.title}</strong> <span className="hint">{QSTATUS[q.status] ?? q.status}{q.source === "gm" && " · 游戏中出现"}{q.source === "generated" && " · AI 生成"}</span>
             {q.turns_left !== null && <span className={q.turns_left <= 1 ? "warn-text" : "hint"}> · 还剩 {q.turns_left} 回合</span>}
             {q.minutes_left !== null && q.minutes_left !== undefined && (
               <span className={q.minutes_left <= 120 ? "warn-text" : "hint"}> · 故事时间还剩 {q.minutes_left >= 1440 ? `${(q.minutes_left / 1440).toFixed(1)} 天` : `${(q.minutes_left / 60).toFixed(1)} 小时`}</span>
@@ -155,6 +306,8 @@ export function QuestPanel({ ctx, campaignId, gmView, names, refreshKey }: { ctx
                 {q.deadline_turns && <div>期限：开始后 {q.deadline_turns} 回合</div>}
               </div>
             )}
+            {q.completion && <div className="hint">完成条件：{q.completion}</div>}
+            {gmView && q.consequences && <div className="gm">后果：{q.consequences}</div>}
             {q.notes.length > 0 && (
               <div className="hint">
                 变化：{q.notes.map((n) => `第 ${n.turn + 1} 回合 ${n.text}${n.gm_only ? "（仅主持人可见）" : ""}`).join("；")}
@@ -175,12 +328,44 @@ const MOOD_LABEL: [keyof NonNullable<NpcStates["npcs"][number]["mood"]>, string]
   ["loyalty", "忠诚"],
 ];
 
+/** NPC 记住的事（剧透模式下可以查看、删除；删掉的内容留在事件日志里）。 */
+function NpcMemories({ ctx, campaignId, npcId }: { ctx: Ctx; campaignId: string; npcId: string }) {
+  const [open, setOpen] = useState(false);
+  const [list, setList] = useState<NpcMemory[]>([]);
+  const load = () => void api.npcMemoryList(ctx.worldId, campaignId, npcId).then(setList).catch((e: Error) => ctx.notify(e.message, "error"));
+  if (!open)
+    return (
+      <button
+        className="link small"
+        onClick={() => {
+          setOpen(true);
+          load();
+        }}
+      >
+        它记得的事…
+      </button>
+    );
+  return (
+    <ul className="npc-mem">
+      {list.length === 0 && <li className="hint">没有记忆。</li>}
+      {list.map((m) => (
+        <li key={m.id}>
+          {m.content} <small className="hint">（重要度 {m.importance}，第 {m.turn} 回合）</small>{" "}
+          <button className="link" onClick={() => void api.deleteNpcMemory(ctx.worldId, campaignId, m.id).then(load).catch((e: Error) => ctx.notify(e.message, "error"))}>
+            删除
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function NpcPanel({ ctx, campaignId, gmView, ended, refreshKey, onChanged }: { ctx: Ctx; campaignId: string; gmView: boolean; ended: boolean; refreshKey: number; onChanged: () => void }) {
   const [st, setSt] = useState<NpcStates | null>(null);
   useEffect(() => {
     api.npcStates(ctx.worldId, campaignId).then(setSt).catch((e: Error) => ctx.notify(e.message, "error"));
   }, [campaignId, refreshKey]);
-  if (!st) return <p className="hint">加载中…</p>;
+  if (!st) return <PanelSkeleton />;
   const wait = (m: number) =>
     void api
       .advanceStoryTime(ctx.worldId, campaignId, m)
@@ -225,6 +410,7 @@ export function NpcPanel({ ctx, campaignId, gmView, ended, refreshKey, onChanged
             {gmView && n.bond_to_party && (
               <div className="hint">对玩家：信任 {n.bond_to_party.trust}，好感 {n.bond_to_party.affection}，敌意 {n.bond_to_party.hostility}</div>
             )}
+            {gmView && <NpcMemories ctx={ctx} campaignId={campaignId} npcId={n.status.npc_id} />}
           </li>
         ))}
       </ul>
@@ -261,7 +447,7 @@ export function WorldPanel({ ctx, campaignId, gmView, ended, refreshKey, onChang
     void load();
     setPlan(null);
   }, [campaignId, refreshKey, gmView]);
-  if (!ov) return <p className="hint">加载中…</p>;
+  if (!ov) return <PanelSkeleton />;
   const env = ov.environment;
   const byId = new Map(ov.map.places.map((p) => [p.id, p]));
   const dist = new Map(ov.reachable.map((r) => [r.id, Number(r.base_minutes)]));

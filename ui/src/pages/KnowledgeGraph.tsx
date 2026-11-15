@@ -1,3 +1,4 @@
+import SpoilerHint from "../components/SpoilerHint";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MiniMap, type Edge, type Node as FlowNode, type ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -32,8 +33,13 @@ export default function KnowledgeGraph({ ctx, focus, onOpenTree, onOpenNetwork }
   /** 等目标节点出现在画布上之后再移动视图（加载与布局是异步的）。 */
   const pendingCenter = useRef<string | null>(null);
 
+  /** 每次重新加载（换世界、数据刷新）加一；晚到的旧请求结果直接丢掉，不覆盖新的（走查时偶发：图谱显示的是上一个世界的节点）。 */
+  const loadGen = useRef(0);
+
   async function loadChildren(parent: string | null): Promise<string[]> {
+    const gen = loadGen.current;
     const list = await api.treeChildren(ctx.worldId, parent, 0, 300);
+    if (gen !== loadGen.current) return [];
     setLoaded((m) => {
       const n = new Map(m);
       list.forEach((t) => n.set(t.node.id, t));
@@ -65,6 +71,7 @@ export default function KnowledgeGraph({ ctx, focus, onOpenTree, onOpenNetwork }
   }
 
   useEffect(() => {
+    loadGen.current += 1;
     setLoaded(new Map());
     setKids(new Map());
     setExpanded(new Set());
@@ -206,6 +213,7 @@ export default function KnowledgeGraph({ ctx, focus, onOpenTree, onOpenNetwork }
   return (
     <section className="network-page">
       <h2>世界知识图谱</h2>
+      <SpoilerHint ctx={ctx} what="图谱" />
       <div className="row wrap">
         <form
           className="row"

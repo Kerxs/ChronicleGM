@@ -25,6 +25,10 @@ pub struct CharacterPayload {
     /// NPC 明确知道的事实（AI 扮演时只能使用这些知识）。
     pub knowledge: Vec<String>,
     pub abilities: Vec<String>,
+    /// 说话风格（措辞、语气，例如"文绉绉、爱引古书""说话很冲、夹着粗口"）。
+    pub speech_style: String,
+    /// 口头禅（0–3 个）。
+    pub catchphrases: Vec<String>,
     /// 存活状态：alive / dead / missing / unknown。
     pub life_status: Option<String>,
     pub birth_time: Option<i64>,

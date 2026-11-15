@@ -70,6 +70,12 @@ pub struct QuestView {
     pub fail_when: Option<Value>,
     /// 任务变化记录（目标调整、GM 备注等）。
     pub notes: Vec<QuestNote>,
+    /// 完成条件（文字）。
+    #[serde(default)]
+    pub completion: String,
+    /// 后果（主持人视角才有）。
+    #[serde(default)]
+    pub consequences: String,
 }
 
 struct Def {
@@ -78,6 +84,8 @@ struct Def {
     quest_type: String,
     source: String,
     description: String,
+    completion: String,
+    consequences: String,
     objectives: Vec<String>,
     deadline: Option<i64>,
     /// 故事时间期限（分钟，开始后计算）。
@@ -110,6 +118,8 @@ fn defs(conn: &Connection, campaign_id: &str) -> Result<Vec<Def>> {
                 quest_type: p.get("quest_type").and_then(Value::as_str).unwrap_or("side").into(),
                 source: "script".into(),
                 description: it.player_text.clone(),
+                completion: String::new(),
+                consequences: String::new(),
                 objectives: strs(p, "objectives"),
                 deadline: p.get("deadline_turns").and_then(Value::as_i64).filter(|d| *d > 0),
                 deadline_minutes: deadline_minutes(p),
@@ -130,8 +140,11 @@ fn defs(conn: &Connection, campaign_id: &str) -> Result<Vec<Def>> {
             id,
             title: p["title"].as_str().unwrap_or_default().into(),
             quest_type: p["quest_type"].as_str().unwrap_or("side").into(),
-            source: "gm".into(),
-            description: p["objective"].as_str().unwrap_or_default().into(),
+            source: p["source"].as_str().unwrap_or("gm").into(),
+            description: [p["background"].as_str().unwrap_or_default(), p["objective"].as_str().unwrap_or_default()].iter().filter(|x| !x.is_empty()).cloned().collect::<Vec<_>>().join("
+"),
+            completion: p["completion"].as_str().unwrap_or_default().into(),
+            consequences: p["consequences"].as_str().unwrap_or_default().into(),
             objectives: strs(&p, "objectives"),
             deadline: p.get("deadline_turns").and_then(Value::as_i64).filter(|d| *d > 0),
             deadline_minutes: deadline_minutes(&p),
@@ -262,6 +275,8 @@ pub fn quests(conn: &Connection, campaign_id: &str, gm_view: bool) -> Result<Vec
             complete_when: if gm_view { d.done } else { None },
             fail_when: if gm_view { d.fail } else { None },
             notes,
+            completion: d.completion,
+            consequences: if gm_view { d.consequences } else { String::new() },
             id: d.id,
         });
     }
@@ -341,6 +356,18 @@ pub struct NewQuest {
     pub location: Option<String>,
     #[serde(default)]
     pub clue_ids: Vec<String>,
+    /// 背景（为什么会有这个任务）。
+    #[serde(default)]
+    pub background: String,
+    /// 完成条件（文字说明，由 GM 判断；程序条件可以之后在控制台补上）。
+    #[serde(default)]
+    pub completion: String,
+    /// 成功 / 失败的后果（主持人信息）。
+    #[serde(default)]
+    pub consequences: String,
+    /// 来源说明：gm（游戏中出现）/ generated（玩家让 AI 生成）。
+    #[serde(default)]
+    pub origin: String,
 }
 
 /// 游戏中新建任务（只属于本战役）并立即开始。同名任务不重复创建。
@@ -365,7 +392,8 @@ pub fn add_quest(world: &mut World, campaign_id: &str, q: &NewQuest, reason: &st
     let data = json!({
         "title": q.title.trim(), "objective": q.objective.trim(), "quest_type": qt,
         "deadline_turns": q.deadline_turns.filter(|d| *d > 0), "npc_ids": q.npc_ids, "location": q.location, "clue_ids": q.clue_ids,
-        "turn": turn, "source": "gm"
+        "turn": turn, "source": if q.origin == "generated" { "generated" } else { "gm" },
+        "background": q.background.trim(), "completion": q.completion.trim(), "consequences": q.consequences.trim()
     });
     campaign::apply_effects(
         world,

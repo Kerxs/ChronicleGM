@@ -99,7 +99,7 @@ export default function CloudProviderForm({ initial, hasKey, onSaved, onCancel, 
     <div className="cloud-form">
       {!editing && (
         <Segmented
-          items={(["chat", "speech", "image"] as ServiceType[]).map((s) => ({ key: s, label: SERVICE_LABEL[s] }))}
+          items={(["chat", "speech", "image", "transcription"] as ServiceType[]).map((s) => ({ key: s, label: SERVICE_LABEL[s] }))}
           value={cfg.service}
           onChange={switchService}
         />

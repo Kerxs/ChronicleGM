@@ -43,6 +43,18 @@ pub struct DirectorOut {
     pub pacing: String,
     /// 1–3 条建议。
     pub suggestions: Vec<SuggestionOut>,
+    /// 剧情符合度 0–100：目前的发展和原剧本、世界观、人物设定、已发生事件的一致程度（偏离剧本本身不是错误，只是记录）。
+    #[serde(default)]
+    pub conformity: i64,
+    /// 偏离点（最多 4 条）：kind 是 script / world / character / event 之一，text 写具体哪里不一致。
+    #[serde(default)]
+    pub deviations: Vec<DeviationOut>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeviationOut {
+    pub kind: String,
+    pub text: String,
 }
 
 const SYSTEM: &str = "你是 TRPG 的剧情导演，负责给主持人出主意。只输出一个 JSON 对象，不要输出解释或代码块标记。使用简体中文。";
@@ -109,7 +121,9 @@ pub fn analyze(world: &Mutex<World>, client: &dyn LlmClient, templates: &Templat
         (ctx, pacing, recent, confirmed_titles(&w), director::settings(w.conn(), campaign_id))
     };
     let pace_text = format!(
-        "第 {} 回合；紧张度 {}/100（{}）；已经 {} 回合没有剧情进展{}{}\n最近的进展：{}\n紧张度曲线（回合:紧张度）：{}",
+        "剧情阶段：{}（{}）\n第 {} 回合；紧张度 {}/100（{}）；已经 {} 回合没有剧情进展{}{}\n最近的进展：{}\n紧张度曲线（回合:紧张度）：{}",
+        pacing.phase.label,
+        pacing.phase.reason,
         pacing.turn,
         pacing.tension,
         pacing.tension_reasons.join("；"),
@@ -119,10 +133,23 @@ pub fn analyze(world: &Mutex<World>, client: &dyn LlmClient, templates: &Templat
         if pacing.recent_progress.is_empty() { "（暂无）".into() } else { pacing.recent_progress.join("；") },
         pacing.curve.iter().map(|b| format!("{}:{}", b.turn, b.tension)).collect::<Vec<_>>().join(" ")
     );
-    let hooks = pacing.hooks.iter().take(30).map(|h| format!("- [{}] {}：{}", h.kind, h.title, h.note)).collect::<Vec<_>>().join("\n");
+    let mut hooks = pacing.hooks.iter().take(30).map(|h| format!("- [{}] {}：{}", h.kind, h.title, h.note)).collect::<Vec<_>>().join("\n");
+    // 剧情阶段与伏笔：很久没回收的伏笔、快到期的后果也是可以用的钩子。
+    let story = {
+        let w = lock(world)?;
+        let open: Vec<String> = chronicle_core::story::foreshadows(w.conn(), campaign_id)?.into_iter().filter(|f| f.status == "open" && pacing.turn - f.planted_turn >= 6).map(|f| format!("- [伏笔，第 {} 回合埋下] {}", f.planted_turn, f.text)).collect();
+        let pending: Vec<String> = chronicle_core::story::consequences(w.conn(), campaign_id)?.into_iter().filter(|c| c.status == "pending").map(|c| format!("- [延迟后果，第 {} 回合到期] 因为「{}」→ {}", c.due_turn, c.decision, c.consequence)).collect();
+        [open, pending].concat()
+    };
+    if !story.is_empty() {
+        if !hooks.is_empty() {
+            hooks.push('\n');
+        }
+        hooks.push_str(&story.join("\n"));
+    }
     let user = templates.render(
         "director",
-        json!({ "context": ctx.text, "pacing": pace_text, "hooks": if hooks.is_empty() { "（没有）".to_string() } else { hooks }, "recent": recent.join("\n"), "trigger": trigger,
+        json!({ "context": ctx.text, "pacing": pace_text, "preference": director::pacing_preference(&settings), "hooks": if hooks.is_empty() { "（没有）".to_string() } else { hooks }, "recent": recent.join("\n"), "trigger": trigger,
                  "confirmed": confirmed.iter().take(60).cloned().collect::<Vec<_>>().join("、") }),
     )?;
     let mut logs = vec![];
@@ -158,6 +185,7 @@ pub fn analyze(world: &Mutex<World>, client: &dyn LlmClient, templates: &Templat
     // 停滞时自动采用第一条不需要确认的建议（可以在设置里关闭）。
     if matches!(trigger, "stall" | "repeat")
         && settings.auto_adopt_on_stall
+        && !settings.hint_only
         && let Some(s) = suggestions.iter_mut().find(|s| !s.needs_review)
     {
         s.status = "adopted".into();
@@ -179,7 +207,19 @@ pub fn analyze(world: &Mutex<World>, client: &dyn LlmClient, templates: &Templat
     } else {
         assessment
     };
-    let note = DirectorNote { id, turn, trigger: trigger.into(), pacing: pacing_v, assessment, tension: pacing.tension, suggestions };
+    let deviations: Vec<chronicle_core::director::Deviation> = out
+        .deviations
+        .iter()
+        .filter(|d| !d.text.trim().is_empty())
+        .take(4)
+        .map(|d| chronicle_core::director::Deviation {
+            kind: if matches!(d.kind.as_str(), "script" | "world" | "character" | "event") { d.kind.clone() } else { "script".into() },
+            text: strip_codes(&ctx.humanize(d.text.trim())),
+        })
+        .collect();
+    // 模型没给分数（0）又没有偏离点时不显示分数，避免把"没评估"当成"完全偏离"。
+    let conformity = if out.conformity <= 0 && deviations.is_empty() { None } else { Some(out.conformity.clamp(0, 100)) };
+    let note = DirectorNote { id, turn, trigger: trigger.into(), pacing: pacing_v, assessment, tension: pacing.tension, suggestions, conformity, deviations };
     if chronicle_core::campaign::get_campaign(w.conn(), campaign_id)?.status != "ended" {
         director::save_note(&mut w, campaign_id, &note)?;
     }

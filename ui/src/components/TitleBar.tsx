@@ -24,6 +24,7 @@ export default function TitleBar({
   onOpenJobs,
   onOpenReview,
   onOpenGuide,
+  onOpenSearch,
   updateVersion,
   onOpenUpdate,
 }: {
@@ -37,6 +38,7 @@ export default function TitleBar({
   onOpenJobs: () => void;
   onOpenReview: () => void;
   onOpenGuide?: () => void;
+  onOpenSearch?: () => void;
   updateVersion?: string | null;
   onOpenUpdate?: () => void;
 }) {
@@ -129,7 +131,7 @@ export default function TitleBar({
                   onOpenGuide();
                 }}
               >
-                使用引导
+                游戏教程
               </button>
             )}
           </div>
@@ -142,6 +144,11 @@ export default function TitleBar({
         {pageTitle}
       </span>
       <div className="tb-fill" data-tauri-drag-region />
+      {onOpenSearch && (
+        <button className="tb-status tb-search" onClick={onOpenSearch} title="全局搜索（Ctrl+K）" data-tour="global-search">
+          🔍 搜索 <kbd>Ctrl K</kbd>
+        </button>
+      )}
       {updateVersion && (
         <button className="tb-status update" onClick={onOpenUpdate} title="有新版本可以更新">
           新版本 {updateVersion}

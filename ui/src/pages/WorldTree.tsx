@@ -1,3 +1,5 @@
+import NodeFilterPanel from "../components/NodeFilterPanel";
+import { PanelSkeleton, SkeletonBlock } from "../components/Skeleton";
 import NodeImages from "../components/NodeImages";
 import RefImages from "../components/RefImages";
 import { Cover, useCovers } from "../components/Covers";
@@ -6,6 +8,7 @@ import { CharacterStatsEditor, FactionPowerEditor, ItemStatsEditor, ScheduleEdit
 import { api, type NodeDetail, type TreeNode } from "../api";
 import type { Ctx } from "../App";
 import type { NodeKind } from "../bindings/NodeKind";
+import type { Script } from "../bindings/Script";
 import type { CanonLevel } from "../bindings/CanonLevel";
 import type { RelationType } from "../bindings/RelationType";
 import type { SearchHit } from "../bindings/SearchHit";
@@ -26,6 +29,7 @@ export default function WorldTree({ ctx, focus }: { ctx: Ctx; focus?: string }) 
   const [viewport, setViewport] = useState(600);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [showFilter, setShowFilter] = useState(false);
   const [relTypes, setRelTypes] = useState<RelationType[]>([]);
   const [tab, setTab] = useState<"edit" | "img" | "rel" | "ai" | "graph">("edit");
   const scroller = useRef<HTMLDivElement>(null);
@@ -166,7 +170,11 @@ export default function WorldTree({ ctx, focus }: { ctx: Ctx; focus?: string }) 
           >
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称、别名、描述…" style={{ flex: 1 }} />
             <button type="submit">搜索</button>
+            <button type="button" className={showFilter ? "primary" : ""} onClick={() => setShowFilter(!showFilter)} title="按类型、字段、关系、位置筛选">
+              筛选
+            </button>
           </form>
+          {showFilter && <NodeFilterPanel ctx={ctx} onPick={(n) => void reveal(n.id)} onClose={() => setShowFilter(false)} />}
           {hits && (
             <div className="hits">
               <div className="row">
@@ -202,8 +210,8 @@ export default function WorldTree({ ctx, focus }: { ctx: Ctx; focus?: string }) 
                 const style = { top, paddingLeft: 6 + r.depth * 16, height: ROW_H };
                 if (r.type === "loading")
                   return (
-                    <div key={`l-${r.parent}`} className="vrow hint" style={style}>
-                      加载中…
+                    <div key={`l-${r.parent}`} className="vrow" style={style} aria-busy="true">
+                      <SkeletonBlock w={140} h={12} />
                     </div>
                   );
                 if (r.type === "more")
@@ -277,21 +285,46 @@ export default function WorldTree({ ctx, focus }: { ctx: Ctx; focus?: string }) 
   );
 }
 
+/** 世界还是空的：按「剧本 → 检查 → 世界树」的顺序，世界树要根据已经写好的剧本来建立。 */
 function SeedForm({ ctx }: { ctx: Ctx }) {
-  const [idea, setIdea] = useState("");
-  const [genre, setGenre] = useState("");
-  const [era, setEra] = useState("");
-  const [style, setStyle] = useState("");
-  const [rules, setRules] = useState("");
+  const [scripts, setScripts] = useState<Script[] | null>(null);
+  const [sid, setSid] = useState("");
+  const [guidance, setGuidance] = useState("");
   const [refs, setRefs] = useState<string[]>([]);
+  useEffect(() => {
+    api
+      .listScripts(ctx.worldId)
+      .then((l) => {
+        setScripts(l);
+        setSid((cur) => cur || l[l.length - 1]?.id || "");
+      })
+      .catch(() => setScripts([]));
+  }, [ctx.worldId, ctx.tick]);
   async function go() {
     try {
-      await api.startGeneration(ctx.worldId, { task: "world_seed", idea, genre, era, style, rules }, refs);
-      ctx.notify("已开始生成世界，完成后到审阅台确认");
+      await api.startGeneration(ctx.worldId, { task: "world_from_script", script_id: sid, guidance }, refs);
+      ctx.notify("已开始根据剧本生成世界树，完成后到审阅台确认");
     } catch (e) {
       ctx.notify((e as Error).message, "error");
     }
   }
+  if (scripts === null) return null;
+  if (scripts.length === 0)
+    return (
+      <div className="card form seed-steps">
+        <h3>先写剧本，再建世界</h3>
+        <ol className="steps">
+          <li className="now">生成剧本：世界观、主线、人物、可选角色与身世</li>
+          <li>检查剧本：完整性与逻辑</li>
+          <li>根据剧本生成世界树</li>
+          <li>开始游戏</li>
+        </ol>
+        <p className="hint">世界树要以剧本为基础，这样地点、势力、人物才会和故事对得上。也可以不用 AI，直接在左边手动添加节点。</p>
+        <button className="primary" onClick={() => ctx.go({ name: "scripts" })}>
+          去生成剧本
+        </button>
+      </div>
+    );
   return (
     <form
       className="card form"
@@ -300,34 +333,26 @@ function SeedForm({ ctx }: { ctx: Ctx }) {
         void go();
       }}
     >
-      <h3>一句话生成世界</h3>
+      <h3>根据剧本生成世界树</h3>
       <label>
-        创意 *
-        <textarea rows={2} value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="例如：一个被月潮支配的群岛，魔法随月相涨落" />
+        剧本
+        <select value={sid} onChange={(e) => setSid(e.target.value)}>
+          {scripts.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.title}
+            </option>
+          ))}
+        </select>
       </label>
-      <div className="row">
-        <label>
-          题材
-          <input value={genre} onChange={(e) => setGenre(e.target.value)} placeholder="奇幻 / 科幻 / 武侠…" />
-        </label>
-        <label>
-          时代
-          <input value={era} onChange={(e) => setEra(e.target.value)} placeholder="中世纪 / 蒸汽时代…" />
-        </label>
-        <label>
-          风格
-          <input value={style} onChange={(e) => setStyle(e.target.value)} placeholder="黑暗 / 史诗…" />
-        </label>
-      </div>
       <label>
-        世界规则（可选）
-        <input value={rules} onChange={(e) => setRules(e.target.value)} placeholder="例如：没有复活魔法；火药被禁止" />
+        额外要求（可选）
+        <input value={guidance} onChange={(e) => setGuidance(e.target.value)} placeholder="例如：多写一些港口城市；魔法只有少数人会" />
       </label>
       <RefImages ctx={ctx} value={refs} onChange={setRefs} />
-      <button className="primary" disabled={!idea.trim()}>
+      <button className="primary" disabled={!sid}>
         生成世界树
       </button>
-      <p className="hint">生成宇宙背景、历史、地理、势力、种族、人物、文化、科技魔法、事件传说等分类及其主要节点。确认写入后可以逐个节点继续展开。</p>
+      <p className="hint">按剧本里的地点、势力、人物、历史事件建立世界树（剧本人物已经在世界树里，不会重复创建）。建议先在剧本页「检查剧本」。确认写入后可以逐个节点继续展开。</p>
     </form>
   );
 }
@@ -385,7 +410,7 @@ function NodePanel({ ctx, id, tab, relTypes, onSelect, onDeleted }: { ctx: Ctx; 
   useEffect(() => {
     api.nodeDetail(ctx.worldId, id).then(setD).catch((e: Error) => ctx.notify(e.message, "error"));
   }, [ctx.worldId, id]);
-  if (!d) return <p className="hint">加载中…</p>;
+  if (!d) return <PanelSkeleton />;
   return (
     <>
       <div className="crumbs hint">

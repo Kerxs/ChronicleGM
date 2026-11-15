@@ -1,5 +1,6 @@
 // GM 控制台（只在主持人视角显示）：剧情导演、冲突提示、当前场景、世界状态、人物、隐藏剧情、线索与触发条件、
 // AI 决策与记忆检索记录、手动修改游戏状态。数据由后端计算，这里只显示与发出操作。
+import { PanelSkeleton } from "./Skeleton";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Ctx } from "../App";
@@ -26,6 +27,8 @@ function Section({ title, children, open = true }: { title: string; children: Re
     </div>
   );
 }
+
+const DEV: Record<string, string> = { script: "偏离剧本", world: "世界观", character: "人物设定", event: "已发生事件" };
 
 export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onChanged }: { ctx: Ctx; campaignId: string; ended: boolean; refreshKey: number; choices: Choices; onChanged: () => void }) {
   const [con, setCon] = useState<GmConsole | null>(null);
@@ -38,7 +41,7 @@ export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onCh
   useEffect(() => {
     void load();
   }, [campaignId, refreshKey]);
-  if (!con) return <p className="hint">加载中…</p>;
+  if (!con) return <PanelSkeleton />;
   const fail = (e: Error) => ctx.notify(e.message, "error");
   const p = con.pacing;
   const setStatus = (note: string, s: string, status: string) =>
@@ -54,6 +57,9 @@ export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onCh
     <div className="console-panel">
       <Section title={`剧情导演${p.stalled ? "（停滞）" : ""}`}>
         <div className="row wrap">
+          <span className="badge" title={p.phase.reason}>
+            阶段：{p.phase.label}（进度 {p.phase.progress}%）
+          </span>
           <span>
             紧张度 <strong>{p.tension}</strong>/100
           </span>
@@ -93,6 +99,24 @@ export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onCh
             <div>
               <span className="badge">{TRIGGER[n.trigger] ?? n.trigger}</span> 第 {n.turn} 回合 · <strong>{PACE[n.pacing] ?? n.pacing}</strong>：{n.assessment}
             </div>
+            {n.conformity !== null && n.conformity !== undefined && (
+              <div className="conformity" title="和原剧本、世界观、人物设定、已发生事件的一致程度（导演模型评估）">
+                <span>剧情符合度</span>
+                <span className="bar">
+                  <span style={{ transform: `scaleX(${n.conformity / 100})` }} className={n.conformity >= 70 ? "ok" : n.conformity >= 40 ? "mid" : "low"} />
+                </span>
+                <strong>{n.conformity}</strong>
+              </div>
+            )}
+            {n.deviations.length > 0 && (
+              <ul className="deviations">
+                {n.deviations.map((d, i) => (
+                  <li key={i}>
+                    <span className="badge">{DEV[d.kind] ?? d.kind}</span> {d.text}
+                  </li>
+                ))}
+              </ul>
+            )}
             <ul className="list">
               {n.suggestions.map((s) => (
                 <li key={s.id}>
@@ -133,6 +157,15 @@ export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onCh
                 <input type="checkbox" checked={settings.auto_adopt_on_stall} onChange={(e) => setSettings({ ...settings, auto_adopt_on_stall: e.target.checked })} />
                 停滞时自动采用第一条建议
               </label>
+              <label className="check pacing-slider" title="影响导演建议的节奏：松弛时给玩家更多自由探索，紧凑时事件更密集">
+                节奏　松弛
+                <input type="range" min={0} max={100} step={10} value={settings.pacing_level} onChange={(e) => setSettings({ ...settings, pacing_level: Number(e.target.value) })} />
+                紧凑
+              </label>
+              <label className="check">
+                <input type="checkbox" checked={settings.hint_only} onChange={(e) => setSettings({ ...settings, hint_only: e.target.checked })} />
+                偏离剧本时只提示，不拉回主线（也不会自动采用建议）
+              </label>
               <label className="check">
                 采用的建议保留 <input type="number" min={1} value={settings.guidance_turns} onChange={(e) => setSettings({ ...settings, guidance_turns: Number(e.target.value) })} style={{ width: 50 }} /> 回合
               </label>
@@ -142,6 +175,30 @@ export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onCh
           ) : (
             <button className="small" onClick={() => setSettings(con.settings)}>导演设置</button>
           ))}
+      </Section>
+
+      <Section title={`因果与伏笔（${con.consequences.length + con.foreshadows.length}）`}>
+        {con.consequences.length === 0 && con.foreshadows.length === 0 && <p className="hint">还没有记下的后果或伏笔。玩家做出重要决定时，GM 会记下后果（可以延迟发生）；已经发生的后果不能撤销。</p>}
+        {con.consequences.length > 0 && (
+          <ul className="list causal">
+            {con.consequences.map((c) => (
+              <li key={c.id}>
+                <span className={`badge ${c.status === "occurred" ? "ok" : ""}`}>{c.status === "occurred" ? `第 ${c.occurred_turn} 回合已发生` : `第 ${c.due_turn} 回合到期`}</span> 「{c.decision}」→ {c.consequence}
+                <small className="hint">（第 {c.created_turn} 回合的决定）</small>
+              </li>
+            ))}
+          </ul>
+        )}
+        {con.foreshadows.length > 0 && (
+          <ul className="list">
+            {con.foreshadows.map((f) => (
+              <li key={f.id}>
+                <span className={`badge ${f.status === "paid" ? "ok" : ""}`}>{f.status === "paid" ? `第 ${f.paid_turn} 回合回收` : "未回收"}</span> {f.text}
+                <small className="hint">（第 {f.planted_turn} 回合埋下{f.payoff ? `；回收：${f.payoff}` : ""}）</small>
+              </li>
+            ))}
+          </ul>
+        )}
       </Section>
 
       <Section title={`剧情冲突提示（${con.conflicts.length}）`}>

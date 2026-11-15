@@ -266,3 +266,18 @@ pub fn list_models(base_url: &str, api_key: Option<&str>, timeout: Duration) -> 
     ids.dedup();
     Ok(ids)
 }
+
+/// llama-server 的服务端分词：返回 token 数。服务不支持（不是 llama-server、请求失败）时返回 None。
+/// 地址只需要到端口（/tokenize 在根路径；写了 /v1 也会去掉）。
+pub fn tokenize_count(base_url: &str, text: &str, timeout: Duration) -> Option<usize> {
+    let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let agent = make_agent(timeout);
+    let body = serde_json::to_vec(&json!({ "content": text, "add_special": false })).ok()?;
+    let mut resp = agent.post(&format!("{root}/tokenize")).header("Content-Type", "application/json").send(&body[..]).ok()?;
+    if !(200..300).contains(&resp.status().as_u16()) {
+        return None;
+    }
+    let text = resp.body_mut().with_config().limit(64 * 1024 * 1024).read_to_string().ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    v.get("tokens").and_then(Value::as_array).map(|a| a.len())
+}

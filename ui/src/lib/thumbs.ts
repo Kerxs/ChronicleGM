@@ -1,9 +1,22 @@
-// 节点图片缩略图：后端存长边 256 像素的 JPEG；旧图片没有缩略图时，用原图在界面里生成一次并保存。
+// 节点图片缩略图：后端存长边 480 像素的 JPEG（放大显示也清楚；以前生成的 256 像素缩略图照常使用）；旧图片没有缩略图时，用原图在界面里生成一次并保存。
 // 内存里按 图片 ID 缓存（同一张图片的内容不会变，换封面时图片 ID 会变）。
 import { api } from "../api";
 import type { ImageThumb } from "../bindings/ImageThumb";
 
-export const THUMB_SIDE = 256;
+export const THUMB_SIDE = 480;
+
+/** 缩略图显示大小（界面偏好 ui.thumb_size）：小 / 中 / 大。 */
+export const THUMB_SIZES: [string, string, number][] = [
+  ["s", "小", 0.8],
+  ["m", "中", 1],
+  ["l", "大", 1.4],
+  ["xl", "特大", 1.8],
+];
+
+export function applyThumbSize(key: string | null | undefined) {
+  const k = THUMB_SIZES.find((t) => t[0] === key)?.[2] ?? 1;
+  document.documentElement.style.setProperty("--thumb-k", String(k));
+}
 const cache = new Map<string, string>();
 const pending = new Map<string, Promise<string | null>>();
 
@@ -35,9 +48,32 @@ export async function makeThumb(src: string, side = THUMB_SIDE): Promise<string>
 }
 
 /** 生成并保存缩略图（失败时返回 null，界面显示占位）。 */
+/** 当前的缩略图放大倍数（设置里的「缩略图大小」）。 */
+function thumbScale(): number {
+  const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--thumb-k"));
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+
 export function ensureThumb(worldId: string, t: Pick<ImageThumb, "image_id" | "thumb">): Promise<string | null> {
   if (t.thumb) {
+    const hit = cache.get(t.image_id);
+    if (hit) return Promise.resolve(hit);
     cache.set(t.image_id, t.thumb);
+    // 以前生成的缩略图只有 256 像素：选了大缩略图时，后台按新尺寸重新生成一次（不阻塞显示）。
+    if (thumbScale() > 1 && !pending.has(t.image_id)) {
+      const old = t.thumb;
+      const p = loadImg(old)
+        .then(async (img) => {
+          if (Math.max(img.naturalWidth, img.naturalHeight) >= THUMB_SIDE * 0.8) return old;
+          const thumb = await makeThumb(await api.nodeImageData(worldId, t.image_id));
+          cache.set(t.image_id, thumb);
+          await api.nodeImageSetThumb(worldId, t.image_id, thumb).catch(() => {});
+          return thumb;
+        })
+        .catch(() => old)
+        .finally(() => pending.delete(t.image_id));
+      pending.set(t.image_id, p);
+    }
     return Promise.resolve(t.thumb);
   }
   const hit = cache.get(t.image_id);

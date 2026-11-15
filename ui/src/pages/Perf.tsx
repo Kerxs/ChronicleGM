@@ -1,3 +1,4 @@
+import { PageSkeleton } from "../components/Skeleton";
 import { useCallback, useEffect, useState } from "react";
 import { api, formatTime, type DbProbe, type PerfSnapshot } from "../api";
 import type { ModelProfile } from "../bindings/ModelProfile";
@@ -9,6 +10,7 @@ import type { ProcStatus } from "../bindings/ProcStatus";
 import type { TaskInfo } from "../bindings/TaskInfo";
 import { parseCommandLine } from "../lib/cmdline";
 import LaunchArgs from "../components/LaunchArgs";
+import RunMonitor from "../components/RunMonitor";
 
 const PRIORITY: Record<Priority, string> = { P0: "P0 GM 回复", P1: "P1 NPC 对话", P2: "P2 语音", P3: "P3 分析", P4: "P4 记忆与模拟", P5: "P5 生成" };
 const MODES: [string, string, string][] = [
@@ -73,7 +75,7 @@ export default function PerfPage({ notify, worldId, onEditModels }: { notify: (m
     return () => clearInterval(t);
   }, [refresh]);
 
-  if (!snap) return <p className="hint">加载中…</p>;
+  if (!snap) return <PageSkeleton />;
   const r = snap.resources;
   const s = snap.sched;
 
@@ -92,6 +94,7 @@ export default function PerfPage({ notify, worldId, onEditModels }: { notify: (m
   return (
     <section>
       <h2>性能中心</h2>
+      <RunMonitor compactDefault={false} />
       <div className="card">
         <h3>性能模式</h3>
         <div className="row wrap">

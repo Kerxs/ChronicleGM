@@ -34,4 +34,12 @@ known_clues: Array<string>, precondition: unknown, complete_when: unknown, fail_
 /**
  * 任务变化记录（目标调整、GM 备注等）。
  */
-notes: Array<QuestNote>, };
+notes: Array<QuestNote>, 
+/**
+ * 完成条件（文字）。
+ */
+completion: string, 
+/**
+ * 后果（主持人视角才有）。
+ */
+consequences: string, };

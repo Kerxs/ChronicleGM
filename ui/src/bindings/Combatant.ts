@@ -23,4 +23,8 @@ new_wounds: Array<Wound>,
 /**
  * 生命降到四分之一时检定过士气（只检定一次）。
  */
-morale_checked: boolean, };
+morale_checked: boolean, 
+/**
+ * 首领：首领还在战斗时无法逃跑。
+ */
+boss: boolean, };

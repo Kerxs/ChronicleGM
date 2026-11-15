@@ -1,3 +1,4 @@
+import { WorldTrash } from "../components/TrashPanels";
 import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, formatTime } from "../api";
@@ -36,6 +37,10 @@ const STRATEGY: Record<ConflictStrategy, string> = {
 };
 
 export default function WorldTools({ ctx, onOpenNode, onWorldImported }: { ctx: Ctx; onOpenNode: (id: string) => void; onWorldImported: (id: string) => void }) {
+  const [worldName, setWorldName] = useState("");
+  useEffect(() => {
+    api.worldOverview(ctx.worldId).then((o) => setWorldName(o.info.name)).catch(() => {});
+  }, [ctx.worldId]);
   const [findings, setFindings] = useState<Finding[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [versions, setVersions] = useState<WorldVersion[]>([]);
@@ -253,6 +258,19 @@ export default function WorldTools({ ctx, onOpenNode, onWorldImported }: { ctx: 
                   {formatTime(b.created_at)} <small className="hint">{formatSize(b.size)}</small>
                 </span>
                 <button onClick={() => void restoreBackup(b)}>还原</button>
+                <button
+                  className="small danger"
+                  title="删除这个备份文件（不影响世界本身）"
+                  onClick={() => {
+                    if (!window.confirm("删除备份「" + b.file_name + "」？删除后不能用它还原。")) return;
+                    void api
+                      .deleteBackup(ctx.worldId, b.file_name)
+                      .then(() => api.listBackups(ctx.worldId).then(setBackups))
+                      .catch((e: Error) => ctx.notify(e.message, "error"));
+                  }}
+                >
+                  删除
+                </button>
               </li>
             ))}
           </ul>
@@ -305,6 +323,7 @@ export default function WorldTools({ ctx, onOpenNode, onWorldImported }: { ctx: 
           </ul>
         </div>
       </div>
+      <WorldTrash ctx={ctx} worldName={worldName} onDeleted={() => location.reload()} />
     </section>
   );
 }

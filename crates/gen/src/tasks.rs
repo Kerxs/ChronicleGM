@@ -77,6 +77,12 @@ pub enum Task {
         #[serde(default)]
         rules: String,
     },
+    /// 根据已经写好的剧本生成世界树（地理、势力、世界规则等）。顺序：剧本 → 检查 → 世界树。
+    WorldFromScript {
+        script_id: String,
+        #[serde(default)]
+        guidance: String,
+    },
     /// 为世界树节点续生子节点。
     ExpandNode {
         node_id: String,
@@ -132,6 +138,7 @@ impl Task {
             Task::Regenerate { .. } => "regenerate",
             Task::Extend { .. } => "extend",
             Task::WorldSeed { .. } => "world_seed",
+            Task::WorldFromScript { .. } => "world_from_script",
             Task::ExpandNode { .. } => "expand_node",
             Task::RewriteNode { .. } => "rewrite_node",
             Task::PlotFromScript { .. } => "plot_from_script",
@@ -146,6 +153,7 @@ impl Task {
                 script_id.clone()
             }
             Task::WorldSeed { idea, .. } => idea.chars().take(40).collect(),
+            Task::WorldFromScript { script_id, .. } => script_id.clone(),
             Task::ExpandNode { node_id, .. } | Task::RewriteNode { node_id, .. } => node_id.clone(),
             Task::PlotFromScript { script_id, .. } => script_id.clone(),
             Task::PlotBranches { from_node_id, .. } => from_node_id.clone(),
@@ -158,7 +166,7 @@ impl Task {
             Task::Npcs { .. } => ("npc_batch", schema_of::<NpcBatch>()),
             Task::Regenerate { .. } => ("rewrites", schema_of::<Rewrites>()),
             Task::Extend { .. } => ("script_extension", schema_of::<ScriptExtension>()),
-            Task::WorldSeed { .. } => ("world_seed", schema_of::<WorldSeedOut>()),
+            Task::WorldSeed { .. } | Task::WorldFromScript { .. } => ("world_seed", schema_of::<WorldSeedOut>()),
             Task::ExpandNode { .. } => ("node_expansion", schema_of::<ExpansionOut>()),
             Task::RewriteNode { .. } => ("node_rewrite", schema_of::<NodeRewriteOut>()),
             Task::PlotFromScript { .. } | Task::PlotBranches { .. } => ("plot_graph", schema_of::<PlotOut>()),
@@ -176,7 +184,7 @@ impl Task {
             Task::Npcs { .. } => serde_json::from_value::<NpcBatch>(v.clone()).map(|_| Ok(())),
             Task::Regenerate { .. } => serde_json::from_value::<Rewrites>(v.clone()).map(|_| Ok(())),
             Task::Extend { .. } => serde_json::from_value::<ScriptExtension>(v.clone()).map(|_| Ok(())),
-            Task::WorldSeed { .. } => serde_json::from_value::<WorldSeedOut>(v.clone()).map(|o| {
+            Task::WorldSeed { .. } | Task::WorldFromScript { .. } => serde_json::from_value::<WorldSeedOut>(v.clone()).map(|o| {
                 if o.sections.is_empty() { Err("sections 不能为空".to_string()) } else { Ok(()) }
             }),
             Task::ExpandNode { .. } => serde_json::from_value::<ExpansionOut>(v.clone()).map(|o| {
@@ -220,6 +228,7 @@ pub fn build_prompt(world: &World, task: &Task, templates: &Templates, budget: u
         Task::WorldSeed { idea, genre, era, style, rules } => {
             Some(world_tasks::build_world_seed(world, templates, budget, world_tasks::SeedInput { idea, genre, era, style, rules })?)
         }
+        Task::WorldFromScript { script_id, guidance } => Some(world_tasks::build_world_from_script(world, templates, budget, script_id, guidance)?),
         Task::ExpandNode { node_id, count, kinds, guidance } => {
             Some(world_tasks::build_expand(world, templates, budget, node_id, *count, kinds, guidance)?)
         }
@@ -236,7 +245,7 @@ pub fn build_prompt(world: &World, task: &Task, templates: &Templates, budget: u
         return Ok(Prompt { system, user, schema_name, schema, context });
     }
     let user = match task {
-        Task::WorldSeed { .. } | Task::ExpandNode { .. } | Task::RewriteNode { .. } | Task::PlotFromScript { .. } | Task::PlotBranches { .. } => unreachable!(),
+        Task::WorldSeed { .. } | Task::WorldFromScript { .. } | Task::ExpandNode { .. } | Task::RewriteNode { .. } | Task::PlotFromScript { .. } | Task::PlotBranches { .. } => unreachable!(),
         Task::Outline { idea, title, genre, tone, player_count, duration_hours, rules, use_world } => {
             if idea.trim().is_empty() {
                 return Err(GenError::Input("请填写剧本创意".into()));
@@ -280,11 +289,15 @@ pub fn build_prompt(world: &World, task: &Task, templates: &Templates, budget: u
             let rendered = ctx.render(budget);
             let scale: ScaleProfile = serde_json::from_value(s.scale_profile.clone()).unwrap_or_else(|_| scale_profile(s.player_count, s.duration_hours));
             let chapters = scripts::items_by_kind(world.conn(), script_id, ScriptItemKind::Chapter)?.len().max(1) as u32;
+            // 线索数量按剧本的调查比重（以前固定"每个场景 1–2 条"，所以所有剧本都像探案）。
+            let gp = chronicle_core::profile::for_script(&s);
+            let (clues_min, clues_max) = gp.clues_per_chapter();
             let user = templates.render(
                 "expand_chapter",
                 json!({
                     "target": context::item_detail(&ch), "guidance": guidance, "context": rendered.text,
                     "scenes_min": (scale.scenes.min / chapters).max(1), "scenes_max": scale.scenes.max.div_ceil(chapters).max(2),
+                    "clues_min": clues_min, "clues_max": clues_max, "play": gp.guidance(),
                 }),
             )?;
             return Ok(Prompt { system, user, schema_name, schema, context: rendered });
@@ -503,7 +516,7 @@ fn check_range(o: &mut Ops, what: &str, n: usize, r: Range) {
 pub fn convert(world: &World, task: &Task, value: &Value, job_id: &str) -> Result<(NewChangeset, Vec<Issue>)> {
     let author = Author::Ai { job_id: job_id.into() };
     let world_result = match task {
-        Task::WorldSeed { .. } => Some(world_tasks::convert_world_seed(world, value)?),
+        Task::WorldSeed { .. } | Task::WorldFromScript { .. } => Some(world_tasks::convert_world_seed(world, value)?),
         Task::ExpandNode { node_id, kinds, .. } => Some(world_tasks::convert_expand(world, node_id, kinds, value)?),
         Task::RewriteNode { node_id, mode, .. } => Some(world_tasks::convert_rewrite(world, node_id, *mode, value)?),
         Task::PlotFromScript { script_id, .. } => Some(plot_tasks::convert_from_script(world, script_id, value)?),
@@ -519,7 +532,7 @@ pub fn convert(world: &World, task: &Task, value: &Value, job_id: &str) -> Resul
     }
     let mut o = Ops::new();
     let (mode, title) = match task {
-        Task::WorldSeed { .. } | Task::ExpandNode { .. } | Task::RewriteNode { .. } | Task::PlotFromScript { .. } | Task::PlotBranches { .. } => unreachable!(),
+        Task::WorldSeed { .. } | Task::WorldFromScript { .. } | Task::ExpandNode { .. } | Task::RewriteNode { .. } | Task::PlotFromScript { .. } | Task::PlotBranches { .. } => unreachable!(),
         Task::Outline { title: want_title, genre, tone, player_count, duration_hours, .. } => {
             let out: ScriptOutline = serde_json::from_value(value.clone())?;
             let mut ns = NewScript::new(want_title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| out.title.clone()));
@@ -530,6 +543,8 @@ pub fn convert(world: &World, task: &Task, value: &Value, job_id: &str) -> Resul
             ns.core_setting = out.core_setting.clone();
             ns.player_count = *player_count;
             ns.duration_hours = *duration_hours;
+            let gp = crate::play::profile_from_play(&out.play, &ns.genre, &ns.tone, &ns.premise);
+            ns.game_profile = serde_json::to_value(&gp).unwrap_or_else(|_| json!({}));
             let title = ns.title.clone();
             let s = "tmp:script".to_string();
             o.ops.push(Op::CreateScript { temp_id: Some(s.clone()), script: ns });
@@ -548,6 +563,14 @@ pub fn convert(world: &World, task: &Task, value: &Value, job_id: &str) -> Resul
             }
             for n in &out.npcs {
                 o.npc(world, &s, n)?;
+            }
+            // 可选的玩家角色：身份、性格、能力、身世；与主线的关联给主持人看。
+            for pc in out.player_characters.iter().take(4) {
+                let gm = format!("与主线的关联：{}", pc.backstory.link_to_plot);
+                o.item(&s, ScriptItemKind::PlayerCharacter, None, &pc.name, &pc.player_text, &gm, crate::play::pc_payload(pc));
+            }
+            if out.player_characters.is_empty() {
+                o.note("no_player_characters", "没有生成可选角色：开始游戏时可以让 AI 按剧本生成一个，或者在剧本里手动添加".into(), vec![]);
             }
             let scale = scale_profile(*player_count, *duration_hours);
             let (cmin, cmax) = chapter_range(&scale);

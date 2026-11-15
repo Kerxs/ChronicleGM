@@ -43,6 +43,8 @@ fn real_play_session() {
         temperature: 0.8,
         max_tokens: 12000,
         context_budget: 8000,
+        stream: false,
+        web_search: None,
     };
 
     // 小剧本：村长委托调查遗迹。

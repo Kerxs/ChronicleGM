@@ -59,6 +59,37 @@ export const CLOUD_PRESETS: CloudPreset[] = [
   { id: "openai-image", name: "OpenAI 图片", service: "image", base_url: "https://api.openai.com/v1", models: ["gpt-image-1", "dall-e-3"], sizes: ["1024x1024", "1024x1536", "1536x1024"] },
   { id: "zhipu-image", name: "智谱 CogView", service: "image", base_url: "https://open.bigmodel.cn/api/paas/v4", models: ["cogview-4"], sizes: ["1024x1024", "768x1344", "1344x768"] },
   { id: "custom-image", name: "其他（OpenAI 兼容 /images/generations）", service: "image", base_url: "", models: [], sizes: ["1024x1024", "1024x1536", "1536x1024", "512x512"] },
+  // ---------- 语音识别（语音输入） ----------
+  { id: "openai-stt", name: "OpenAI 语音识别", service: "transcription", base_url: "https://api.openai.com/v1", models: ["gpt-4o-mini-transcribe", "whisper-1"] },
+  { id: "siliconflow-stt", name: "硅基流动 语音识别", service: "transcription", base_url: "https://api.siliconflow.cn/v1", models: ["FunAudioLLM/SenseVoiceSmall"] },
+  {
+    id: "whispercpp-stt",
+    name: "本机 whisper.cpp（whisper-server）",
+    service: "transcription",
+    base_url: "http://127.0.0.1:8178/v1",
+    models: [],
+    local: true,
+    note: "github.com/ggml-org/whisper.cpp（MIT）。启动时加 --port 8178 --inference-path /v1/audio/transcriptions -l zh -m <模型.bin>；8080 已被语言模型占用，所以换端口。软件会把录音转成 16 kHz WAV 再发送，不需要 --convert 和 ffmpeg。",
+  },
+  {
+    id: "funasr-stt",
+    name: "本机 FunASR SenseVoice（中文识别强）",
+    service: "transcription",
+    base_url: "http://127.0.0.1:8000/v1",
+    models: ["sensevoice"],
+    local: true,
+    note: "github.com/modelscope/FunASR（代码 MIT，模型另有许可）。按它的 README 安装后运行 funasr-server --host 127.0.0.1 --port 8000 --model sensevoice --device cpu（文档按 POSIX shell 写，Windows 上没有官方说明）。",
+  },
+  {
+    id: "speaches-stt",
+    name: "本机 speaches（原 faster-whisper-server）",
+    service: "transcription",
+    base_url: "http://127.0.0.1:8000/v1",
+    models: [],
+    local: true,
+    note: "github.com/speaches-ai/speaches（MIT），官方推荐用 Docker 运行，默认端口 8000；模型名按它的文档填写。",
+  },
+  { id: "custom-stt", name: "其他（OpenAI 兼容 /audio/transcriptions）", service: "transcription", base_url: "", models: [] },
 ];
 
-export const SERVICE_LABEL: Record<ServiceType, string> = { chat: "语言模型", speech: "语音合成", image: "生成图片" };
+export const SERVICE_LABEL: Record<ServiceType, string> = { chat: "语言模型", speech: "语音合成", image: "生成图片", transcription: "语音识别" };

@@ -43,7 +43,7 @@ impl LlmClient for Scripted {
         Ok(ChatResponse {
             content: r,
             finish_reason: Some(finish.into()),
-            usage: Usage { prompt_tokens: Some(100), completion_tokens: Some(50) },
+            usage: Usage { prompt_tokens: Some(100), completion_tokens: Some(50), ..Default::default() },
             model: Some("mock".into()),
             latency_ms: 1,
             attempts: 1,

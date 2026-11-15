@@ -429,14 +429,36 @@ fn heuristics(conn: &Connection, idx: usize, op: &Op, issues: &mut Vec<Issue>) -
     match op {
         Op::CreateNode { node, .. } => {
             let mut seen = HashSet::new();
-            for name in std::iter::once(&node.title).chain(node.aliases.iter()) {
-                for dup in nodes::find_by_name(conn, name, Some(node.kind))? {
+            let names: Vec<&String> = std::iter::once(&node.title).chain(node.aliases.iter()).collect();
+            // 1) 同名（规范化后相同，跨所有类型）。
+            for name in &names {
+                for dup in nodes::find_by_name(conn, name, None)? {
                     if seen.insert(dup.id.clone()) {
-                        issues.push(warn(
-                            "possible_duplicate",
-                            format!("已存在同名{}「{}」", node.kind, dup.title),
-                            vec![dup.id],
-                        ));
+                        let both_people = node.kind == crate::model::NodeKind::Character && dup.kind == crate::model::NodeKind::Character;
+                        let (code, msg) = if both_people {
+                            ("duplicate_character", format!("已经有同名人物「{}」：重名的人物会让 GM 和 NPC 混淆，确认确实是另一个人再写入", dup.title))
+                        } else if dup.kind == node.kind {
+                            ("possible_duplicate", format!("已存在同名{}「{}」", node.kind, dup.title))
+                        } else {
+                            ("possible_duplicate", format!("名称和已有的{}「{}」相同", dup.kind, dup.title))
+                        };
+                        issues.push(warn(code, msg, vec![dup.id]));
+                    }
+                }
+            }
+            // 2) 近似名称（差一两个字，例如「艾琳娜」和「艾莉娜」）。
+            let keys: Vec<String> = names.iter().map(|n| crate::util::normalize_name(n)).filter(|k| k.chars().count() >= 3).collect();
+            if !keys.is_empty() {
+                let mut stmt = conn.prepare_cached("SELECT k.name_key, n.id, n.title, n.kind FROM node_names k JOIN nodes n ON n.id = k.node_id AND n.deleted_at IS NULL")?;
+                let rows: Vec<(String, String, String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
+                for (key, id, title, kind) in rows {
+                    if seen.contains(&id) {
+                        continue;
+                    }
+                    if keys.iter().any(|k| k != &key && crate::util::names_similar(k, &key)) {
+                        seen.insert(id.clone());
+                        let code = if node.kind == crate::model::NodeKind::Character && kind == "character" { "similar_character" } else { "similar_name" };
+                        issues.push(warn(code, format!("名称和已有的「{title}」很像，是同一个吗？"), vec![id]));
                     }
                 }
             }

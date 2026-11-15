@@ -2,4 +2,8 @@
 import type { ContentStatus } from "./ContentStatus";
 import type { JsonValue } from "./serde_json/JsonValue";
 
-export type Script = { id: string, title: string, genre: string, premise: string, background: string, core_setting: string, player_count: number, duration_hours: number, tone: string, scale_profile: JsonValue, status: ContentStatus, source: string, rev: number, created_at: number, updated_at: number, deleted_at: number | null, };
+export type Script = { id: string, title: string, genre: string, premise: string, background: string, core_setting: string, player_count: number, duration_hours: number, tone: string, scale_profile: JsonValue, 
+/**
+ * 玩法配置（`profile::GameProfile` 的 JSON）；空对象 = 按题材推断。
+ */
+game_profile: JsonValue, status: ContentStatus, source: string, rev: number, created_at: number, updated_at: number, deleted_at: number | null, };

@@ -65,10 +65,18 @@ pub struct RequestLog {
     pub completion_tokens: Option<u64>,
     pub latency_ms: Option<u64>,
     pub error: Option<String>,
+    /// 首个 token 时间（流式请求才有）。
+    #[serde(default)]
+    pub first_token_ms: Option<u64>,
+    /// 提示词处理速度 / 生成速度（token/s，服务返回了计时才有）。
+    #[serde(default)]
+    pub prompt_per_second: Option<f64>,
+    #[serde(default)]
+    pub predicted_per_second: Option<f64>,
 }
 
 impl RequestLog {
-    fn ok(r: &ChatResponse) -> Self {
+    pub fn from_response(r: &ChatResponse) -> Self {
         Self {
             ok: true,
             attempts: r.attempts,
@@ -76,7 +84,13 @@ impl RequestLog {
             completion_tokens: r.usage.completion_tokens,
             latency_ms: Some(r.latency_ms),
             error: None,
+            first_token_ms: r.usage.first_token_ms,
+            prompt_per_second: r.usage.prompt_per_second,
+            predicted_per_second: r.usage.predicted_per_second,
         }
+    }
+    fn ok(r: &ChatResponse) -> Self {
+        Self::from_response(r)
     }
     fn err(e: &LlmError) -> Self {
         Self { ok: false, attempts: 1, error: Some(e.to_string()), ..Default::default() }

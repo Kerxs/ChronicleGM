@@ -80,6 +80,97 @@ pub struct EndingOutline {
     pub gm_text: String,
 }
 
+/// 玩法比重 0–3。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlayWeights {
+    pub combat: u8,
+    pub exploration: u8,
+    pub social: u8,
+    /// 调查 / 推理：只有悬疑、推理、侦探类剧本才给 2–3，其他题材 0–1。
+    pub investigation: u8,
+    pub survival: u8,
+    pub management: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AttrOut {
+    /// 英文小写 key，例如 body、reflex、tech。
+    pub key: String,
+    /// 中文名称。
+    pub name: String,
+    #[serde(default)]
+    pub desc: String,
+    /// 作用：might（力量）/ agility（敏捷）/ vitality（体质）/ mind（智力）/ insight（感知）/ presence（魅力），可留空。
+    #[serde(default)]
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SkillOut {
+    pub skill: String,
+    /// 对应的属性 key。
+    pub attr: String,
+}
+
+/// 剧本的玩法配置。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PlayOut {
+    pub weights: PlayWeights,
+    /// 3–6 个符合题材的属性。
+    pub attributes: Vec<AttrOut>,
+    /// 常用技能与对应属性（4–10 个）。
+    #[serde(default)]
+    pub skills: Vec<SkillOut>,
+    /// 检定方式：target（掷骰 + 修正 ≥ 难度）/ roll_under（百分骰 ≤ 目标值）/ pool（骰池计成功数）。
+    pub check_mode: String,
+    /// 主骰，例如 1d20、2d6、1d100（pool 模式写 d6 之类）。
+    pub die: String,
+    /// 货币名称，从大到小（例如 ["金币","银币","铜币"]、["信用点"]、["两银子","文钱"]），1–3 个。
+    #[serde(default)]
+    pub currency: Vec<String>,
+    /// 每种货币等于多少个最小单位（和 currency 一一对应，最后一个是 1），例如 [100,10,1]。
+    #[serde(default)]
+    pub currency_rates: Vec<i64>,
+    /// 五档稀有度的叫法（从普通到传说），符合题材，例如 ["寻常","上品","珍品","宝物","神兵"]。
+    #[serde(default)]
+    pub rarity_labels: Vec<String>,
+    /// 叙事风格，一句话。
+    #[serde(default)]
+    pub style: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Backstory {
+    /// 出身。
+    pub origin: String,
+    /// 成长经历。
+    pub upbringing: String,
+    /// 职业或身份。
+    pub occupation: String,
+    /// 重要经历（1–3 条）。
+    #[serde(default)]
+    pub key_events: Vec<String>,
+    /// 初始人际关系：与剧本里哪些人物有什么关系（写人物名）。
+    #[serde(default)]
+    pub relations: Vec<String>,
+    /// 与主线的关联（主持人可见，可以包含玩家自己都不知道的伏笔）。
+    pub link_to_plot: String,
+}
+
+/// 可选的玩家角色（含身世）。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PcOutline {
+    pub name: String,
+    pub identity: String,
+    pub personality: String,
+    /// 擅长的事（2–4 条）。
+    #[serde(default)]
+    pub abilities: Vec<String>,
+    /// 给玩家看的角色介绍（2–3 句）。
+    pub player_text: String,
+    pub backstory: Backstory,
+}
+
 /// 剧本大纲（第一段生成）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ScriptOutline {
@@ -102,6 +193,10 @@ pub struct ScriptOutline {
     pub quests: Vec<QuestOutline>,
     pub npcs: Vec<NpcOutline>,
     pub endings: Vec<EndingOutline>,
+    /// 2–4 个可选的玩家角色，身世与主线有关联。
+    pub player_characters: Vec<PcOutline>,
+    /// 玩法配置。
+    pub play: PlayOut,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

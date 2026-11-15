@@ -3,6 +3,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { WorldInfo } from "./bindings/WorldInfo";
 import type { NodeImage } from "./bindings/NodeImage";
+import type { GameProfile } from "./bindings/GameProfile";
+import type { ScriptFinding } from "./bindings/ScriptFinding";
+import type { PlayerCharacter } from "./bindings/PlayerCharacter";
+import type { GlobalHit } from "./bindings/GlobalHit";
+import type { NpcMemory } from "./bindings/NpcMemory";
+import type { DeletedCampaign } from "./bindings/DeletedCampaign";
+import type { NodeFilter } from "./bindings/NodeFilter";
+import type { FieldInfo } from "./bindings/FieldInfo";
+import type { SearchConfig } from "./bindings/SearchConfig";
+import type { SearchResult } from "./bindings/SearchResult";
+import type { MemorySettings } from "./bindings/MemorySettings";
+import type { RecentRequest } from "./bindings/RecentRequest";
+import type { RunStats } from "./bindings/RunStats";
+import type { DeletedScript } from "./bindings/DeletedScript";
+import type { ScriptVersion } from "./bindings/ScriptVersion";
+import type { VersionDiff } from "./bindings/VersionDiff";
+import type { QuestProposal } from "./bindings/QuestProposal";
+import type { NewQuest } from "./bindings/NewQuest";
 import type { ImageThumb } from "./bindings/ImageThumb";
 import type { IllustratedNode } from "./bindings/IllustratedNode";
 import type { SceneView } from "./bindings/SceneView";
@@ -199,6 +217,7 @@ export interface CampaignStatus {
 export interface CampaignMemory {
   summaries: SessionSummary[];
   facts: string[];
+  fact_seqs: number[];
   entities: CampaignEntity[];
 }
 
@@ -361,6 +380,81 @@ export const api = {
 
   listScripts: (worldId: string) => call<Script[]>("list_scripts", { worldId }),
   getScript: (worldId: string, scriptId: string) => call<ScriptView>("get_script", { worldId, scriptId }),
+  /** 剧本的玩法配置（保存的，或按题材推断的）。 */
+  scriptGameProfile: (worldId: string, scriptId: string) => call<GameProfile>("script_game_profile", { worldId, scriptId }),
+  checkScript: (worldId: string, scriptId: string) => call<ScriptFinding[]>("check_script", { worldId, scriptId }),
+  /** 删除剧本：条目、角色、剧情图一起进回收站（删除前自动保存一个版本）。 */
+  deleteScript: (worldId: string, scriptId: string) => call<number>("delete_script", { worldId, scriptId }),
+  restoreScript: (worldId: string, scriptId: string) => call<number>("restore_script", { worldId, scriptId }),
+  scriptTrash: (worldId: string) => call<DeletedScript[]>("script_trash", { worldId }),
+  copyScript: (worldId: string, scriptId: string, title: string) => call<Script>("copy_script", { worldId, scriptId, title }),
+  scriptVersions: (worldId: string, scriptId: string) => call<ScriptVersion[]>("script_versions", { worldId, scriptId }),
+  createScriptVersion: (worldId: string, scriptId: string, name: string) => call<ScriptVersion>("create_script_version", { worldId, scriptId, name }),
+  diffScriptVersion: (worldId: string, versionId: string) => call<VersionDiff>("diff_script_version", { worldId, versionId }),
+  restoreScriptVersion: (worldId: string, versionId: string) => call<number>("restore_script_version", { worldId, versionId }),
+  deleteScriptVersion: (worldId: string, versionId: string) => call<null>("delete_script_version", { worldId, versionId }),
+  /** 打开示例世界（没有就创建；不会覆盖已有世界）。 */
+  openDemoWorld: () => call<WorldInfo>("open_demo_world"),
+  /** 运行监控：最近的请求与统计。 */
+  runMonitor: (hours: number, recent: number) => call<[RecentRequest[], RunStats[]]>("run_monitor", { hours, recent }),
+  memorySettings: (worldId: string, campaignId: string) => call<MemorySettings>("memory_settings", { worldId, campaignId }),
+  setMemorySettings: (worldId: string, campaignId: string, settings: MemorySettings) => call<null>("set_memory_settings", { worldId, campaignId, settings }),
+  /** 立即压缩上下文（replace：重新生成这份自动摘要）。 */
+  compressMemory: (worldId: string, campaignId: string, replace: string | null) => call<SessionSummary>("compress_memory", { worldId, campaignId, replace }),
+  deleteSummary: (worldId: string, campaignId: string, summaryId: string) => call<null>("delete_summary", { worldId, campaignId, summaryId }),
+  /** 剧透模式（全局，默认关闭）。 */
+  spoilerMode: () => call<boolean>("spoiler_mode"),
+  setSpoilerMode: (on: boolean) => call<null>("set_spoiler_mode", { on }),
+  searchSettings: () => call<{ config: SearchConfig; has_key: string[] }>("search_settings"),
+  /** keys：要保存的 Key（空字符串表示删除）。 */
+  saveSearchSettings: (config: SearchConfig, keys: Record<string, string>) => call<null>("save_search_settings", { config, keys }),
+  /** 手动联网搜索（结果只显示）。 */
+  webSearch: (query: string) => call<SearchResult[]>("web_search", { query }),
+  dataDirInfo: () => call<{ current: string; default: string; configured: string | null; warning: string | null; env_override: boolean }>("data_dir_info"),
+  /** 迁移数据目录（复制 → 校验 → 重启后切换）。 */
+  migrateDataDir: (target: string) => call<{ files: number; bytes: number; databases: number; target: string }>("migrate_data_dir", { target }),
+  resetDataDir: () => call<null>("reset_data_dir"),
+  /** 多条件筛选节点。 */
+  filterNodes: (worldId: string, filter: NodeFilter) => call<Node[]>("filter_nodes", { worldId, filter }),
+  payloadFields: (worldId: string, kind: NodeKind | null) => call<FieldInfo[]>("payload_fields", { worldId, kind }),
+  trashCampaign: (worldId: string, campaignId: string) => call<number>("trash_campaign", { worldId, campaignId }),
+  restoreCampaign: (worldId: string, campaignId: string) => call<number>("restore_campaign", { worldId, campaignId }),
+  campaignTrash: (worldId: string) => call<DeletedCampaign[]>("campaign_trash", { worldId }),
+  /** 永久删除回收站里的战役（先自动备份世界）。 */
+  purgeCampaign: (worldId: string, campaignId: string) => call<number>("purge_campaign", { worldId, campaignId }),
+  deleteNpcMemory: (worldId: string, campaignId: string, memoryId: string) => call<null>("delete_npc_memory", { worldId, campaignId, memoryId }),
+  forgetFact: (worldId: string, campaignId: string, seq: number) => call<null>("forget_fact", { worldId, campaignId, seq }),
+  deleteBackup: (worldId: string, fileName: string) => call<null>("delete_backup", { worldId, fileName }),
+  trashWorld: (worldId: string) => call<null>("trash_world", { worldId }),
+  worldTrash: () => call<WorldInfo[]>("world_trash"),
+  restoreWorld: (worldId: string) => call<WorldInfo>("restore_world", { worldId }),
+  npcMemoryList: (worldId: string, campaignId: string, npcId: string) => call<NpcMemory[]>("npc_memory_list", { worldId, campaignId, npcId }),
+  /** 存档（name 为空 = 快速存档）。 */
+  savePoint: (worldId: string, campaignId: string, name: string) => call<Checkpoint>("save_point", { worldId, campaignId, name }),
+  /** 快速读档：从最近的快速存档开出新时间线。 */
+  quickLoad: (worldId: string, campaignId: string) => call<Campaign>("quick_load", { worldId, campaignId }),
+  autoMediaSettings: () => call<{ scene_images: boolean; portraits: boolean; pre_voice: boolean }>("auto_media_settings"),
+  setAutoMediaSettings: (settings: { scene_images: boolean; portraits: boolean; pre_voice: boolean }) => call<null>("set_auto_media_settings", { settings }),
+  transcriptionAvailable: () => call<boolean>("transcription_available"),
+  /** 语音输入：录音（base64）转文字。 */
+  transcribeAudio: (audioBase64: string, mime: string) => call<string>("transcribe_audio", { audioBase64, mime }),
+  /** 剧本条目修改后，可能需要复查的世界树节点。 */
+  scriptItemRelatedNodes: (worldId: string, itemId: string) => call<Node[]>("script_item_related_nodes", { worldId, itemId }),
+  /** 全局搜索。 */
+  globalSearch: (worldId: string, query: string) => call<GlobalHit[]>("global_search", { worldId, query }),
+  /** 待确认的图片建议。 */
+  pendingImages: (worldId: string) => call<{ node_id: string; title: string; kind: string; prompt: string; created_at: number }[]>("pending_images", { worldId }),
+  dismissPendingImage: (worldId: string, nodeId: string) => call<null>("dismiss_pending_image", { worldId, nodeId }),
+  scriptPlayerCharacters: (worldId: string, scriptId: string) => call<PlayerCharacter[]>("script_player_characters", { worldId, scriptId }),
+  /** AI 按剧本生成新的玩家角色（会调用模型，不写入剧本）。 */
+  generatePc: (worldId: string, scriptId: string, hint: string) => call<PlayerCharacter>("generate_pc", { worldId, scriptId, hint }),
+  /** AI 生成任务（会调用模型）：只返回提案与冲突检查。 */
+  generateQuest: (worldId: string, campaignId: string, mode: "situation" | "worldview", hint: string) => call<QuestProposal>("generate_quest", { worldId, campaignId, mode, hint }),
+  questAdd: (worldId: string, campaignId: string, quest: NewQuest) => call<string>("quest_add", { worldId, campaignId, quest }),
+  campaignPc: (worldId: string, campaignId: string) => call<PlayerCharacter | null>("campaign_pc", { worldId, campaignId }),
+  campaignSetPc: (worldId: string, campaignId: string, pc: PlayerCharacter) => call<null>("campaign_set_pc", { worldId, campaignId, pc }),
+  /** AI 逻辑检查（会调用模型）。 */
+  reviewScript: (worldId: string, scriptId: string) => call<ScriptFinding[]>("review_script", { worldId, scriptId }),
   createScript: (worldId: string, script: NewScript) => call<Script>("create_script", { worldId, script }),
   updateScript: (worldId: string, id: string, patch: ScriptPatch, rev: number) =>
     call<Script>("update_script", { worldId, id, patch, rev }),

@@ -45,6 +45,9 @@ export default function ReviewPage({ ctx, initialId }: { ctx: Ctx; initialId?: s
 
   async function apply() {
     if (!cs) return;
+    // 人物重名必须确认后才能写入（重名的人物会让 GM 和 NPC 混淆）。
+    const dupPeople = cs.validation.issues.filter((i) => picked.has(i.op) && (i.code === "duplicate_character" || i.code === "similar_character"));
+    if (dupPeople.length > 0 && !window.confirm("要写入的内容里有重名或名字很像的人物：\n" + dupPeople.map((i) => "· " + i.message).join("\n") + "\n\n确认它们确实是不同的人，继续写入？")) return;
     try {
       const all = picked.size === cs.ops.length;
       const done = await api.applyChangeset(ctx.worldId, cs.id, all ? null : [...picked].sort((a, b) => a - b));

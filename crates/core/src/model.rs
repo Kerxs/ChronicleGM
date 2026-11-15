@@ -80,6 +80,7 @@ str_enum!(
         Twist => "twist",
         Ending => "ending",
         Handout => "handout",
+        PlayerCharacter => "player_character",
     }
 );
 
@@ -353,6 +354,10 @@ impl NewRelation {
 
 // ===================== 剧本 =====================
 
+fn empty_obj() -> Value {
+    Value::Object(Default::default())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct Script {
@@ -366,6 +371,9 @@ pub struct Script {
     pub duration_hours: f64,
     pub tone: String,
     pub scale_profile: Value,
+    /// 玩法配置（`profile::GameProfile` 的 JSON）；空对象 = 按题材推断。
+    #[serde(default = "empty_obj")]
+    pub game_profile: Value,
     pub status: ContentStatus,
     pub source: String,
     pub rev: i64,
@@ -392,6 +400,9 @@ pub struct NewScript {
     pub duration_hours: f64,
     #[serde(default)]
     pub tone: String,
+    /// 玩法配置（`profile::GameProfile` 的 JSON），可以为空对象。
+    #[serde(default = "empty_obj")]
+    pub game_profile: Value,
 }
 
 fn default_players() -> i64 {
@@ -412,6 +423,7 @@ impl NewScript {
             player_count: 4,
             duration_hours: 4.0,
             tone: String::new(),
+            game_profile: empty_obj(),
         }
     }
 }
@@ -437,6 +449,9 @@ pub struct ScriptPatch {
     pub tone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<ContentStatus>,
+    /// 玩法配置（`profile::GameProfile`），保存前校验。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_profile: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]

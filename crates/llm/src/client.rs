@@ -129,7 +129,7 @@ impl OpenAiClient {
         }
         let used_json_schema = matches!(req.format, OutputFormat::JsonSchema { .. });
         let mut out = if req.stream {
-            self.read_stream(resp.body_mut().as_reader(), cancel, progress)?
+            self.read_stream(resp.body_mut().as_reader(), cancel, progress, started)?
         } else {
             let mut text = String::new();
             resp.body_mut()
@@ -148,13 +148,12 @@ impl OpenAiClient {
                 .ok_or_else(|| LlmError::BadResponse("响应缺少 choices[0].message.content".into()))?
                 .to_string();
             progress(content.chars().count());
+            let mut usage = Usage { prompt_tokens: v["usage"]["prompt_tokens"].as_u64(), completion_tokens: v["usage"]["completion_tokens"].as_u64(), ..Default::default() };
+            usage.read_timings(&v["timings"]);
             ChatResponse {
                 content,
                 finish_reason: v["choices"][0]["finish_reason"].as_str().map(str::to_string),
-                usage: Usage {
-                    prompt_tokens: v["usage"]["prompt_tokens"].as_u64(),
-                    completion_tokens: v["usage"]["completion_tokens"].as_u64(),
-                },
+                usage,
                 model: v["model"].as_str().map(str::to_string),
                 latency_ms: 0,
                 attempts: 1,
@@ -167,7 +166,7 @@ impl OpenAiClient {
     }
 
     /// 解析 SSE：`data: {...}` 行，`data: [DONE]` 结束。
-    fn read_stream(&self, reader: impl Read, cancel: &CancelToken, progress: Progress) -> Result<ChatResponse> {
+    fn read_stream(&self, reader: impl Read, cancel: &CancelToken, progress: Progress, started: Instant) -> Result<ChatResponse> {
         let mut content = String::new();
         let mut finish = None;
         let mut model = None;
@@ -190,9 +189,13 @@ impl OpenAiClient {
                 return Err(LlmError::BadResponse(redact(&err.to_string(), &self.secrets())));
             }
             if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
+                if usage.first_token_ms.is_none() && !delta.is_empty() {
+                    usage.first_token_ms = Some(started.elapsed().as_millis() as u64);
+                }
                 content.push_str(delta);
                 progress(content.chars().count());
             }
+            usage.read_timings(&v["timings"]);
             if let Some(f) = v["choices"][0]["finish_reason"].as_str() {
                 finish = Some(f.to_string());
             }

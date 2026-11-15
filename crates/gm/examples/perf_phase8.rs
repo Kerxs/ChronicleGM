@@ -260,7 +260,7 @@ fn relation_network(rep: &mut Report, people: usize, bonds: usize) {
     let rows: i64 = w.conn().query_row("SELECT COUNT(*) FROM campaign_bonds WHERE campaign_id = ?1", [&c], |r| r.get(0)).unwrap();
     rep.add("network", &case, "不同关系对", rows as f64, "条");
     let conn = w.conn();
-    let q = |search: &str, limit: usize| NetworkQuery { campaign_id: Some(c.clone()), search: search.into(), rel_types: vec![], include_world: true, min_strength: 0, limit };
+    let q = |search: &str, limit: usize| NetworkQuery { campaign_id: Some(c.clone()), search: search.into(), rel_types: vec![], include_world: true, min_strength: 0, limit, spoilers: true };
     let (m, x) = time_ms(5, || network::network(conn, &q("", 400)).unwrap());
     rep.add("network", &case, "全图查询(上限 400 节点)", m, "ms");
     rep.add("network", &case, "全图查询最大", x, "ms");
@@ -316,7 +316,7 @@ fn world_graph(rep: &mut Report, n_nodes: usize, n_rel: usize) -> std::path::Pat
     rep.add("graph", &case, "300 个可见节点间的关系", m, "ms");
     let (m, _) = time_ms(10, || relations::neighborhood(conn, &ids[5], 2, 300).unwrap());
     rep.add("graph", &case, "两跳邻域(上限 300)", m, "ms");
-    let (m, _) = time_ms(10, || search::search_nodes(conn, "条目123", &search::SearchOptions::default()).unwrap());
+    let (m, _) = time_ms(10, || chronicle_core::search::search_nodes(conn, "条目123", &chronicle_core::search::SearchOptions::default()).unwrap());
     rep.add("graph", &case, "节点全文搜索", m, "ms");
     drop(w);
     dir

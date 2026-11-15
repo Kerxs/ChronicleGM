@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.23.1",
  "chronicle-rules",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gen"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.23.1",
  "chronicle-core",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gm"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "chronicle-core",
  "chronicle-gen",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gm-app"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.23.1",
  "chronicle-core",
@@ -631,11 +631,13 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-updater",
  "tempfile",
+ "webview2-com",
+ "windows-core",
 ]
 
 [[package]]
 name = "chronicle-llm"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -647,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-rules"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "proptest",
  "rand_chacha",
@@ -660,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "chronicle-llm",
  "serde",

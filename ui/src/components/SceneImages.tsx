@@ -2,6 +2,7 @@
 // - 「此刻的画面」：玩家所在地点的封面 + 在场人物的头像（来自世界树节点图片）。
 // - 叙述里提到的、配了图的设定（按名称与别名匹配，只匹配玩家已经在叙述里看到的名字）。
 // - 点开看这个节点的全部图片。图片说明可能写了秘密，只在主持人视角显示。
+import { SkeletonBlock } from "./Skeleton";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { Ctx } from "../App";
@@ -44,6 +45,22 @@ export function ScenePictures({ ctx, campaignId, refreshKey, onOpen }: { ctx: Ct
     };
   }, [ctx.worldId, campaignId, refreshKey]);
 
+  // 地点是大图：用原图（缩略图放大会糊），读到之前先显示缩略图。
+  const [locFull, setLocFull] = useState<string | null>(null);
+  useEffect(() => {
+    setLocFull(null);
+    const cover = scene?.location ? scene.covers.find((c) => c.node_id === scene.location!.node_id) : undefined;
+    if (!cover) return;
+    let live = true;
+    api
+      .nodeImageData(ctx.worldId, cover.image_id)
+      .then((u) => live && setLocFull(u))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [ctx.worldId, scene]);
+
   if (!scene) return null;
   const loc = scene.location && thumbs[scene.location.node_id] ? scene.location : null;
   const people = scene.npcs.filter((n) => thumbs[n.node_id]);
@@ -52,7 +69,7 @@ export function ScenePictures({ ctx, campaignId, refreshKey, onOpen }: { ctx: Ct
     <div className="scene-pics" aria-label="此刻的画面">
       {loc && (
         <button className="scene-loc" onClick={() => onOpen({ nodeId: loc.node_id, title: loc.title })} title={`查看「${loc.title}」的图片`}>
-          <img src={thumbs[loc.node_id]} alt="" />
+          <img src={locFull ?? thumbs[loc.node_id]} alt="" />
           <span>{loc.title}</span>
         </button>
       )}
@@ -131,7 +148,7 @@ export function NodeGallery({ ctx, target, gmView, onClose }: { ctx: Ctx; target
         {target.title}
         {list.length > 1 && <small> · {cur + 1} / {list.length}</small>}
       </div>
-      {img && (full[img.image_id] || thumbs[img.image_id]) ? <img src={full[img.image_id] ?? thumbs[img.image_id]} alt="" onClick={(e) => e.stopPropagation()} /> : <span className="hint">加载中…</span>}
+      {img && (full[img.image_id] || thumbs[img.image_id]) ? <img src={full[img.image_id] ?? thumbs[img.image_id]} alt="" onClick={(e) => e.stopPropagation()} /> : <SkeletonBlock w={360} h={240} radius={12} />}
       {gmView && img?.caption && <div className="lightbox-cap">{img.caption}</div>}
       {list.length > 1 && (
         <div className="gallery-strip" onClick={(e) => e.stopPropagation()}>

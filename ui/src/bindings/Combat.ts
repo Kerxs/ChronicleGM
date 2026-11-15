@@ -17,4 +17,8 @@ rewards: Array<string>,
 /**
  * 障碍物（阻挡移动，挡在远程攻击路线上时提供掩体 +2 防御）。
  */
-obstacles: Array<[number, number]>, };
+obstacles: Array<[number, number]>, 
+/**
+ * 场地封锁等原因导致无法逃跑（空 = 可以尝试逃跑）。
+ */
+no_escape: string, };

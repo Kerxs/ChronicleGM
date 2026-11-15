@@ -8,6 +8,18 @@ use serde::de::DeserializeOwned;
 
 use crate::{GmError, Result};
 
+/// 联网搜索（程序提供；GM 方案里写了 web_search 时调用）。返回结果或失败原因。
+pub type SearchFn = dyn Fn(&str) -> std::result::Result<Vec<chronicle_llm::search::SearchResult>, String> + Send + Sync;
+
+#[derive(Clone)]
+pub struct WebSearch(pub std::sync::Arc<SearchFn>);
+
+impl std::fmt::Debug for WebSearch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WebSearch")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GmOptions {
     /// 服务支持 response_format json_schema。
@@ -18,11 +30,15 @@ pub struct GmOptions {
     pub max_tokens: u32,
     /// 参考资料预算（token）。
     pub context_budget: usize,
+    /// 流式请求（能测到首个 token 时间；服务支持流式时打开）。
+    pub stream: bool,
+    /// 联网搜索（默认没有；用户在设置里打开并允许 GM 搜索时才有）。
+    pub web_search: Option<WebSearch>,
 }
 
 impl Default for GmOptions {
     fn default() -> Self {
-        Self { json_schema: false, thinking: None, temperature: 0.8, max_tokens: 8192, context_budget: 6000 }
+        Self { json_schema: false, thinking: None, temperature: 0.8, max_tokens: 8192, context_budget: 6000, stream: false, web_search: None }
     }
 }
 
@@ -72,19 +88,12 @@ pub fn ask_limited<T: DeserializeOwned + JsonSchema>(
             temperature: Some(opts.temperature),
             max_tokens: Some(limit.min(opts.max_tokens)),
             format: if opts.json_schema { OutputFormat::JsonSchema { name: "gm".into(), schema: schema.clone() } } else { OutputFormat::Text },
-            stream: false,
+            stream: opts.stream,
             thinking,
         };
         let resp = match client.chat(&req, cancel, &mut |_| {}) {
             Ok(r) => {
-                logs.push(RequestLog {
-                    ok: true,
-                    attempts: r.attempts,
-                    prompt_tokens: r.usage.prompt_tokens,
-                    completion_tokens: r.usage.completion_tokens,
-                    latency_ms: Some(r.latency_ms),
-                    error: None,
-                });
+                logs.push(RequestLog::from_response(&r));
                 r
             }
             Err(e) => {

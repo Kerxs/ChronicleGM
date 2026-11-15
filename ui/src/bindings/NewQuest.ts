@@ -4,4 +4,20 @@ export type NewQuest = { title: string, objective: string,
 /**
  * main / side / hidden（默认 side）
  */
-quest_type: string, deadline_turns: number | null, npc_ids: Array<string>, location: string | null, clue_ids: Array<string>, };
+quest_type: string, deadline_turns: number | null, npc_ids: Array<string>, location: string | null, clue_ids: Array<string>, 
+/**
+ * 背景（为什么会有这个任务）。
+ */
+background: string, 
+/**
+ * 完成条件（文字说明，由 GM 判断；程序条件可以之后在控制台补上）。
+ */
+completion: string, 
+/**
+ * 成功 / 失败的后果（主持人信息）。
+ */
+consequences: string, 
+/**
+ * 来源说明：gm（游戏中出现）/ generated（玩家让 AI 生成）。
+ */
+origin: string, };

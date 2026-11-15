@@ -185,6 +185,13 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
     let mut ctx = Context::default();
 
     let mut refs: HashMap<String, String> = HashMap::new();
+    // 玩家角色（开新战役时选择或生成）：身份与身世是核心记忆，与主线的关联是主持人信息。
+    if let Some(pc) = chronicle_core::pc::get(world.conn(), campaign_id) {
+        ctx.push("玩家角色", chronicle_core::pc::context_text(&pc), 0);
+        if pc.link_to_plot.trim().chars().count() >= 6 {
+            hidden.push(pc.link_to_plot.clone());
+        }
+    }
     if let Some(s) = &script {
         ctx.push("剧本（含主持人信息）", script_meta(s), 0);
         if !s.core_setting.trim().is_empty() {
@@ -233,7 +240,9 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
             0,
         );
         if let Some(loc) = worldsim::party_location(world.conn(), campaign_id)?.and_then(|l| nodes::get_node(world.conn(), &l).ok().flatten()) {
-            ctx.push("玩家所在地点", format!("{}——{}", loc.title, if loc.summary.is_empty() { &loc.player_text } else { &loc.summary }), 0);
+            let local = worldsim::local_environment(world.conn(), campaign_id, Some(&loc.id), chronicle_core::schedule::clock(world.conn(), campaign_id))?;
+            let effects = if local.effects.is_empty() { String::new() } else { format!("\n环境对检定的影响（程序会自动计算）：{}", local.effects.join("；")) };
+            ctx.push("玩家所在地点", format!("{}——{}\n这里：天气{}，光线{}{effects}", loc.title, if loc.summary.is_empty() { &loc.player_text } else { &loc.summary }, local.weather, local.light), 0);
         }
         let near = worldsim::reachable(world.conn(), campaign_id, 10)?;
         if !near.is_empty() {
@@ -260,6 +269,17 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
 "),
                 2,
             );
+        }
+        // 在场的人听到的传闻（NPC 说起时用这个版本和可信度，不要说成确定的事实）。
+        let mut rumor_lines = vec![];
+        for n in &npcs {
+            for r in chronicle_core::npcsim::rumors_known_by(world.conn(), campaign_id, &n.node.id, 2)?.into_iter().filter(|r| r.hop > 0) {
+                rumor_lines.push(format!("- {}听说（可信度 {}%）：{}", n.node.title, r.credibility, r.text));
+            }
+        }
+        if !rumor_lines.is_empty() {
+            ctx.push("在场人物听到的传闻（越传越走样；人物转述时用这个版本）", rumor_lines.into_iter().take(6).collect::<Vec<_>>().join("
+"), 2);
         }
         let fs = worldsim::factions(world.conn(), campaign_id)?;
         if !fs.is_empty() {
@@ -452,11 +472,12 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
     let mut memory_refs: HashMap<String, String> = HashMap::new();
     let mut trace = ContextTrace { budget: budget as i64, ..Default::default() };
     let mut memory = vec![];
-    let confirmed: Vec<_> = campaign::summaries(world.conn(), campaign_id)?.into_iter().filter(|s| s.status == "confirmed").collect();
+    // 长期记忆：确认的摘要与自动压缩的摘要（最近 3 份）；短期记忆是下面「最近的对话」。
+    let confirmed: Vec<_> = campaign::summaries(world.conn(), campaign_id)?.into_iter().filter(|s| s.status == "confirmed" || s.status == "auto").collect();
     let mut m = 0;
-    for s in confirmed.iter().skip(confirmed.len().saturating_sub(2)) {
+    for s in confirmed.iter().skip(confirmed.len().saturating_sub(3)) {
         m += 1;
-        let text = format!("第 {} 次会话：{}", s.session_no, s.summary);
+        let text = if s.status == "auto" { format!("之前发生的事：{}", s.summary) } else { format!("第 {} 次会话：{}", s.session_no, s.summary) };
         memory.push(format!("M{m} {text}"));
         memory_refs.insert(format!("M{m}"), text.clone());
         trace.memories.push(format!("M{m} {text}"));
@@ -485,10 +506,22 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
         ctx.push("与玩家行动相关的设定", lines.join("\n"), 3);
     }
 
+    // 因果与伏笔（主持人信息）：到期的后果必须体现；伏笔合适时回收。
+    let (story, _) = chronicle_core::story::gm_text(world.conn(), campaign_id)?;
+    if !story.is_empty() {
+        hidden.extend(story.lines().filter(|l| l.starts_with("- ")).map(|l| l.trim_start_matches("- ").to_string()));
+        ctx.push("因果与伏笔（主持人信息，不要直接说出）", story, 1);
+    }
+
     // 导演指引（主持人信息）：最近的节奏判断与采用中的建议。只是可以提供的机会，不能强迫玩家，也不能违背已确认设定。
     let (pace, adopted) = chronicle_core::director::guidance(world.conn(), campaign_id)?;
-    if pace.is_some() || !adopted.is_empty() {
+    let ds = chronicle_core::director::settings(world.conn(), campaign_id);
+    let custom_pref = ds.pacing_level != 50 || ds.hint_only;
+    if pace.is_some() || !adopted.is_empty() || custom_pref {
         let mut lines = vec![];
+        if custom_pref {
+            lines.push(chronicle_core::director::pacing_preference(&ds));
+        }
         if let Some(p) = &pace {
             lines.push(format!("节奏：{p}"));
         }
@@ -521,7 +554,7 @@ fn rpg_context(world: &World, campaign_id: &str, npcs: &[NpcCard], ctx: &mut Con
     let conn = world.conn();
     let r = rpg::rules(conn, campaign_id);
     let s = rpg::sheet(conn, campaign_id, rpg::PARTY)?;
-    let attrs: Vec<String> = rpg::ATTRS.iter().map(|(k, l)| format!("{l}{}({:+})", s.attr(k), s.modv(k))).collect();
+    let attrs: Vec<String> = rpg::attr_defs(&r).iter().map(|a| format!("{}{}({:+})", a.name, s.attr(&a.key), s.modv(&a.key))).collect();
     let skills: Vec<String> = s.skills.iter().map(|(k, v)| format!("{k}+{v}")).collect();
     let (wname, wdmg, wrange, _) = rpg::weapon(conn, campaign_id, &s);
     let mut lines = vec![
@@ -733,6 +766,15 @@ pub fn build_npc_context(world: &World, campaign_id: &str, me: &NpcCard, all: &[
     if !abilities.is_empty() {
         card.push(format!("- 能力：{}", abilities.join("、")));
     }
+    // 说话风格与口头禅：台词要体现，但口头禅不要每句都说。
+    let speech = str_field(p, "speech_style");
+    if !speech.trim().is_empty() {
+        card.push(format!("- 说话风格：{speech}"));
+    }
+    let phrases = list_field(p, "catchphrases");
+    if !phrases.is_empty() {
+        card.push(format!("- 口头禅（偶尔说，不要每句都说）：{}", phrases.join("、")));
+    }
 
     let mut knowledge = list_field(p, "knowledge");
     for r in nodes::relations_of(world.conn(), &me.node.id)? {
@@ -743,6 +785,18 @@ pub fn build_npc_context(world: &World, campaign_id: &str, me: &NpcCard, all: &[
         if let Some(o) = nodes::get_node(world.conn(), other_id)? {
             knowledge.push(format!("你与「{}」的关系：{}{}", o.title, r.rel_type, if r.label.is_empty() { String::new() } else { format!("（{}）", r.label) }));
         }
+    }
+
+    // 你听说的传闻（带可信度；可信度低的要说得含糊，不能当成确定的事实）。
+    for r in chronicle_core::npcsim::rumors_known_by(world.conn(), campaign_id, &me.node.id, 4)? {
+        knowledge.push(if r.hop == 0 { format!("你亲身知道：{}", r.text) } else { format!("你听说（可信度 {}%，可能不准）：{}", r.credibility, r.text) });
+    }
+    // 你和其他人物的关系（本战役中的变化）。
+    knowledge.extend(chronicle_core::npcsim::bonds_text(world.conn(), campaign_id, &me.node.id, 6)?);
+    // 你知道的近期世界动向（世界事件：势力、人物动向）。
+    // 暗中进行的事只有当事人自己知道。
+    for ev in chronicle_core::worldsim::world_events(world.conn(), campaign_id, 6)?.into_iter().filter(|e| e.kind != "npc_secret" || e.factions.contains(&me.node.id)).take(4) {
+        knowledge.push(format!("最近听说：{}", ev.text));
     }
 
     // 商人：商品与价格由程序决定，NPC 报价必须一致。
@@ -778,7 +832,9 @@ pub fn build_npc_context(world: &World, campaign_id: &str, me: &NpcCard, all: &[
         }
         parts.join("\n")
     };
-    let memories: Vec<String> = campaign::npc_memories(world.conn(), campaign_id, &me.node.id, 8)?.into_iter().map(|m| format!("- {}", m.content)).collect();
+    // 记忆会随时间变淡（重要度每 10 回合减 1），太淡的不再想起。
+    let now_turn = campaign::get_campaign(world.conn(), campaign_id)?.turn;
+    let memories: Vec<String> = chronicle_core::npcsim::decayed(campaign::npc_memories(world.conn(), campaign_id, &me.node.id, 40)?, now_turn).into_iter().take(8).map(|m| format!("- {}", m.content)).collect();
     let memory_list: Vec<String> = memories.iter().map(|m| m.trim_start_matches("- ").to_string()).collect();
 
     let mut scene = String::new();

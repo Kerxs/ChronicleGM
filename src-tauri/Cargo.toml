@@ -7,17 +7,22 @@ publish = false
 
 [dependencies]
 base64 = "0.23.1"
-chronicle-core = { version = "0.0.1", path = "../crates/core" }
-chronicle-gen = { version = "0.0.1", path = "../crates/gen" }
-chronicle-gm = { version = "0.0.1", path = "../crates/gm" }
-chronicle-llm = { version = "0.0.1", path = "../crates/llm" }
-chronicle-runtime = { version = "0.0.1", path = "../crates/runtime" }
+chronicle-core = { version = "0.0.2", path = "../crates/core" }
+chronicle-gen = { version = "0.0.2", path = "../crates/gen" }
+chronicle-gm = { version = "0.0.2", path = "../crates/gm" }
+chronicle-llm = { version = "0.0.2", path = "../crates/llm" }
+chronicle-runtime = { version = "0.0.2", path = "../crates/runtime" }
 keyring = { version = "4.2.0", default-features = false, features = ["v1", "windows-native-keyring-store"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-dialog = "2.8.4"
 tauri-plugin-updater = "2.14.1"
+
+[target.'cfg(windows)'.dependencies]
+# 语音输入：允许本程序自己的页面使用麦克风（WebView2 默认会弹出权限请求，在应用里一直等待）。版本与 Tauri 依赖的一致。
+webview2-com = "0.39.1"
+windows-core = "0.62.2"
 
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }

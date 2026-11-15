@@ -67,7 +67,8 @@ fn sheets_checks_equipment_and_validation() {
     assert_eq!((s.level, s.max_hp, s.attr("str"), s.skills["锻造"]), (3, 30, 16, 4));
     // 资料校验。
     assert!(w.write(&user(), "n", |x| x.create_node(NewNode::new(NodeKind::Item, "坏物品").payload(json!({"rarity": "神器"})))).is_err());
-    assert!(w.write(&user(), "n", |x| x.create_node(NewNode::new(NodeKind::Character, "坏人物").payload(json!({"stats": {"attrs": {"luck": 3}}})))).is_err());
+    // 属性 key 可以按剧本的属性方案自定义（例如 luck），但数值要在范围内。
+    assert!(w.write(&user(), "n", |x| x.create_node(NewNode::new(NodeKind::Character, "坏人物").payload(json!({"stats": {"attrs": {"luck": 99}}})))).is_err());
     assert!(w.write(&user(), "n", |x| x.create_node(NewNode::new(NodeKind::Character, "坏商人").payload(json!({"shop": {"stock": [{"qty": 1}]}})))).is_err());
     // 检定修正 = 旧变量 + 技能 + 属性 + 装备 + 状态 − 伤势。
     let mut p = rpg::sheet(w.conn(), &c, PARTY).unwrap();
@@ -245,14 +246,14 @@ fn turn_based_combat_with_initiative_ap_positions_statuses_and_rewards() {
     rpg::give_item(w, &c, PARTY, &f.bow, 1, "剧情").unwrap();
     rpg::give_item(w, &c, PARTY, &f.potion, 1, "剧情").unwrap();
     rpg::equip(w, &c, PARTY, &f.bow).unwrap();
-    let rep = combat::start(w, &c, &[EnemySpec { name: "哥布林".into(), npc: None, level: 1, count: 2, loot: vec![RecipeInput { item: f.herb.clone(), qty: 3 }] }], std::slice::from_ref(&f.guard), "林中遇袭").unwrap();
+    let rep = combat::start(w, &c, &[EnemySpec { name: "哥布林".into(), npc: None, level: 1, count: 2, loot: vec![RecipeInput { item: f.herb.clone(), qty: 3 }], boss: false }], std::slice::from_ref(&f.guard), "林中遇袭").unwrap();
     let cb = rep.combat;
     assert!(rep.lines[0].contains("先攻顺序"));
     assert_eq!(cb.units.len(), 4, "玩家、守卫、两个哥布林");
     let inits: Vec<i64> = cb.order.iter().map(|id| cb.units.iter().find(|u| &u.id == id).unwrap().init).collect();
     assert!(inits.windows(2).all(|w| w[0] >= w[1]), "按先攻从高到低：{inits:?}");
     assert!(cb.players_turn());
-    assert!(combat::start(w, &c, &[EnemySpec { name: "x".into(), npc: None, level: 1, count: 1, loot: vec![] }], &[], "").is_err(), "不能同时开两场");
+    assert!(combat::start(w, &c, &[EnemySpec { name: "x".into(), npc: None, level: 1, count: 1, loot: vec![], boss: false }], &[], "").is_err(), "不能同时开两场");
     let me = cb.units.iter().find(|u| u.actor.as_deref() == Some(PARTY)).unwrap();
     assert_eq!((me.range, me.weapon.as_str()), (6, "毒箭短弓"));
     assert_eq!(me.ap, 3);
@@ -293,7 +294,7 @@ fn turn_based_combat_with_initiative_ap_positions_statuses_and_rewards() {
 fn defeat_downs_the_party_with_wounds_and_rest_recovers() {
     let mut f = fx(6);
     let (w, c) = (&mut f.e.world, f.camp.clone());
-    let rep = combat::start(w, &c, &[EnemySpec { name: "巨魔".into(), npc: None, level: 12, count: 1, loot: vec![] }], &[], "不自量力").unwrap();
+    let rep = combat::start(w, &c, &[EnemySpec { name: "巨魔".into(), npc: None, level: 12, count: 1, loot: vec![], boss: false }], &[], "不自量力").unwrap();
     assert!(rep.combat.status == "active" || rep.combat.status == "defeat");
     let mut end = rep.combat;
     for _ in 0..50 {
@@ -307,7 +308,7 @@ fn defeat_downs_the_party_with_wounds_and_rest_recovers() {
     let p = rpg::sheet(w.conn(), &c, PARTY).unwrap();
     assert_eq!(p.hp, 0);
     assert!(p.wounds.iter().any(|w| w.name == "重伤"), "倒下时记一处重伤");
-    assert!(combat::start(w, &c, &[EnemySpec { name: "x".into(), npc: None, level: 1, count: 1, loot: vec![] }], &[], "").unwrap_err().to_string().contains("倒下"));
+    assert!(combat::start(w, &c, &[EnemySpec { name: "x".into(), npc: None, level: 1, count: 1, loot: vec![], boss: false }], &[], "").unwrap_err().to_string().contains("倒下"));
     // 休息：每小时恢复 1 点，三天后重伤痊愈。
     schedule::advance(w, &c, 6 * 60, "昏迷").unwrap();
     assert_eq!(rpg::sheet(w.conn(), &c, PARTY).unwrap().hp, 6);
@@ -333,7 +334,7 @@ fn custom_rules_and_actions_and_poison_status() {
     rpg::save_sheet(w, &c, &p, "x").unwrap();
     rpg::give_item(w, &c, PARTY, &f.bow, 1, "x").unwrap();
     rpg::equip(w, &c, PARTY, &f.bow).unwrap();
-    let cb = combat::start(w, &c, &[EnemySpec { name: "强盗".into(), npc: None, level: 3, count: 1, loot: vec![] }], &[], "拦路").unwrap().combat;
+    let cb = combat::start(w, &c, &[EnemySpec { name: "强盗".into(), npc: None, level: 3, count: 1, loot: vec![], boss: false }], &[], "拦路").unwrap().combat;
     if cb.status != "active" {
         return;
     }
@@ -366,7 +367,7 @@ fn rpg_state_follows_timelines_and_combat_is_reproducible() {
         let cp = timeline::checkpoints(w.conn(), &c).unwrap().last().unwrap().id;
         rpg::buy(w, &c, &f.smith, &f.potion, 2).unwrap();
         rpg::award_xp(w, &c, PARTY, 120, "x").unwrap();
-        combat::start(w, &c, &[EnemySpec { name: "狼".into(), npc: None, level: 1, count: 2, loot: vec![] }], &[], "狼群").unwrap();
+        combat::start(w, &c, &[EnemySpec { name: "狼".into(), npc: None, level: 1, count: 2, loot: vec![], boss: false }], &[], "狼群").unwrap();
         let end = fight_to_end(w, &c);
         timeline::checkpoint(w.conn(), &c, "turn_end").unwrap();
         timeline::end_campaign(w, &c, "").unwrap();
@@ -401,11 +402,42 @@ fn acquired_gear_auto_equips_and_mid_combat_swaps_apply() {
     rpg::change_money(w, &c, PARTY, 500, "x").unwrap();
     let t = rpg::buy(w, &c, &f.smith, &f.armor, 1).unwrap();
     assert!(t.contains("已装备"), "{t}");
-    let cb = combat::start(w, &c, &[EnemySpec { name: "靶子".into(), npc: None, level: 1, count: 1, loot: vec![] }], &[], "练习").unwrap().combat;
+    let cb = combat::start(w, &c, &[EnemySpec { name: "靶子".into(), npc: None, level: 1, count: 1, loot: vec![], boss: false }], &[], "练习").unwrap().combat;
     assert_eq!(cb.units[0].weapon, "长剑");
     rpg::equip(w, &c, PARTY, &f.bow).unwrap();
     let cb = combat::active(w.conn(), &c).unwrap();
     let me = cb.units.iter().find(|u| u.actor.as_deref() == Some(PARTY)).unwrap();
     assert_eq!((me.weapon.as_str(), me.range), ("毒箭短弓", 6));
     assert!(cb.log.iter().any(|l| l.contains("换上了毒箭短弓")));
+}
+
+#[test]
+fn flee_is_blocked_by_boss_or_locked_arena_without_rolling() {
+    for (boss, lock, why) in [(true, "", "首领战"), (false, "大门被铁栅封死", "铁栅")] {
+        let mut f = fx(7);
+        let (w, c) = (&mut f.e.world, f.camp.clone());
+        let mut p = rpg::sheet(w.conn(), &c, PARTY).unwrap();
+        p.max_hp = 200;
+        p.hp = 200;
+        rpg::save_sheet(w, &c, &p, "x").unwrap();
+        let cb = combat::start_locked(w, &c, &[EnemySpec { name: "领主".into(), npc: None, level: 1, count: 1, loot: vec![], boss }], &[], "决战", lock).unwrap().combat;
+        assert_eq!(cb.status, "active");
+        assert!(cb.players_turn());
+        let rolls_before = campaign::get_campaign(w.conn(), &c).unwrap().roll_counter;
+        let rep = combat::act(w, &c, &CombatAction { kind: "flee".into(), ..Default::default() }).unwrap();
+        assert!(rep.lines.iter().any(|l| l.contains("无法脱身") && l.contains(why)), "{:?}", rep.lines);
+        assert_eq!(rep.combat.status, "active", "逃跑受阻，战斗继续");
+        assert_eq!(campaign::get_campaign(w.conn(), &c).unwrap().roll_counter, rolls_before, "受阻时不掷骰");
+        assert!(rep.combat.players_turn(), "受阻不消耗回合");
+    }
+}
+
+#[test]
+fn missing_items_only_when_player_uses_them() {
+    let mut f = fx(3);
+    let (w, c) = (&mut f.e.world, f.camp.clone());
+    assert!(rpg::missing_items(w.conn(), &c, None, "我看看地上碎掉的长剑").unwrap().is_empty(), "只是看，不算");
+    assert_eq!(rpg::missing_items(w.conn(), &c, None, "我拔出长剑砍向敌人").unwrap(), vec!["长剑"]);
+    rpg::give_item(w, &c, PARTY, &f.sword, 1, "x").unwrap();
+    assert!(rpg::missing_items(w.conn(), &c, None, "我拔出长剑砍向敌人").unwrap().is_empty(), "有了就不算");
 }

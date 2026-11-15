@@ -1,4 +1,5 @@
 // 世界树节点的图片：图库、上传（选文件 / 拖放 / 粘贴）、大图、设封面、说明、删除、AI 看图描述。
+import { SkeletonBlock } from "./Skeleton";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Ctx } from "../App";
@@ -146,7 +147,7 @@ export default function NodeImages({ ctx, node, onChanged }: { ctx: Ctx; node: N
         {list.map((img, i) => (
           <figure key={img.id} className={i === 0 ? "cover" : ""}>
             <button className="thumb" onClick={() => void openFull(img)} title="查看大图">
-              {thumbs[img.id] ? <img src={thumbs[img.id]} alt={img.caption || node.title} /> : <span className="hint">加载中…</span>}
+              {thumbs[img.id] ? <img src={thumbs[img.id]} alt={img.caption || node.title} /> : <SkeletonBlock w="100%" h="100%" radius={10} />}
               {i === 0 && <span className="cover-tag">封面</span>}
             </button>
             <figcaption>
@@ -191,7 +192,7 @@ export default function NodeImages({ ctx, node, onChanged }: { ctx: Ctx; node: N
       </div>
       {open && (
         <div className="lightbox" onClick={() => setOpen(null)} role="dialog" aria-label="大图">
-          {full[open.id] ? <img src={full[open.id]} alt={open.caption} /> : <span className="hint">加载中…</span>}
+          {full[open.id] ? <img src={full[open.id]} alt={open.caption} /> : <SkeletonBlock w="100%" h="100%" radius={10} />}
           {open.caption && <div className="lightbox-cap">{open.caption}</div>}
         </div>
       )}

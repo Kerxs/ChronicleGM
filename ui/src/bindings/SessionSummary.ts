@@ -2,6 +2,22 @@
 
 export type SessionSummary = { id: string, session_no: number, summary: string, 
 /**
- * draft（待确认）/ confirmed（已确认，GM 会读取）
+ * draft（待确认）/ confirmed（已确认，GM 会读取）/ auto（自动压缩的，GM 会读取，可以确认、重新生成或删除）
  */
-status: string, upto_seq: number, created_at: number, };
+status: string, upto_seq: number, created_at: number, 
+/**
+ * manual（手动生成）/ auto（上下文压缩）
+ */
+source: string, 
+/**
+ * 压缩前的游戏记录 token 数 / 摘要的 token 数。
+ */
+tokens_before: number | null, tokens_after: number | null, 
+/**
+ * measured（服务端分词实测）/ estimated（估算）
+ */
+token_method: string, 
+/**
+ * 覆盖的事件范围起点（不含）。
+ */
+from_seq: number, };

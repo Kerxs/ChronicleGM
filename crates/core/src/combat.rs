@@ -55,6 +55,9 @@ pub struct Combatant {
     /// 生命降到四分之一时检定过士气（只检定一次）。
     #[serde(default)]
     pub morale_checked: bool,
+    /// 首领：首领还在战斗时无法逃跑。
+    #[serde(default)]
+    pub boss: bool,
 }
 
 impl Combatant {
@@ -92,6 +95,9 @@ pub struct Combat {
     /// 障碍物（阻挡移动，挡在远程攻击路线上时提供掩体 +2 防御）。
     #[serde(default)]
     pub obstacles: Vec<(i64, i64)>,
+    /// 场地封锁等原因导致无法逃跑（空 = 可以尝试逃跑）。
+    #[serde(default)]
+    pub no_escape: String,
 }
 
 impl Combat {
@@ -150,6 +156,9 @@ pub struct EnemySpec {
     pub count: i64,
     #[serde(default)]
     pub loot: Vec<RecipeInput>,
+    /// 首领（首领战无法逃跑）。
+    #[serde(default)]
+    pub boss: bool,
 }
 
 fn one() -> i64 {
@@ -205,7 +214,9 @@ fn roll(world: &mut World, campaign_id: &str, expr: &str, reason: &str) -> Resul
 
 fn unit_from_sheet(conn: &Connection, campaign_id: &str, s: &Sheet, side: &str, id: &str) -> Combatant {
     let (weapon, damage, range, on_hit) = rpg::weapon(conn, campaign_id, s);
-    let attr = if range > 1 { "dex" } else { "str" };
+    let r = rpg::rules(conn, campaign_id);
+    let attr = if range > 1 { rpg::role_attr(&r, "agility") } else { rpg::role_attr(&r, "might") };
+    let attr = attr.as_str();
     let wound_pen: i64 = s.wounds.iter().map(|w| w.penalty).sum();
     Combatant {
         id: id.into(),
@@ -231,6 +242,7 @@ fn unit_from_sheet(conn: &Connection, campaign_id: &str, s: &Sheet, side: &str, 
         loot: vec![],
         new_wounds: vec![],
         morale_checked: false,
+        boss: false,
     }
 }
 
@@ -244,6 +256,11 @@ fn format_damage(d: &str, m: i64) -> String {
 
 /// 开始战斗：玩家、同伴（人物 ID）与敌人。先攻由程序掷骰。
 pub fn start(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies: &[String], reason: &str) -> Result<CombatReport> {
+    start_locked(world, campaign_id, enemies, allies, reason, "")
+}
+
+/// 开始战斗；`no_escape` 非空时这场战斗无法逃跑（场地封锁、退路被切断……），写明原因。
+pub fn start_locked(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies: &[String], reason: &str, no_escape: &str) -> Result<CombatReport> {
     campaign::ensure_active(world.conn(), campaign_id)?;
     if active(world.conn(), campaign_id).is_some() {
         return Err(CoreError::Invalid("已经在战斗中".into()));
@@ -279,7 +296,7 @@ pub fn start(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies
                     unit_from_sheet(conn, campaign_id, &s, "enemy", &format!("e{n}"))
                 }
                 None => {
-                    let s = rpg::template("", &name, e.level.max(1));
+                    let s = rpg::template("", &name, rpg::difficulty_level(&rpg::rules(conn, campaign_id), e.level.max(1)));
                     let mut u = unit_from_sheet(conn, campaign_id, &s, "enemy", &format!("e{n}"));
                     u.actor = None;
                     u.damage = s.unarmed.clone();
@@ -296,6 +313,7 @@ pub fn start(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies
                 u.name = name;
             }
             u.loot = if k == 0 { e.loot.clone() } else { vec![] };
+            u.boss = e.boss;
             units.push(u);
         }
     }
@@ -315,8 +333,9 @@ pub fn start(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies
         }
     }
     let mut lines = vec![];
+    let agi = rpg::role_attr(&rpg::rules(world.conn(), campaign_id), "agility");
     for u in units.iter_mut() {
-        let dex = u.actor.as_ref().and_then(|a| rpg::sheet(world.conn(), campaign_id, a).ok()).map(|s| s.modv("dex")).unwrap_or(u.level / 3);
+        let dex = u.actor.as_ref().and_then(|a| rpg::sheet(world.conn(), campaign_id, a).ok()).map(|s| s.modv(&agi)).unwrap_or(u.level / 3);
         let rv = roll(world, campaign_id, "1d20", &format!("{} 先攻", u.name))?;
         u.init = rv + dex;
     }
@@ -337,7 +356,7 @@ pub fn start(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies
             obstacles.push((x, y));
         }
     }
-    let mut c = Combat { id, round: 1, turn: 0, order, units, log: vec![], status: "active".into(), width, height, reason: reason.into(), rewards: vec![], obstacles };
+    let mut c = Combat { id, round: 1, turn: 0, order, units, log: vec![], status: "active".into(), width, height, reason: reason.into(), rewards: vec![], obstacles, no_escape: no_escape.trim().chars().take(60).collect() };
     let order_text = c.order.iter().map(|o| { let u = &c.units[c.idx(o)]; format!("{}({})", u.name, u.init) }).collect::<Vec<_>>().join(" → ");
     c.push(&mut lines, format!("战斗开始（{reason}）。先攻顺序：{order_text}"));
     begin_turn(world, campaign_id, &mut c, &r, &mut lines)?;
@@ -649,6 +668,7 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
         }
     };
     let mut end = false;
+    let mut fled = false;
     match a.kind.as_str() {
         "attack" => {
             need(r.attack_cost, &c)?;
@@ -679,7 +699,14 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
             } else {
                 let t = find_unit(&c, &a.target).ok_or_else(|| CoreError::Invalid("移动需要目标位置或要靠近的目标".into()))?;
                 let stop = if c.units[t].friendly() { 1 } else { c.units[pi].range };
-                step_toward(&mut c, pi, t, r.speed, stop)
+                let (ox, oy) = (c.units[pi].x, c.units[pi].y);
+                step_toward(&mut c, pi, t, r.speed, stop);
+                // 按实际走了多远报告（实测：被挡住时原地不动却报告"移动了 4 格"，还会重复两次）。
+                let d = (c.units[pi].x - ox).abs().max((c.units[pi].y - oy).abs());
+                if d == 0 {
+                    return Err(CoreError::Invalid("没法再靠近了（路被挡住或已经在旁边）".into()));
+                }
+                d
             };
             c.units[pi].ap -= r.move_cost;
             let (n, x, y) = (c.units[pi].name.clone(), c.units[pi].x, c.units[pi].y);
@@ -759,10 +786,15 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
                 }
             }
         }
+        "flee" if let Some(why) = escape_blocked(&c, pi) => {
+            // 无法逃跑：不掷骰、不消耗行动，说明原因。
+            let name = c.units[pi].name.clone();
+            c.push(&mut lines, format!("{name}想逃跑，但无法脱身：{why}"));
+        }
         "flee" => {
             let adj = c.units.iter().filter(|u| !u.friendly() && u.active() && dist(u, &c.units[pi]) <= 1).count() as i64;
             let dc = 10 + adj * 2;
-            let dex = rpg::sheet(world.conn(), campaign_id, PARTY)?.modv("dex");
+            let dex = rpg::sheet(world.conn(), campaign_id, PARTY)?.modv(&rpg::role_attr(&rpg::rules(world.conn(), campaign_id), "agility"));
             let n = roll(world, campaign_id, "1d20", "逃跑")?;
             c.units[pi].ap = 0;
             let name = c.units[pi].name.clone();
@@ -770,6 +802,7 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
                 c.units[pi].out = "fled".into();
                 c.status = "fled".into();
                 c.push(&mut lines, format!("{name}逃跑：掷出 {n}{dex:+}，难度 {dc}，成功脱离了战斗"));
+                fled = true;
             } else {
                 c.push(&mut lines, format!("{name}逃跑：掷出 {n}{dex:+}，难度 {dc}，没能脱身"));
             }
@@ -783,6 +816,14 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
         run_ai(world, campaign_id, &mut c, &r, &mut lines)?;
     }
     save(world, campaign_id, &mut c, &mut lines)?;
+    // 逃跑成功：离开当前地点，跑到最近的可到达地点（有地图时；耗时按路程和天气计算）。
+    if fled
+        && let Some(to) = crate::worldsim::reachable(world.conn(), campaign_id, 1)?.into_iter().next()
+        && let Ok((plan, more)) = crate::worldsim::travel(world, campaign_id, &to.id, "逃离战斗")
+    {
+        lines.push(format!("逃到了「{}」（{}）", plan.to_title, crate::worldsim::format_duration(plan.minutes)));
+        lines.extend(more);
+    }
     Ok(CombatReport { lines, combat: c })
 }
 
@@ -814,6 +855,22 @@ pub fn abort(world: &mut World, campaign_id: &str, reason: &str) -> Result<Comba
 }
 
 /// 保存战斗状态；战斗结束时把生命值、伤势写回角色卡，并发放经验与战利品。
+/// 为什么无法逃跑（None = 可以尝试）：场地封锁、首领还在、四面被围。
+fn escape_blocked(c: &Combat, pi: usize) -> Option<String> {
+    if !c.no_escape.is_empty() {
+        return Some(c.no_escape.clone());
+    }
+    if let Some(b) = c.units.iter().find(|u| u.boss && u.active() && !u.friendly()) {
+        return Some(format!("「{}」不会让你轻易离开，首领战无法逃跑", b.name));
+    }
+    let p = &c.units[pi];
+    let blocked = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().all(|(dx, dy)| {
+        let (x, y) = (p.x + dx, p.y + dy);
+        x < 0 || y < 0 || x >= c.width || y >= c.height || c.obstacles.contains(&(x, y)) || c.units.iter().any(|u| u.active() && !u.friendly() && u.x == x && u.y == y)
+    });
+    blocked.then(|| "四面都被敌人和障碍挡住，被包围了".to_string())
+}
+
 fn save(world: &mut World, campaign_id: &str, c: &mut Combat, lines: &mut Vec<String>) -> Result<()> {
     let ended = c.status != "active";
     let mut eff = vec![];

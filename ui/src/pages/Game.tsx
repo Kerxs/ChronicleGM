@@ -1,4 +1,16 @@
+import PendingImages from "../components/PendingImages";
+import MicButton from "../components/MicButton";
+import SmartCards from "../components/SmartCards";
+import { CampaignTrash } from "../components/TrashPanels";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PcPicker from "../components/PcPicker";
+import RunMonitor from "../components/RunMonitor";
+import WebSearchPanel from "../components/WebSearchPanel";
+import MemoryCompression, { AutoSummary } from "../components/MemoryCompression";
+import type { PlayerCharacter } from "../bindings/PlayerCharacter";
+
+/** 开场回合的输入标记（与后端 chronicle_gm::OPENING 一致）。 */
+const OPENING = "__opening__";
 import GmOrb, { type OrbState } from "../components/GmOrb";
 import { api, type CampaignMemory, type CampaignStatus, type ScriptView } from "../api";
 import type { Ctx } from "../App";
@@ -17,14 +29,20 @@ import { listen } from "@tauri-apps/api/event";
 import type { ForkPoint } from "../bindings/ForkPoint";
 import type { VerifyReport } from "../bindings/VerifyReport";
 import type { TimelineComparison } from "../bindings/TimelineComparison";
+import AnimatedNumber from "../components/AnimatedNumber";
+import type { ShownCheck } from "../components/DiceShow";
 import { MentionThumbs, NodeGallery, ScenePictures, useIllustrated, type GalleryTarget } from "../components/SceneImages";
 
 const TRI: Record<string, string> = { true: "条件满足", false: "条件不满足", unknown: "需检定" };
 
-export default function GamePage({ ctx }: { ctx: Ctx }) {
+export default function GamePage({ ctx, campaign }: { ctx: Ctx; campaign?: string }) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
-  const [cid, setCid] = useState<string | null>(null);
+  const [cid, setCid] = useState<string | null>(campaign ?? null);
+  // 从全局搜索跳过来：切到那个战役。
+  useEffect(() => {
+    if (campaign) setCid(campaign);
+  }, [campaign]);
   const [newName, setNewName] = useState("");
   const [newScript, setNewScript] = useState("");
   const [showArchived, setShowArchived] = useState(false);
@@ -70,7 +88,7 @@ export default function GamePage({ ctx }: { ctx: Ctx }) {
           显示已归档
         </label>
         <span className="hint">或新建：</span>
-        <select value={newScript} onChange={(e) => setNewScript(e.target.value)}>
+        <select value={newScript} onChange={(e) => setNewScript(e.target.value)} data-tour="new-script">
           <option value="">自由沙盒（不使用剧本）</option>
           {scripts.map((s) => (
             <option key={s.id} value={s.id}>
@@ -79,7 +97,28 @@ export default function GamePage({ ctx }: { ctx: Ctx }) {
           ))}
         </select>
         <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="战役名称" />
-        <button onClick={() => void create()}>新建战役</button>
+        <button onClick={() => void create()} data-tour="new-campaign">新建战役</button>
+        {cid && (
+          <button
+            className="small danger"
+            title="移到回收站（可以恢复）；从它分出的时间线一起移走"
+            onClick={() => {
+              const c = campaigns.find((x) => x.id === cid);
+              if (!window.confirm("把战役「" + (c?.name ?? "") + "」移到回收站？\n从它分出的时间线会一起移走，可以在回收站恢复。")) return;
+              void api
+                .trashCampaign(ctx.worldId, cid)
+                .then(() => {
+                  setCid(null);
+                  ctx.notify("已移到回收站");
+                  ctx.bump();
+                })
+                .catch((e: Error) => ctx.notify(e.message, "error"));
+            }}
+          >
+            删除战役
+          </button>
+        )}
+        <CampaignTrash ctx={ctx} />
       </header>
       {cid ? <Table key={cid} ctx={ctx} campaignId={cid} campaigns={campaigns} onSwitch={(id) => { setCid(id); ctx.bump(); }} /> : <p className="hint">选择或新建一个战役开始游戏。GM 由 AI 主持；骰子、规则与状态变化都由程序判定。</p>}
     </section>
@@ -93,7 +132,21 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
   const [memory, setMemory] = useState<CampaignMemory | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [gmView, setGmView] = useState(false);
+  // 剧透模式（全局设置，程序按它过滤主持人信息）。
+  const [gmView, setGmViewRaw] = useState(false);
+  useEffect(() => {
+    api.spoilerMode().then(setGmViewRaw).catch(() => {});
+  }, [ctx.tick]);
+  const setGmView = (on: boolean) => {
+    if (on && !window.confirm("打开剧透模式？\n会显示秘密、真相、AI 的意图、被拒绝的修改和主持人关系。自己当玩家时打开会剧透。\n这是全局设置：图谱、人物关系、搜索、档案馆也会一起显示主持人信息。")) return;
+    void api
+      .setSpoilerMode(on)
+      .then(() => {
+        setGmViewRaw(on);
+        ctx.bump();
+      })
+      .catch((e: Error) => ctx.notify(e.message, "error"));
+  };
   const [last, setLast] = useState<TurnResult | null>(null);
   const [tab, setTab] = useState<"state" | "board" | "quests" | "npcs" | "world" | "character" | "combat" | "console" | "branches" | "memory" | "timeline">("state");
   const [draft, setDraft] = useState("");
@@ -101,10 +154,14 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
   // GM 玻璃球：构思中的阶段；正在讲述的叙述（讲完才落进剧情流）；刚落下的叙述（播放落下动画）。
   const [stage, setStage] = useState<string | undefined>(undefined);
   const [speaking, setSpeaking] = useState<string | null>(null);
-  const [landing, setLanding] = useState<string | null>(null);
+  /** 剧本的调查比重：0 时不显示「调查」页签（没有剧本时按 1）。 */
+  const [investigation, setInvestigation] = useState(1);
   /** 正在查看图片的节点（地点、人物或叙述里提到的设定）。 */
   const [gallery, setGallery] = useState<GalleryTarget | null>(null);
   const illustrated = useIllustrated(ctx.worldId, ctx.tick);
+  // 玩家角色：undefined = 还没读到；null = 没有设定。
+  const [pc, setPc] = useState<PlayerCharacter | null | undefined>(undefined);
+  const [picking, setPicking] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -115,10 +172,14 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
       ]);
       setEvents(ev);
       setStatus(st);
+      api.campaignPc(ctx.worldId, campaignId).then(setPc).catch(() => setPc(null));
       setMemory(mem);
       const d = mem.summaries.find((x) => x.status === "draft");
       setDraft(d?.summary ?? "");
-      if (st.campaign.script_id && !script) setScript(await api.getScript(ctx.worldId, st.campaign.script_id));
+      if (st.campaign.script_id && !script) {
+        setScript(await api.getScript(ctx.worldId, st.campaign.script_id));
+        api.scriptGameProfile(ctx.worldId, st.campaign.script_id).then((p) => setInvestigation(p.weights.investigation)).catch(() => {});
+      }
     } catch (e) {
       ctx.notify((e as Error).message, "error");
     }
@@ -129,9 +190,23 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.tick]);
 
+  // 滚到最新一行：直接滚动剧情容器（不用 scrollIntoView——它会强制整页重新排版，长剧情时打开游戏页卡 100ms 以上）。
+  // 第一次打开立即到底；之后有新内容时平滑滚动。
+  const linesRef = useRef<HTMLDivElement>(null);
+  // 打开页面时已有的行不播放入场动画，之后新加入的行才浮现（记下第一次显示时已有的行）。
+  const initialLines = useRef<Set<string> | null>(null);
+  const scrolledOnce = useRef(false);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth" });
+    const el = linesRef.current;
+    if (!el || events.length === 0) return;
+    const first = !scrolledOnce.current;
+    scrolledOnce.current = true;
+    const id = window.setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: first ? "auto" : "smooth" }), first ? 0 : 30);
+    return () => clearTimeout(id);
   }, [events.length]);
+  useEffect(() => {
+    if (initialLines.current == null && lines.length > 0) initialLines.current = new Set(lines.map((l, i) => `${l.seq}-${i}`));
+  });
 
   const names: Names = useMemo(() => {
     const m = new Map<string, string>();
@@ -149,7 +224,21 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
     }
     return all;
   }, [events, gmView, speaking]);
-  const orbState: OrbState = busy ? "thinking" : speaking ? "speaking" : "idle";
+  // 检定：后端每掷一次骰就推送一条，玻璃球依次展开演出（结果已确定）。
+  const [checkQueue, setCheckQueue] = useState<ShownCheck[]>([]);
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    void listen<{ campaign_id: string; check: { skill: string; reason: string; detail: ShownCheck["detail"] | null } }>("gm-check", (e) => {
+      const c = e.payload.check;
+      if (e.payload.campaign_id === campaignId && c?.detail) setCheckQueue((q) => [...q, { skill: c.skill, reason: c.reason, detail: c.detail! }]);
+    }).then((f) => (off = f));
+    return () => off?.();
+  }, [campaignId]);
+  // GM 的讲述留在玻璃球里：讲完停在"查看"状态，点球或剧情流里的小条可以翻看之前的讲述。
+  const gmSaid = useMemo(() => toTranscript(events).filter((l) => l.who === "gm" && !l.gmOnly && l.text.trim()).map((l) => ({ turn: l.turn, text: l.text, seq: l.seq })), [events]);
+  const [readIdx, setReadIdx] = useState<number | null>(null);
+  const [unread, setUnread] = useState(false);
+  const orbState: OrbState = checkQueue.length ? "rolling" : busy ? "thinking" : speaking ? "speaking" : readIdx != null && gmSaid[readIdx] ? "reading" : "idle";
   // 朗读：前端按顺序一条一条播放（后端有缓存与队列上限）。
   const [autoRead, setAutoRead] = useState(() => {
     try {
@@ -183,20 +272,24 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
     return () => off?.();
   }, [campaignId]);
 
-  async function send() {
-    if (!input.trim() || busy) return;
+  async function send(text?: string) {
+    const said = (text ?? input).trim();
+    if (!said || busy) return;
+    const opening = said === OPENING;
+    setReadIdx(null);
     setBusy(true);
-    setStage(undefined);
+    setStage(opening ? "opening" : undefined);
     setSpeaking(null);
     try {
-      const r = await api.gmTurn(ctx.worldId, campaignId, input.trim());
+      const r = await api.gmTurn(ctx.worldId, campaignId, said);
       if (r.narration.trim()) setSpeaking(r.narration.trim());
+      else setUnread(false);
       if (autoRead) {
         if (r.narration.trim()) voice.enqueue(null, r.narration);
         for (const n of r.npc_lines) voice.enqueue(n.npc_id, n.text);
       }
       setLast(r);
-      setInput("");
+      if (!opening && text === undefined) setInput("");
       if (r.leaks.length || r.npc_lines.some((n) => n.leaks.length)) ctx.notify("本回合的文字中可能泄露了主持人信息（主持人视角可查看）", "error");
       if (r.entities.some((e) => e.entity_id)) ctx.notify("AI 提议了新的人物或地点，已加入本战役，确认后才写入世界（见审阅台）");
       if (r.combat?.status === "active") setTab("combat");
@@ -232,23 +325,58 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
     }
   }
 
+  // GM 给出的可选行动：最近一次 choices 事件之后玩家还没有行动时显示。
+  const gmChoices = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.kind === "player") return [];
+      if (e.kind === "choices") return (((e.payload as { items?: string[] }) ?? {}).items ?? []).slice(0, 4);
+    }
+    return [];
+  }, [events]);
+  const started = events.some((e) => e.kind === "narration" || e.kind === "player");
+  const atStart = !!status && status.campaign.turn === 0 && !started && status.campaign.status !== "ended";
+  const showPicker = atStart && picking && pc === null && !busy;
+  const showOpening = atStart && !busy && (pc != null || !picking);
+
   const st = status?.state;
   return (
     <div className="table-body">
       <div className="transcript card">
-        <div className="gm-stage">
+        <div className="gm-stage" data-tour="gm-stage">
           <GmOrb
             state={orbState}
             stage={stage}
             text={speaking ?? ""}
             level={voice.level}
             onFinished={() => {
-              setLanding(speaking);
               setSpeaking(null);
+              // 讲完后留在球里，显示完整的这一段（玩家行动时自动收起）。
+              setReadIdx(gmSaid.length ? gmSaid.length - 1 : null);
+              setUnread(false);
             }}
+            check={checkQueue[0] ?? null}
+            onCheckDone={() => setCheckQueue((q) => q.slice(1))}
+            history={gmSaid}
+            readIndex={readIdx}
+            onRead={(i) => {
+              setReadIdx(i);
+              if (i != null) setUnread(false);
+            }}
+            unread={unread}
+            footer={
+              readIdx != null && gmSaid[readIdx] ? (
+                <>
+                  <button className="link speak" title="朗读这一段" onClick={(e) => { e.stopPropagation(); voice.enqueue(null, gmSaid[readIdx].text); }}>
+                    🔊 朗读
+                  </button>
+                  <MentionThumbs ctx={ctx} text={gmSaid[readIdx].text} nodes={illustrated} onOpen={setGallery} />
+                </>
+              ) : null
+            }
           />
         </div>
-        <div className="lines">
+        <div className="lines" ref={linesRef}>
           <ScenePictures ctx={ctx} campaignId={campaignId} refreshKey={events.length + ctx.tick} onOpen={setGallery} />
           {status?.current && (
             <div className="scene">
@@ -275,9 +403,49 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
               </button>
             </div>
           )}
-          {lines.length === 0 && <p className="hint">输入玩家的第一个行动，开始游戏。</p>}
-          {lines.map((l, i) => (
-            <div key={`${l.seq}-${i}`} className={`line who-${l.who}${l.gmOnly ? " gm-only" : ""}${l.warn ? " warn" : ""}${landing && l.who === "gm" && l.text.trim() === landing ? " landing" : ""}`}>
+          {showPicker && (
+            <PcPicker
+              ctx={ctx}
+              scriptId={status?.campaign.script_id ?? null}
+              campaignId={campaignId}
+              onDone={() => {
+                setPicking(false);
+                void api.campaignPc(ctx.worldId, campaignId).then(setPc).catch(() => {});
+                void send(OPENING);
+              }}
+            />
+          )}
+          {showOpening && (
+            <div className="opening-cta card">
+              {pc && <p>你扮演：<strong>{pc.name}</strong>（{pc.identity}）</p>}
+              <button className="primary" data-tour="opening" onClick={() => void send(OPENING)}>
+                听 GM 讲述开场
+              </button>
+              <p className="hint">也可以直接在下面输入第一个行动。</p>
+            </div>
+          )}
+          {lines.length === 0 && !atStart && <p className="hint">输入玩家的第一个行动，开始游戏。</p>}
+          {lines.map((l, i) =>
+            l.who === "gm" && !l.gmOnly ? (
+              // GM 的讲述在玻璃球里看：剧情流里只留一个小条，点开在球里显示这一段。
+              <button
+                key={`${l.seq}-${i}`}
+                type="button"
+                className={`gm-chip${readIdx != null && gmSaid[readIdx]?.seq === l.seq ? " on" : ""}`}
+                onClick={() => {
+                  const k = gmSaid.findIndex((g) => g.seq === l.seq);
+                  setReadIdx(k >= 0 ? k : null);
+                  setUnread(false);
+                  linesRef.current?.parentElement?.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                title="在玻璃球里查看这段讲述"
+              >
+                <span className="dot" />
+                <span>GM · 第 {l.turn + 1} 回合</span>
+                <span className="pv">{l.text.replace(/\s+/g, " ").slice(0, 28)}…</span>
+              </button>
+            ) : (
+            <div key={`${l.seq}-${i}`} className={`line${initialLines.current && !initialLines.current.has(`${l.seq}-${i}`) ? " enter" : ""} who-${l.who}${l.gmOnly ? " gm-only" : ""}${l.warn ? " warn" : ""}`}>
               {l.who === "npc" && <span className="speaker">{l.name}：</span>}
               {l.who === "player" && <span className="speaker">玩家：</span>}
               {l.text}
@@ -288,10 +456,21 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
               )}
               {(l.who === "npc" || l.who === "gm") && <MentionThumbs ctx={ctx} text={l.text} nodes={illustrated} onOpen={setGallery} />}
             </div>
-          ))}
+            ),
+          )}
           {busy && <div className="line who-system">GM 正在构思，本地模型可能需要一段时间（可以点输入框旁的「取消」）</div>}
           <div ref={bottom} />
         </div>
+        <SmartCards last={last} sceneKey={status?.current?.id ?? ""} onOpenTab={(t) => setTab(t as typeof tab)} />
+        {gmChoices.length > 0 && !busy && status?.campaign.status !== "ended" && (
+          <div className="choices" data-tour="choices">
+            {gmChoices.map((c, i) => (
+              <button key={`${c}-${i}`} type="button" className="choice" style={{ animationDelay: `${i * 0.06}s` }} onClick={() => void send(c)} title="直接作为这一回合的行动">
+                {c}
+              </button>
+            ))}
+          </div>
+        )}
         <form
           className="row input-row"
           onSubmit={(e) => {
@@ -300,6 +479,7 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
           }}
         >
           <textarea
+            data-tour="input"
             rows={2}
             value={input}
             disabled={busy || status?.campaign.status === "ended"}
@@ -312,6 +492,7 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
             }}
             placeholder={status?.campaign.status === "ended" ? "这条时间线已经结束。可以在右侧「时间线」中从任意历史节点开出新时间线继续" : "描述玩家的行动或台词（Enter 发送，Shift+Enter 换行）"}
           />
+          <MicButton disabled={busy || status?.campaign.status === "ended"} notify={ctx.notify} onText={(t) => setInput((cur) => (cur.trim() ? cur.trimEnd() + " " + t : t))} />
           {busy ? (
             <button type="button" onClick={() => void api.cancelGmTurn(campaignId)}>
               取消
@@ -326,9 +507,9 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
 
       <div className="detail">
         <div className="row">
-          <label className="check">
+          <label className="check" data-tour="spoiler">
             <input type="checkbox" checked={gmView} onChange={(e) => { setGmView(e.target.checked); if (!e.target.checked && tab === "console") setTab("state"); }} />
-            主持人视角（显示秘密、AI 意图、被拒绝的修改）
+            剧透模式（显示秘密、AI 意图、被拒绝的修改；全局设置）
           </label>
           <label className="check" title="每回合结束后自动朗读叙述和人物台词（需要在「模型服务」设置语音服务）">
             <input
@@ -348,7 +529,10 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
           </label>
           {voice.playing && <button className="small link" onClick={() => voice.stop()}>停止朗读</button>}
         </div>
-        <div className="tabs">
+        <PendingImages ctx={ctx} />
+        <RunMonitor refreshKey={events.length} openDefault={false} />
+        <WebSearchPanel notify={ctx.notify} />
+        <div className="tabs" data-tour="tabs">
           {(
             [
               ["state", "状态"],
@@ -363,15 +547,15 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
               ["timeline", "时间线"],
               ["console", "控制台"],
             ] as const
-          ).filter(([k]) => k !== "console" || gmView).map(([k, v]) => (
-            <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>
+          ).filter(([k]) => (k !== "console" || gmView) && (k !== "board" || investigation > 0 || tab === "board")).map(([k, v]) => (
+            <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)} data-tour={`tab-${k}`}>
               {v}
             </button>
           ))}
         </div>
         {tab === "state" && st && (
           <div className="card state">
-            <div>回合 {status?.campaign.turn}</div>
+            <div>回合 <AnimatedNumber value={status?.campaign.turn ?? 0} /></div>
             <div>
               <strong>任务</strong>：{Object.entries(st.quests).map(([q, s]) => `${names(q)}（${s}）`).join("，") || "—"}
             </div>
@@ -399,7 +583,7 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
                 <div>意图：{last.intent || "—"}{last.off_script && "（剧本外行动）"}</div>
                 {last.checks.map((c, i) => (
                   <div key={i}>
-                    🎲 {c.skill}：{c.roll}+{c.modifier}={c.total} / DC {c.dc} → {c.success ? "成功" : "失败"}
+                    🎲 {c.skill}：{c.detail?.explain ?? `${c.roll}+${c.modifier}=${c.total} / DC ${c.dc} → ${c.success ? "成功" : "失败"}`}
                   </div>
                 ))}
                 {last.applied.length > 0 && <div>已执行 {last.applied.length} 条状态修改</div>}
@@ -439,8 +623,11 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
             <div className="row">
               <button onClick={() => void summarize()}>生成本次会话摘要</button>
             </div>
-            {memory.summaries.map((s) =>
-              s.status === "draft" ? (
+            <MemoryCompression ctx={ctx} campaignId={campaignId} />
+            {memory.summaries.map((s, i) =>
+              s.status === "auto" ? (
+                <AutoSummary key={s.id} ctx={ctx} campaignId={campaignId} s={s} latest={!memory.summaries.slice(i + 1).some((x) => x.status === "auto" || x.status === "confirmed")} />
+              ) : s.status === "draft" ? (
                 <div key={s.id} className="form">
                   <h3>摘要草稿（确认后 GM 才会参考）</h3>
                   <textarea rows={6} value={draft} onChange={(e) => setDraft(e.target.value)} />
@@ -460,7 +647,21 @@ function Table({ ctx, campaignId, campaigns, onSwitch }: { ctx: Ctx; campaignId:
                 <h3>GM 记住的事实</h3>
                 <ul>
                   {memory.facts.map((f, i) => (
-                    <li key={i}>{f}</li>
+                    <li key={i}>
+                      {f}{" "}
+                      <button
+                        className="link"
+                        title="GM 以后不再记得这件事（原始记录保留）"
+                        onClick={() =>
+                          void api
+                            .forgetFact(ctx.worldId, campaignId, memory.fact_seqs[i])
+                            .then(ctx.bump)
+                            .catch((e: Error) => ctx.notify(e.message, "error"))
+                        }
+                      >
+                        忘掉
+                      </button>
+                    </li>
                   ))}
                 </ul>
               </>
@@ -518,9 +719,20 @@ function TimelinePanel({ ctx, campaign, campaigns, onSwitch, onChanged }: { ctx:
     return timelineTree(campaigns, true).filter((r) => r.root === root);
   }, [campaigns, campaign.id]);
 
-  useEffect(() => {
-    if (ended) api.timelineForkPoints(ctx.worldId, campaign.id).then(setPoints).catch((e: Error) => ctx.notify(e.message, "error"));
-  }, [ctx.worldId, campaign.id, ended]);
+  // 存档点（进行中的战役也可以读档：从存档点开出新时间线）；结束后显示全部历史节点。
+  const [saveName, setSaveName] = useState("");
+  const loadPoints = () => void api.timelineForkPoints(ctx.worldId, campaign.id).then(setPoints).catch((e: Error) => ctx.notify(e.message, "error"));
+  useEffect(loadPoints, [ctx.worldId, campaign.id, ended, ctx.tick]);
+  const saves = points.filter((p) => p.checkpoint.label.startsWith("save:"));
+  const loadFrom = (p: ForkPoint, label: string) => {
+    const n = prompt("读档会从这里开出一条新时间线（现在这条保持不变）。新时间线的名称：", `${campaign.name}（${label}）`);
+    if (n === null) return;
+    void run(async () => {
+      const c = await api.timelineFork(ctx.worldId, campaign.id, p.checkpoint.id, n, false);
+      ctx.notify(`已读档：新时间线「${c.name}」`);
+      onSwitch(c.id);
+    });
+  };
 
   const run = async (f: () => Promise<unknown>) => {
     try {
@@ -537,6 +749,84 @@ function TimelinePanel({ ctx, campaign, campaigns, onSwitch, onChanged }: { ctx:
           从「{parent.name}」第 {campaign.fork_turn} 回合分出的时间线。{" "}
           <button className="link" onClick={() => onSwitch(parent.id)}>查看原时间线</button>
         </p>
+      )}
+      {!ended && (
+        <div className="saves">
+          <h3>存档</h3>
+          <div className="row wrap">
+            <input value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="存档名（例如：进潮洞之前）" style={{ flex: 1, minWidth: 160 }} />
+            <button
+              onClick={() =>
+                void run(async () => {
+                  await api.savePoint(ctx.worldId, campaign.id, saveName || "存档 " + new Date().toLocaleString());
+                  setSaveName("");
+                  ctx.notify("已存档");
+                  loadPoints();
+                })
+              }
+            >
+              存档
+            </button>
+            <button
+              title="不用起名，随时覆盖式地记一下"
+              onClick={() =>
+                void run(async () => {
+                  await api.savePoint(ctx.worldId, campaign.id, "");
+                  ctx.notify("已快速存档");
+                  loadPoints();
+                })
+              }
+            >
+              快速存档
+            </button>
+            <button
+              title="从最近一次快速存档开出新时间线（现在这条保持不变）"
+              onClick={() =>
+                confirm("从最近一次快速存档读档？会开出一条新时间线，现在这条保持不变。") &&
+                void run(async () => {
+                  const c = await api.quickLoad(ctx.worldId, campaign.id);
+                  ctx.notify(`已读档：「${c.name}」`);
+                  onSwitch(c.id);
+                })
+              }
+            >
+              快速读档
+            </button>
+          </div>
+          {saves.length > 0 && (
+            <ul className="list">
+              {[...saves].reverse().map((p) => (
+                <li key={p.checkpoint.id} className="row">
+                  <span style={{ flex: 1 }}>
+                    <strong>{p.checkpoint.label.slice(5)}</strong> <small className="hint">第 {p.checkpoint.turn} 回合 · {new Date(p.checkpoint.created_at).toLocaleString()}</small>
+                    {p.last_narration && <div className="hint">{p.last_narration}</div>}
+                  </span>
+                  <button className="small" onClick={() => loadFrom(p, p.checkpoint.label.slice(5))}>
+                    读档
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <h4>回到任意历史节点</h4>
+          <p className="hint">每个回合结束都会自动保存检查点。读档会开出新时间线，现在这条保持不变。</p>
+          <details>
+            <summary>显示全部 {points.length} 个检查点</summary>
+            <ul className="list fork-points">
+              {points.map((p) => (
+                <li key={p.checkpoint.id} className="row">
+                  <span style={{ flex: 1 }}>
+                    <span className="kind">第 {p.checkpoint.turn} 回合 · {p.checkpoint.label.startsWith("save:") ? p.checkpoint.label.slice(5) : CP_LABEL[p.checkpoint.label] ?? p.checkpoint.label}</span>
+                    {p.last_action && <span>玩家：{p.last_action}</span>}
+                  </span>
+                  <button className="small" onClick={() => loadFrom(p, `回到第 ${p.checkpoint.turn} 回合`)}>
+                    从这里开出新时间线
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
+        </div>
       )}
       {!ended && (
         <>
@@ -571,7 +861,7 @@ function TimelinePanel({ ctx, campaign, campaigns, onSwitch, onChanged }: { ctx:
             {points.map((p) => (
               <li key={p.checkpoint.id} className="row">
                 <span style={{ flex: 1 }}>
-                  <span className="kind">第 {p.checkpoint.turn} 回合 · {CP_LABEL[p.checkpoint.label] ?? p.checkpoint.label}</span>
+                  <span className="kind">第 {p.checkpoint.turn} 回合 · {p.checkpoint.label.startsWith("save:") ? p.checkpoint.label.slice(5) : CP_LABEL[p.checkpoint.label] ?? p.checkpoint.label}</span>
                   {p.last_action && <span>玩家：{p.last_action}</span>}
                   {p.last_narration && <div className="hint">{p.last_narration}</div>}
                 </span>

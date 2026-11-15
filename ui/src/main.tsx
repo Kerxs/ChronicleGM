@@ -5,6 +5,7 @@ import "./styles.css";
 import "./shell.css";
 import "./onboarding.css";
 import "./cloud.css";
+import "./motion.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

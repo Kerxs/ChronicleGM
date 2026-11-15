@@ -171,3 +171,24 @@ fn models_list_with_key() {
     let srv = MockServer::start(|_, _| Reply::Json(401, json!({ "error": "bad key" })));
     assert!(matches!(list_models(&srv.url, Some("x"), T), Err(LlmError::Http { status: 401, .. })));
 }
+
+/// 语音识别：multipart 请求格式与解析（mock，不代表真实服务）。
+#[test]
+fn transcription_sends_multipart_and_reads_text() {
+    use chronicle_llm::transcribe::*;
+    let srv = MockServer::start(|r, _| {
+        if r.path.ends_with("/audio/transcriptions") {
+            let ct = r.header("Content-Type").unwrap_or("").to_string();
+            assert!(ct.starts_with("multipart/form-data; boundary="), "{ct}");
+            assert!(r.body.contains("name=\"model\"") && r.body.contains("whisper-1"));
+            assert!(r.body.contains("filename=\"speech.webm\""));
+            assert!(r.body.contains("name=\"language\"\r\n\r\nzh"));
+            return Reply::Json(200, serde_json::json!({"text": " 我推开酒馆的门 "}));
+        }
+        Reply::Json(404, serde_json::json!({}))
+    });
+    let t = TranscribeTarget { base_url: format!("{}/v1", srv.url), api_key: Some("k".into()), model: "whisper-1".into() };
+    let text = transcribe(&t, b"fake-audio", "audio/webm;codecs=opus", "zh", std::time::Duration::from_secs(3)).unwrap();
+    assert_eq!(text, "我推开酒馆的门");
+    assert!(transcribe(&t, b"", "audio/webm", "zh", std::time::Duration::from_secs(1)).is_err());
+}

@@ -113,6 +113,13 @@ impl Writer<'_> {
             duration_hours: s.duration_hours,
             tone: s.tone,
             scale_profile: serde_json::to_value(profile)?,
+            game_profile: if s.game_profile.as_object().is_some_and(|o| !o.is_empty()) {
+                let gp: crate::profile::GameProfile = serde_json::from_value(s.game_profile.clone()).map_err(|e| CoreError::Invalid(format!("玩法配置格式不对：{e}")))?;
+                gp.validate()?;
+                serde_json::to_value(&gp)?
+            } else {
+                serde_json::Value::Object(Default::default())
+            },
             status: ContentStatus::Draft,
             source: self.author.tag(),
             rev: 1,
@@ -149,6 +156,11 @@ impl Writer<'_> {
         }
         if let Some(v) = p.status {
             s.status = v;
+        }
+        if let Some(v) = p.game_profile {
+            let gp: crate::profile::GameProfile = serde_json::from_value(v.clone()).map_err(|e| CoreError::Invalid(format!("玩法配置格式不对：{e}")))?;
+            gp.validate()?;
+            s.game_profile = serde_json::to_value(&gp)?;
         }
         if p.player_count.is_some() || p.duration_hours.is_some() {
             s.player_count = p.player_count.unwrap_or(s.player_count);
@@ -313,4 +325,122 @@ pub fn all_items(conn: &Connection, script_id: &str) -> Result<Vec<ScriptItem>> 
     let mut stmt = conn.prepare_cached("SELECT * FROM script_items WHERE script_id = ?1 AND deleted_at IS NULL ORDER BY sort_key")?;
     let rows = stmt.query_map([script_id], ScriptItem::from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+// ===================== 剧本修改后需要复查的世界树节点 =====================
+
+/// 和一个剧本条目有关的世界树节点：条目文字和附加资料里提到名字（或别名、编号）的人物、地点、势力、物品。
+/// 剧本改了之后，界面提示这些节点可能需要复查（只提示，不修改世界树）。
+pub fn related_nodes(conn: &Connection, item_id: &str) -> Result<Vec<crate::model::Node>> {
+    let it = require_item(conn, item_id)?;
+    let text = format!("{} {} {} {}", it.title, it.player_text, it.gm_text, it.payload);
+    let mut stmt = conn.prepare(
+        "SELECT * FROM nodes WHERE deleted_at IS NULL AND kind IN ('character','faction','region','nation','city','site','item','event','organization') LIMIT 3000",
+    )?;
+    let nodes: Vec<crate::model::Node> = stmt.query_map([], crate::model::Node::from_row)?.collect::<rusqlite::Result<_>>()?;
+    let mut out = vec![];
+    for n in nodes {
+        let names: Vec<String> = std::iter::once(n.title.clone()).chain(n.aliases.iter().cloned()).filter(|s| s.chars().count() >= 2).collect();
+        if text.contains(&n.id) || names.iter().any(|s| text.contains(s.as_str())) {
+            out.push(n);
+            if out.len() >= 20 {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ===================== 剧本检查 =====================
+
+/// 剧本检查的一条结果。只给问题和建议，不修改剧本。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct ScriptFinding {
+    /// error（缺了就没法玩）/ warning（建议补上）/ info（提示）
+    pub severity: String,
+    pub message: String,
+    #[serde(default)]
+    pub suggestion: String,
+    /// 相关的剧本条目或世界树节点。
+    #[serde(default)]
+    pub item_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+fn finding(severity: &str, message: impl Into<String>, suggestion: impl Into<String>) -> ScriptFinding {
+    ScriptFinding { severity: severity.into(), message: message.into(), suggestion: suggestion.into(), item_id: None, node_id: None }
+}
+
+/// 程序检查：完整性（开场、章节、主线、结局、可选角色与身世）、引用、玩法配置与内容是否相符、
+/// 剧本修改后可能需要复查的世界树节点。
+pub fn check_script(conn: &Connection, script_id: &str) -> Result<Vec<ScriptFinding>> {
+    let s = require_script(conn, script_id)?;
+    let items = all_items(conn, script_id)?;
+    let count = |k: ScriptItemKind| items.iter().filter(|i| i.kind == k).count();
+    let mut out = vec![];
+    if count(ScriptItemKind::Opening) == 0 {
+        out.push(finding("error", "没有开场", "添加一个「开场」条目：交代环境、玩家身份与初始处境，开始游戏时 GM 会按它讲述开场"));
+    }
+    let chapters = count(ScriptItemKind::Chapter);
+    if chapters == 0 {
+        out.push(finding("error", "没有章节", "用「生成剧本大纲」或手动添加章节"));
+    }
+    let quests: Vec<&ScriptItem> = items.iter().filter(|i| i.kind == ScriptItemKind::Quest).collect();
+    if !quests.iter().any(|q| q.payload.get("quest_type").and_then(|v| v.as_str()).unwrap_or("main") == "main") {
+        out.push(finding("warning", "没有主线任务", "添加一个主线任务，让玩家知道大方向"));
+    }
+    if count(ScriptItemKind::Ending) == 0 {
+        out.push(finding("warning", "没有结局", "至少写一个结局与达成条件"));
+    }
+    let pcs: Vec<&ScriptItem> = items.iter().filter(|i| i.kind == ScriptItemKind::PlayerCharacter).collect();
+    if pcs.is_empty() {
+        out.push(finding("warning", "没有可选角色", "开始游戏时可以让 AI 按剧本生成角色；也可以在剧本里添加「可选角色」并写上身世"));
+    }
+    for pc in &pcs {
+        let b = pc.payload.get("backstory");
+        let empty = b.is_none_or(|b| ["origin", "upbringing", "occupation"].iter().all(|k| b.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().is_empty()));
+        if empty {
+            let mut f = finding("warning", format!("可选角色「{}」没有身世", pc.title), "补上出身、成长经历、职业，以及与主线的关联");
+            f.item_id = Some(pc.id.clone());
+            out.push(f);
+        }
+    }
+    for c in cast_of(conn, script_id)? {
+        match crate::nodes::get_node(conn, &c.node_id)? {
+            Some(n) if n.deleted_at.is_none() => {
+                // 剧本修改后，关联的世界树人物可能需要复查。
+                if s.updated_at > n.updated_at + 1000 && s.rev > 1 {
+                    let mut f = finding("info", format!("剧本修改过，人物「{}」的世界树资料可能需要复查", n.title), "打开世界树核对身份、动机与秘密是否与剧本一致");
+                    f.node_id = Some(n.id.clone());
+                    out.push(f);
+                }
+            }
+            _ => out.push(finding("error", "剧本人物引用的世界树节点不存在或已删除", "在剧本人物列表里移除，或从回收站恢复该人物")),
+        }
+    }
+    let mut missing_places: Vec<String> = items
+        .iter()
+        .filter_map(|i| i.payload.get("location_name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    missing_places.sort();
+    missing_places.dedup();
+    if !missing_places.is_empty() {
+        out.push(finding("info", format!("这些地点还不在世界树里：{}", missing_places.join("、")), "用「根据剧本生成世界树」补上地点，或在世界树里手动添加"));
+    }
+    let gp = crate::profile::for_script(&s);
+    let clues = count(ScriptItemKind::Clue);
+    let (_, per_max) = gp.clues_per_chapter();
+    if chapters > 0 && clues > per_max as usize * chapters + 2 {
+        out.push(finding(
+            "info",
+            format!("线索有 {clues} 条，比玩法配置建议的多（调查比重 {}）", gp.weights.investigation),
+            "这不是以探案为主的剧本时，可以删掉一些线索，或在「玩法配置」里调高调查比重",
+        ));
+    }
+    if gp.source == "inferred" {
+        out.push(finding("info", "玩法配置是按题材推断的", "打开「玩法配置」确认玩法比重、属性与检定规则"));
+    }
+    Ok(out)
 }

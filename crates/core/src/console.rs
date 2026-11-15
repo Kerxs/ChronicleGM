@@ -131,6 +131,11 @@ pub struct GmConsole {
     pub settings: DirectorSettings,
     pub traces: Vec<TurnTrace>,
     pub manual_edits: Vec<ManualEdit>,
+    /// 因果链（决定 → 后果）与伏笔。
+    #[serde(default)]
+    pub consequences: Vec<crate::story::Consequence>,
+    #[serde(default)]
+    pub foreshadows: Vec<crate::story::Foreshadow>,
 }
 
 fn list_field(v: &Value, k: &str) -> Vec<String> {
@@ -346,6 +351,8 @@ pub fn console(conn: &Connection, campaign_id: &str) -> Result<GmConsole> {
         settings: director::settings(conn, campaign_id),
         traces: traces(conn, campaign_id, 10)?,
         manual_edits,
+        consequences: crate::story::consequences(conn, campaign_id)?,
+        foreshadows: crate::story::foreshadows(conn, campaign_id)?,
     })
 }
 

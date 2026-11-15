@@ -13,6 +13,9 @@ pub struct CheckRequest {
     /// 为什么需要这次检定。
     #[serde(default)]
     pub reason: String,
+    /// 有利条件写 advantage，不利条件写 disadvantage，普通情况留空。
+    #[serde(default)]
+    pub advantage: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -69,6 +72,18 @@ pub struct NewEntity {
     pub gm_text: String,
 }
 
+/// 玩家的重要决定会带来的后果（可以延迟发生）。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConsequenceOut {
+    /// 玩家的决定（一句话）。
+    pub decision: String,
+    /// 会带来的后果（一句话）。
+    pub consequence: String,
+    /// 几回合后发生（0 = 马上，最多 30）。
+    #[serde(default)]
+    pub after_turns: i64,
+}
+
 /// 遭遇的敌人（数值由程序生成或取自人物的角色卡）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EnemyOut {
@@ -81,6 +96,9 @@ pub struct EnemyOut {
     pub level: i64,
     #[serde(default)]
     pub count: i64,
+    /// 是否首领（首领战无法逃跑）。
+    #[serde(default)]
+    pub boss: bool,
 }
 
 /// 战斗中玩家这一回合的行动（结果由程序计算）。
@@ -176,6 +194,9 @@ pub struct GmPlan {
     /// 开始战斗：遭遇的敌人（只有冲突确实爆发时才填，已经在战斗中时留空）。
     #[serde(default)]
     pub combat_start: Vec<EnemyOut>,
+    /// 这场战斗无法逃跑的原因（场地封锁、退路被切断等），没有就留空。
+    #[serde(default)]
+    pub combat_no_escape: String,
     /// 开战时和玩家并肩作战的在场人物编号（如 N2），没有就留空。
     #[serde(default)]
     pub combat_allies: Vec<String>,
@@ -208,14 +229,32 @@ pub struct GmPlan {
     /// 这一回合的决定依据了哪些记忆、设定或剧本内容（填编号，如 M1、W2、C1），没有就留空。
     #[serde(default)]
     pub based_on: Vec<String>,
+    /// 玩家做出会影响以后的重要决定时（放走敌人、得罪势力、许下承诺……），记下它的后果，最多 2 条；平常留空。
+    #[serde(default)]
+    pub consequences: Vec<ConsequenceOut>,
+    /// 这一回合已经让它发生的到期后果编号（如 K1）。
+    #[serde(default)]
+    pub consequences_done: Vec<String>,
+    /// 这一回合埋下的伏笔（以后要回收的暗示），最多 1 条；平常留空。
+    #[serde(default)]
+    pub foreshadow: Vec<String>,
+    /// 这一回合回收的伏笔编号（如 F1）。
+    #[serde(default)]
+    pub payoffs: Vec<String>,
+    /// 需要查现实世界的资料时（例如真实的历史、地理、技术细节），写要搜索的内容；不需要就留空。
+    #[serde(default)]
+    pub web_search: String,
     /// 给玩家看的叙述（不包含 NPC 的台词）。
     pub narration: String,
+    /// 给玩家的 2–4 个可选行动：符合此刻的场景、彼此不同、每回合都不一样，每条一句话（玩家也可以自由行动）。
+    #[serde(default)]
+    pub choices: Vec<String>,
 }
 
-const PLAN_KEYS: [&str; 25] = [
+const PLAN_KEYS: [&str; 32] = [
     "intent", "npc_speakers", "off_script", "transition_reason", "transition_edge", "checks",
     "effects", "effects_on_success", "effects_on_failure", "new_entities", "discoveries", "new_quests", "quest_notes",
-    "combat_start", "combat_allies", "combat_action", "trade", "item_use", "craft", "rewards", "travel_to", "places_heard", "time_passes_minutes", "remember", "based_on",
+    "combat_start", "combat_no_escape", "combat_allies", "combat_action", "trade", "item_use", "craft", "rewards", "travel_to", "places_heard", "time_passes_minutes", "remember", "based_on", "consequences", "consequences_done", "foreshadow", "payoffs", "web_search", "choices",
 ];
 
 /// 模型有时把后面的字段写进了字符串末尾（实测：`……压低了声音。","npc_speakers":["N1"]}`）。
@@ -284,6 +323,9 @@ impl NpcReplyOut {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Narration {
     pub narration: String,
+    /// 按实际结果重新给出的 2–4 个可选行动。
+    #[serde(default)]
+    pub choices: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -348,7 +390,9 @@ mod tests {
         // 曾经因为 serde_json 没开 preserve_order，字段按字母排序，narration 排在 npc_speakers 前面。
         let keys: Vec<&String> = s["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys.first().map(|k| k.as_str()), Some("intent"));
-        assert_eq!(keys.last().map(|k| k.as_str()), Some("narration"));
+        // 叙述之后才是可选行动（按叙述的结果给选项）。
+        let tail: Vec<&str> = keys.iter().rev().take(2).rev().map(|k| k.as_str()).collect();
+        assert_eq!(tail, ["narration", "choices"]);
     }
 }
 
@@ -383,7 +427,7 @@ impl GmPlan {
                         let skill = s_of(&m, &["skill", "ability", "name"]);
                         let dc = i_of(&m, &["dc", "difficulty", "target"]);
                         if !skill.is_empty() && dc > 0 && self.checks.len() < 3 {
-                            self.checks.push(CheckRequest { skill, dc, reason: s_of(&m, &["reason", "why"]) });
+                            self.checks.push(CheckRequest { skill, dc, reason: s_of(&m, &["reason", "why"]), advantage: s_of(&m, &["advantage"]) });
                         }
                     }
                     "trade" | "buy" | "sell" | "purchase" => {
@@ -408,7 +452,7 @@ impl GmPlan {
                     }
                     "combat_start" | "start_combat" | "encounter" | "combat" => {
                         if self.combat_start.is_empty() {
-                            let one = |o: &Map<String, Value>| EnemyOut { name: s_of(o, &["name", "enemy"]), npc: s_of(o, &["npc"]), level: i_of(o, &["level"]).max(1), count: i_of(o, &["count", "qty", "number"]).max(1) };
+                            let one = |o: &Map<String, Value>| EnemyOut { name: s_of(o, &["name", "enemy"]), npc: s_of(o, &["npc"]), level: i_of(o, &["level"]).max(1), count: i_of(o, &["count", "qty", "number"]).max(1), boss: o.get("boss").and_then(Value::as_bool).unwrap_or(false) };
                             match m.get("enemies").and_then(Value::as_array) {
                                 Some(a) => self.combat_start.extend(a.iter().filter_map(|x| x.as_object().map(one))),
                                 None => self.combat_start.push(one(&m)),

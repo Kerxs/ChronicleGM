@@ -7,7 +7,7 @@ publish = false
 description = "AI 任务调度、模型进程托管与资源监控"
 
 [dependencies]
-chronicle-llm = { version = "0.0.1", path = "../llm" }
+chronicle-llm = { version = "0.0.2", path = "../llm" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sysinfo = "0.40.3"

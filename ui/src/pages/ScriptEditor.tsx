@@ -1,3 +1,8 @@
+import type { Node } from "../bindings/Node";
+import ScriptVersions from "../components/ScriptVersions";
+import ScriptCheck from "../components/ScriptCheck";
+import ProfileEditor from "../components/ProfileEditor";
+import { PageSkeleton } from "../components/Skeleton";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type ScriptView } from "../api";
 import type { Ctx } from "../App";
@@ -17,6 +22,17 @@ export default function ScriptEditor({ ctx, scriptId }: { ctx: Ctx; scriptId: st
   const [newCount, setNewCount] = useState(0);
   const [newKind, setNewKind] = useState<ScriptItemKind>("scene");
   const [showMeta, setShowMeta] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
+  const [showCheck, setShowCheck] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
+  async function worldFromScript() {
+    try {
+      await api.startGeneration(ctx.worldId, { task: "world_from_script", script_id: scriptId, guidance: "" });
+      ctx.notify("已开始根据剧本生成世界树，完成后到审阅台确认");
+    } catch (e) {
+      ctx.notify((e as Error).message, "error");
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -71,7 +87,7 @@ export default function ScriptEditor({ ctx, scriptId }: { ctx: Ctx; scriptId: st
     }
   }
 
-  if (!view) return <p className="hint">加载中…</p>;
+  if (!view) return <PageSkeleton />;
   const s = view.script;
   const running = Object.keys(ctx.progress).length > 0;
 
@@ -92,9 +108,16 @@ export default function ScriptEditor({ ctx, scriptId }: { ctx: Ctx; scriptId: st
             剧情分支图
           </button>
           <button onClick={() => setShowMeta(!showMeta)}>{showMeta ? "收起剧本设定" : "编辑剧本设定"}</button>
+          <button onClick={() => setShowProfile(!showProfile)}>{showProfile ? "收起玩法配置" : "玩法配置"}</button>
+          <button onClick={() => setShowCheck(!showCheck)}>{showCheck ? "收起检查" : "检查剧本"}</button>
+          <button onClick={() => setShowVersions(!showVersions)}>{showVersions ? "收起版本" : "版本记录"}</button>
+          <button onClick={() => void worldFromScript()} title="按剧本里的地点、势力、人物、历史事件建立世界树（先进审阅台）">根据剧本生成世界树</button>
         </div>
       </header>
+      {showCheck && <ScriptCheck ctx={ctx} scriptId={scriptId} rev={s.rev} />}
+      {showVersions && <ScriptVersions ctx={ctx} scriptId={scriptId} rev={s.rev} />}
       {showMeta && <MetaEditor ctx={ctx} view={view} onSaved={load} />}
+      {showProfile && <ProfileEditor ctx={ctx} scriptId={scriptId} rev={s.rev} onSaved={load} />}
 
       <div className="editor-body">
         <div className="tree card">
@@ -264,6 +287,7 @@ function MetaEditor({ ctx, view, onSaved }: { ctx: Ctx; view: ScriptView; onSave
 }
 
 function ItemEditor({ ctx, item, view, onSaved, onDeleted }: { ctx: Ctx; item: ScriptItem; view: ScriptView; onSaved: () => void; onDeleted: () => void }) {
+  const [related, setRelated] = useState<Node[]>([]);
   const choices: Choices = useMemo(() => {
     const by = (k: string) => view.items.filter((i) => i.kind === k).map((i) => ({ id: i.id, label: i.title }));
     return { quests: by("quest"), clues: by("clue"), items: by("item"), plotNodes: [], people: view.cast.map((c) => ({ id: c.cast.node_id, label: c.name })) };
@@ -288,6 +312,8 @@ function ItemEditor({ ctx, item, view, onSaved, onDeleted }: { ctx: Ctx; item: S
         : { title, player_text: player, gm_text: gm, payload: p as never, ...extra };
       await api.updateScriptItem(ctx.worldId, item.id, patch, item.rev);
       ctx.notify("已保存");
+      // 剧本改了：提示可能需要复查的世界树节点。
+      api.scriptItemRelatedNodes(ctx.worldId, item.id).then(setRelated).catch(() => setRelated([]));
       onSaved();
     } catch (e) {
       ctx.notify((e as Error).message, "error");
@@ -312,6 +338,19 @@ function ItemEditor({ ctx, item, view, onSaved, onDeleted }: { ctx: Ctx; item: S
         {questType && ` · ${QUEST_TYPE[questType] ?? questType}`}
         {ro && " · 已锁定（解锁后才能编辑）"}
       </h3>
+      {related.length > 0 && (
+        <div className="related-nodes">
+          <span className="hint">剧本改了，这些世界树节点可能需要复查：</span>
+          {related.map((n) => (
+            <button key={n.id} className="chip" onClick={() => ctx.go({ name: "tree", focus: n.id })}>
+              {n.title}
+            </button>
+          ))}
+          <button className="link" onClick={() => setRelated([])}>
+            知道了
+          </button>
+        </div>
+      )}
       <label>
         标题
         <input value={title} disabled={ro} onChange={(e) => setTitle(e.target.value)} />

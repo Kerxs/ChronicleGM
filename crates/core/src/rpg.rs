@@ -21,8 +21,52 @@ use crate::error::{CoreError, Result};
 use crate::world::World;
 
 pub const PARTY: &str = "party";
+/// 原来固定的六项属性（没有属性方案时使用）。属性方案见 `RuleSet::attributes` / `attr_defs`。
 pub const ATTRS: [(&str, &str); 6] = [("str", "力量"), ("dex", "敏捷"), ("con", "体质"), ("int", "智力"), ("wis", "感知"), ("cha", "魅力")];
+pub use crate::profile::{AttrDef, CheckRules};
 pub const RARITIES: [(&str, &str); 5] = [("common", "普通"), ("uncommon", "优秀"), ("rare", "稀有"), ("epic", "史诗"), ("legendary", "传说")];
+
+fn normal_difficulty() -> String {
+    "normal".into()
+}
+
+/// 难度档：名称、检定难度修正、敌人等级修正。
+pub const DIFFICULTIES: [(&str, &str, i64, i64); 4] = [("easy", "简单", -2, -1), ("normal", "普通", 0, 0), ("hard", "困难", 2, 1), ("brutal", "残酷", 4, 2)];
+
+fn difficulty_row(r: &RuleSet) -> (&'static str, &'static str, i64, i64) {
+    DIFFICULTIES.iter().copied().find(|d| d.0 == r.difficulty).unwrap_or(DIFFICULTIES[1])
+}
+
+/// 按难度设置调整检定难度。返回 (调整后的难度, 说明)；普通难度不调整、说明为空。
+/// 骰池模式的难度是"需要几个成功"，每 2 点算 1 个成功；百分骰（roll_under）的目标值按 5 倍反向调整（越难目标越低）。
+pub fn difficulty_dc(r: &RuleSet, dc: i64) -> (i64, String) {
+    let (_, name, off, _) = difficulty_row(r);
+    if off == 0 {
+        return (dc, String::new());
+    }
+    let (v, shown) = match r.check.mode.as_str() {
+        "pool" => ((dc + off / 2).clamp(1, 6), off / 2),
+        // 百分骰是"掷出 ≤ 目标值"：越难，目标值越低。
+        "roll_under" => ((dc - off * 5).clamp(1, 100), -off * 5),
+        _ => ((dc + off).max(1), off),
+    };
+    let what = if r.check.mode == "roll_under" { "目标值" } else { "难度" };
+    (v, format!("难度设置「{name}」：{what} {shown:+}"))
+}
+
+/// 按难度设置调整临时敌人的等级（有角色卡的人物不调整）。
+pub fn difficulty_level(r: &RuleSet, level: i64) -> i64 {
+    (level + difficulty_row(r).3).clamp(1, 20)
+}
+
+/// 稀有度的显示名（按规则里的题材叫法）。
+pub fn rarity_label(r: &RuleSet, key: &str) -> String {
+    let i = RARITIES.iter().position(|(k, _)| *k == key);
+    match i {
+        Some(i) => r.rarity_labels.get(i).cloned().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| RARITIES[i].1.to_string()),
+        None => key.to_string(),
+    }
+}
 pub const SLOTS: [(&str, &str); 4] = [("weapon", "武器"), ("armor", "护甲"), ("shield", "盾牌"), ("accessory", "饰品")];
 pub const RULES_VAR: &str = "rules.config";
 
@@ -79,11 +123,21 @@ pub struct RuleSet {
     /// 货币名称（从大到小）与进位，例如 ["金币","银币","铜币"]、[100, 10, 1]。
     pub currency: Vec<String>,
     pub currency_rates: Vec<i64>,
+    /// 五档稀有度的叫法（按剧本题材；空 = 普通 / 优秀 / 稀有 / 史诗 / 传说）。
+    #[serde(default)]
+    pub rarity_labels: Vec<String>,
+    /// 难度：easy / normal / hard / brutal（玩家设置；GM 不能改，规则变量受保护）。
+    #[serde(default = "normal_difficulty")]
+    pub difficulty: String,
     /// 卖给商人时按价值的比例收购（商人没有设置时）。
     pub sell_rate: f64,
     /// 技能对应的属性（覆盖默认表），例如 {"锻造": "str"}。
     pub skill_attrs: BTreeMap<String, String>,
     pub custom_actions: Vec<CustomAction>,
+    /// 属性方案（随剧本的玩法配置生成，可修改）；空 = 原来的六项属性。
+    pub attributes: Vec<AttrDef>,
+    /// 检定规则：主骰、成功等级、优势劣势、骰池。
+    pub check: CheckRules,
 }
 
 impl Default for RuleSet {
@@ -103,10 +157,14 @@ impl Default for RuleSet {
             heal_per_hour: 1,
             party_death: "downed".into(),
             currency: vec!["金币".into(), "银币".into(), "铜币".into()],
+            rarity_labels: vec![],
+            difficulty: normal_difficulty(),
             currency_rates: vec![100, 10, 1],
             sell_rate: 0.5,
             skill_attrs: BTreeMap::new(),
             custom_actions: vec![],
+            attributes: vec![],
+            check: CheckRules::default(),
         }
     }
 }
@@ -127,10 +185,16 @@ impl RuleSet {
         if !matches!(self.party_death.as_str(), "downed" | "dead") {
             return Err(CoreError::Invalid("玩家倒下规则只能是 downed 或 dead".into()));
         }
+        let keys = attr_keys(self);
         for (k, a) in &self.skill_attrs {
-            if !ATTRS.iter().any(|(x, _)| x == a) {
+            if !keys.contains(a) {
                 return Err(CoreError::Invalid(format!("技能「{k}」对应的属性 {a} 不存在")));
             }
+        }
+        self.check.validate()?;
+        crate::profile::GameProfile { attributes: self.attributes.clone(), ..Default::default() }.validate()?;
+        if !DIFFICULTIES.iter().any(|d| d.0 == self.difficulty) {
+            return Err(CoreError::Invalid(format!("未知的难度：{}", self.difficulty)));
         }
         for c in &self.custom_actions {
             if c.name.trim().is_empty() || !matches!(c.kind.as_str(), "attack" | "heal" | "status") {
@@ -142,6 +206,59 @@ impl RuleSet {
             pos(c.ap, &format!("「{}」的行动点", c.name), 0, 20)?;
         }
         Ok(())
+    }
+}
+
+/// 当前的属性方案（没有设置时是原来的六项）。
+pub fn attr_defs(r: &RuleSet) -> Vec<AttrDef> {
+    if r.attributes.is_empty() { crate::profile::default_attrs() } else { r.attributes.clone() }
+}
+
+pub fn attr_keys(r: &RuleSet) -> Vec<String> {
+    attr_defs(r).into_iter().map(|a| a.key).collect()
+}
+
+pub fn attr_name(r: &RuleSet, key: &str) -> String {
+    attr_defs(r).into_iter().find(|a| a.key == key).map(|a| a.name).unwrap_or_else(|| key.to_string())
+}
+
+/// 承担某种作用的属性（might / agility / vitality / mind / insight / presence）。
+/// 方案里没有这个作用时：原来的六项里有同名 key 就用它，否则用第一个属性。
+pub fn role_attr(r: &RuleSet, role: &str) -> String {
+    let defs = attr_defs(r);
+    if let Some(a) = defs.iter().find(|a| a.role == role) {
+        return a.key.clone();
+    }
+    let legacy = match role {
+        "might" => "str",
+        "agility" => "dex",
+        "vitality" => "con",
+        "mind" => "int",
+        "insight" => "wis",
+        _ => "cha",
+    };
+    if defs.iter().any(|a| a.key == legacy) { legacy.to_string() } else { defs.first().map(|a| a.key.clone()).unwrap_or_else(|| legacy.to_string()) }
+}
+
+/// 把默认数值换到当前属性方案上：同 key 保留；按作用对应原来的六项；其余用基础值。
+pub fn adapt_attrs(s: &mut Sheet, r: &RuleSet) {
+    if r.attributes.is_empty() {
+        return;
+    }
+    let base = 10 + s.level / 3;
+    let old = std::mem::take(&mut s.attrs);
+    for a in &r.attributes {
+        let legacy = match a.role.as_str() {
+            "might" => "str",
+            "agility" => "dex",
+            "vitality" => "con",
+            "mind" => "int",
+            "insight" => "wis",
+            "presence" => "cha",
+            _ => "",
+        };
+        let v = old.get(&a.key).or_else(|| old.get(legacy)).copied().unwrap_or(base);
+        s.attrs.insert(a.key.clone(), v);
     }
 }
 
@@ -347,8 +464,8 @@ pub fn validate_stats(v: &Value) -> Result<()> {
             "attrs" | "skills" => {
                 let o = x.as_object().ok_or_else(|| CoreError::Invalid(format!("{k} 应为对象")))?;
                 for (n, val) in o {
-                    if k == "attrs" && !ATTRS.iter().any(|(a, _)| a == n) {
-                        return Err(CoreError::Invalid(format!("未知的属性：{n}（可用 str/dex/con/int/wis/cha）")));
+                    if k == "attrs" && !(1..=24).contains(&n.len()) {
+                        return Err(CoreError::Invalid(format!("属性 key「{n}」长度不对")));
                     }
                     if !val.as_i64().is_some_and(|n| (-10..=40).contains(&n)) {
                         return Err(CoreError::Invalid(format!("{n} 的数值应为 -10–40 的整数")));
@@ -368,11 +485,16 @@ pub fn sheet(conn: &Connection, campaign_id: &str, actor: &str) -> Result<Sheet>
     {
         return Ok(s);
     }
+    let r = rules(conn, campaign_id);
     if actor == PARTY {
-        return Ok(default_party("玩家角色"));
+        let mut s = default_party("玩家角色");
+        adapt_attrs(&mut s, &r);
+        return Ok(s);
     }
     let n = crate::nodes::get_node(conn, actor)?.ok_or_else(|| CoreError::NotFound("人物", actor.into()))?;
-    Ok(sheet_from_stats(actor, &n.title, n.payload.get("stats")))
+    let mut s = sheet_from_stats(actor, &n.title, n.payload.get("stats"));
+    adapt_attrs(&mut s, &r);
+    Ok(s)
 }
 
 pub fn has_sheet(conn: &Connection, campaign_id: &str, actor: &str) -> bool {
@@ -443,9 +565,10 @@ pub fn save_sheet(world: &mut World, campaign_id: &str, s: &Sheet, note: &str) -
     if s.max_hp < 1 || s.hp > s.max_hp || s.level < 1 {
         return Err(CoreError::Invalid("生命值或等级不合理".into()));
     }
+    let keys = attr_keys(&rules(world.conn(), campaign_id));
     for (k, v) in &s.attrs {
-        if !ATTRS.iter().any(|(a, _)| a == k) || !(1..=40).contains(v) {
-            return Err(CoreError::Invalid(format!("属性 {k} 应为 1–40")));
+        if !keys.contains(k) || !(1..=40).contains(v) {
+            return Err(CoreError::Invalid(format!("属性 {k} 不在属性方案里，或数值不在 1–40")));
         }
     }
     let g = growth_effect(world.conn(), campaign_id, &s.actor, &s.name, "edit", note, 0);
@@ -454,19 +577,26 @@ pub fn save_sheet(world: &mut World, campaign_id: &str, s: &Sheet, note: &str) -
 }
 
 /// 技能对应的属性（默认表 + 规则设置里的覆盖）。
-pub fn skill_attr(r: &RuleSet, skill: &str) -> &'static str {
-    if let Some(a) = r.skill_attrs.get(skill) {
-        return ATTRS.iter().find(|(k, _)| k == a).map(|(k, _)| *k).unwrap_or("wis");
+pub fn skill_attr(r: &RuleSet, skill: &str) -> String {
+    if let Some(a) = r.skill_attrs.get(skill)
+        && attr_keys(r).contains(a)
+    {
+        return a.clone();
     }
+    role_attr(r, legacy_skill_role(skill))
+}
+
+/// 默认技能表：技能名里的关键词 → 属性作用。
+fn legacy_skill_role(skill: &str) -> &'static str {
     let table: [(&[&str], &str); 6] = [
-        (&["运动", "攀爬", "游泳", "力量", "搬", "破门", "锻造", "格斗"], "str"),
-        (&["潜行", "杂技", "巧手", "开锁", "射击", "闪避", "敏捷", "骑", "偷"], "dex"),
-        (&["坚韧", "忍耐", "体质", "耐力"], "con"),
-        (&["调查", "学识", "奥秘", "历史", "智力", "制作", "炼金", "工艺", "宗教", "自然"], "int"),
-        (&["察觉", "洞察", "医疗", "求生", "感知", "聆听", "察言观色", "追踪"], "wis"),
-        (&["游说", "欺瞒", "威吓", "表演", "交涉", "说服", "魅力", "谈判", "讨价还价"], "cha"),
+        (&["运动", "攀爬", "游泳", "力量", "搬", "破门", "锻造", "格斗"], "might"),
+        (&["潜行", "杂技", "巧手", "开锁", "射击", "闪避", "敏捷", "骑", "偷"], "agility"),
+        (&["坚韧", "忍耐", "体质", "耐力"], "vitality"),
+        (&["调查", "学识", "奥秘", "历史", "智力", "制作", "炼金", "工艺", "宗教", "自然"], "mind"),
+        (&["察觉", "洞察", "医疗", "求生", "感知", "聆听", "察言观色", "追踪"], "insight"),
+        (&["游说", "欺瞒", "威吓", "表演", "交涉", "说服", "魅力", "谈判", "讨价还价"], "presence"),
     ];
-    table.iter().find(|(ws, _)| ws.iter().any(|w| skill.contains(w))).map(|(_, a)| *a).unwrap_or("wis")
+    table.iter().find(|(ws, _)| ws.iter().any(|w| skill.contains(w))).map(|(_, a)| *a).unwrap_or("insight")
 }
 
 /// 检定修正 = 旧的技能变量 + 角色卡技能 + 对应属性修正 + 装备加成 + 状态修正 − 伤势惩罚。
@@ -476,10 +606,10 @@ pub fn check_modifier(conn: &Connection, campaign_id: &str, actor: &str, skill: 
     let Ok(s) = sheet(conn, campaign_id, actor) else { return legacy };
     let r = rules(conn, campaign_id);
     let attr = skill_attr(&r, skill);
-    let equip_bonus: i64 = equipped_items(conn, campaign_id, actor).iter().map(|i| i.bonuses.get(skill).copied().unwrap_or(0) + i.bonuses.get(attr).copied().unwrap_or(0)).sum();
+    let equip_bonus: i64 = equipped_items(conn, campaign_id, actor).iter().map(|i| i.bonuses.get(skill).copied().unwrap_or(0) + i.bonuses.get(&attr).copied().unwrap_or(0)).sum();
     let status: i64 = s.statuses.iter().map(|x| x.modifier).sum();
     let wounds: i64 = s.wounds.iter().filter(|w| w.attr.is_empty() || w.attr == attr).map(|w| w.penalty).sum();
-    legacy + s.skills.get(skill).copied().unwrap_or(0) + s.modv(attr) + equip_bonus + status - wounds
+    legacy + s.skills.get(skill).copied().unwrap_or(0) + s.modv(&attr) + equip_bonus + status - wounds
 }
 
 // ===================== 成长 =====================
@@ -502,7 +632,7 @@ pub fn award_xp(world: &mut World, campaign_id: &str, actor: &str, amount: i64, 
     eff.push(growth_effect(world.conn(), campaign_id, actor, &s.name, "xp", &notes[0], 0));
     while s.level < 30 && s.xp >= xp_for_level(&r, s.level + 1) {
         s.level += 1;
-        let hp = (r.hp_per_level + s.modv("con")).max(1);
+        let hp = (r.hp_per_level + s.modv(&role_attr(&r, "vitality"))).max(1);
         s.max_hp += hp;
         s.hp += hp;
         s.unspent_skill += r.skill_points_per_level;
@@ -541,7 +671,12 @@ pub fn spend_skill(world: &mut World, campaign_id: &str, actor: &str, skill: &st
 }
 
 pub fn spend_attr(world: &mut World, campaign_id: &str, actor: &str, attr: &str) -> Result<()> {
-    let label = ATTRS.iter().find(|(k, _)| *k == attr).map(|(_, l)| *l).ok_or_else(|| CoreError::Invalid(format!("未知的属性：{attr}")))?;
+    let r = rules(world.conn(), campaign_id);
+    if !attr_keys(&r).iter().any(|k| k == attr) {
+        return Err(CoreError::Invalid(format!("未知的属性：{attr}")));
+    }
+    let label = attr_name(&r, attr);
+    let vitality = role_attr(&r, "vitality");
     let mut s = sheet(world.conn(), campaign_id, actor)?;
     if s.unspent_attr < 1 {
         return Err(CoreError::Invalid("没有可用的属性点".into()));
@@ -550,7 +685,7 @@ pub fn spend_attr(world: &mut World, campaign_id: &str, actor: &str, attr: &str)
     let v = s.attrs.entry(attr.to_string()).or_insert(10);
     *v += 1;
     let t = format!("{}的{label}提升到 {}", s.name, v);
-    if attr == "con" && attr_mod(*v) > attr_mod(*v - 1) {
+    if attr == vitality && attr_mod(*v) > attr_mod(*v - 1) {
         s.max_hp += s.level;
         s.hp += s.level;
     }
@@ -750,6 +885,40 @@ pub fn item_info(conn: &Connection, id: &str) -> Result<Option<ItemInfo>> {
     Ok(None)
 }
 
+/// 表示"拿出来用"的动词：玩家的话里有这些词，提到的物品才需要在背包里。
+pub const USE_VERBS: &[&str] = &["用", "拿出", "掏出", "取出", "拔出", "抽出", "举起", "挥", "装上", "装备", "戴上", "穿上", "交给", "递给", "给他", "给她", "出示", "亮出", "喝下", "喝了", "吃下", "吃了", "点燃", "扔出", "射出", "砍", "刺", "插进", "打开", "解开", "念", "吹"];
+
+/// 玩家的话里提到、但背包里没有的物品（按世界树物品与本剧本物品的名称匹配，名称至少两个字）。
+/// 程序把"玩家没有这些物品"作为事实交给 GM，GM 不能让玩家凭空拿出来用。
+pub fn missing_items(conn: &Connection, campaign_id: &str, script_id: Option<&str>, text: &str) -> Result<Vec<String>> {
+    // 只有玩家要"用"它的时候才算（实测：玩家只是查看地上碎掉的灯芯石，也被当成"拿出来用"）。
+    if !USE_VERBS.iter().any(|v| text.contains(v)) {
+        return Ok(vec![]);
+    }
+    let mut named: Vec<(String, String)> = vec![];
+    let mut stmt = conn.prepare("SELECT id, title FROM nodes WHERE kind = 'item' AND deleted_at IS NULL")?;
+    named.extend(stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.filter_map(|x| x.ok()));
+    if let Some(sid) = script_id {
+        let mut stmt = conn.prepare("SELECT id, title FROM script_items WHERE kind = 'item' AND script_id = ?1 AND deleted_at IS NULL")?;
+        named.extend(stmt.query_map([sid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.filter_map(|x| x.ok()));
+    }
+    let view = CampaignView { conn, campaign_id };
+    let held: Vec<String> = inventory(conn, campaign_id, PARTY)?.into_iter().map(|i| i.item.title).collect();
+    let mut out: Vec<String> = vec![];
+    for (id, title) in named {
+        let t = title.trim();
+        if t.chars().count() < 2 || !text.contains(t) || out.iter().any(|o| o == t) {
+            continue;
+        }
+        // 同名的另一件物品在背包里也算有。
+        if view.item_qty(PARTY, &id) > 0 || held.iter().any(|h| h == t) {
+            continue;
+        }
+        out.push(t.to_string());
+    }
+    Ok(out)
+}
+
 fn require_item(conn: &Connection, id: &str) -> Result<ItemInfo> {
     item_info(conn, id)?.ok_or_else(|| CoreError::NotFound("物品", id.into()))
 }
@@ -842,7 +1011,8 @@ pub fn weapon(conn: &Connection, campaign_id: &str, s: &Sheet) -> (String, Strin
 /// 防御值 = 基础 + 敏捷修正 + 护甲与盾牌 + 状态修正。
 pub fn armor_class(conn: &Connection, campaign_id: &str, s: &Sheet) -> i64 {
     let gear: i64 = equipped_items(conn, campaign_id, &s.actor).iter().map(|i| i.armor).sum();
-    s.base_ac + s.modv("dex") + gear + s.statuses.iter().map(|x| x.ac).sum::<i64>()
+    let agi = role_attr(&rules(conn, campaign_id), "agility");
+    s.base_ac + s.modv(&agi) + gear + s.statuses.iter().map(|x| x.ac).sum::<i64>()
 }
 
 // ===================== 货币与交易 =====================
@@ -1329,10 +1499,39 @@ mod tests {
         assert!(bad.validate().is_err());
     }
 
+    /// 自定义属性方案：默认卡按作用对应；技能按作用找属性；未知属性不能存进角色卡。
+    #[test]
+    fn custom_attribute_scheme() {
+        let r = RuleSet {
+            attributes: vec![
+                AttrDef { key: "body".into(), name: "体魄".into(), desc: String::new(), role: "might".into() },
+                AttrDef { key: "reflex".into(), name: "反应".into(), desc: String::new(), role: "agility".into() },
+                AttrDef { key: "tech".into(), name: "技术".into(), desc: String::new(), role: "mind".into() },
+            ],
+            ..Default::default()
+        };
+        assert!(r.validate().is_ok());
+        let mut s = template("npc", "守卫", 3);
+        s.attrs.insert("dex".into(), 16);
+        adapt_attrs(&mut s, &r);
+        assert_eq!(s.attrs.keys().cloned().collect::<Vec<_>>(), ["body", "reflex", "tech"]);
+        assert_eq!(s.attr("reflex"), 16, "敏捷按作用对应到反应");
+        assert_eq!(role_attr(&r, "agility"), "reflex");
+        assert_eq!(role_attr(&r, "vitality"), "body", "没有体质作用时用第一个属性");
+        assert_eq!(skill_attr(&r, "潜行"), "reflex");
+        assert_eq!(skill_attr(&r, "炼金"), "tech");
+        assert_eq!(attr_name(&r, "tech"), "技术");
+        let mut bad = r.clone();
+        bad.skill_attrs.insert("开锁".into(), "dex".into());
+        assert!(bad.validate().is_err(), "技能指向方案外的属性");
+    }
+
     #[test]
     fn stats_and_items_validate() {
         assert!(validate_stats(&json!({"level": 3, "hp": 20, "attrs": {"str": 14}, "damage": "1d8+2"})).is_ok());
-        assert!(validate_stats(&json!({"attrs": {"luck": 14}})).is_err());
+        // 属性方案可以自定义（例如"运气"），只限制 key 长度。
+        assert!(validate_stats(&json!({"attrs": {"luck": 14}})).is_ok());
+        assert!(validate_stats(&json!({"attrs": {"a_very_long_attribute_key_name": 14}})).is_err());
         assert!(validate_stats(&json!({"damage": "abc"})).is_err());
         assert!(validate_item_payload(&json!({"value": 50, "rarity": "rare", "slot": "weapon", "damage": "1d8"})).is_ok());
         assert!(validate_item_payload(&json!({"rarity": "神器"})).is_err());

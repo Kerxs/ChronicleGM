@@ -38,5 +38,7 @@ export function useCovers(worldId: string, ids: string[], tick = 0): Record<stri
 
 export function Cover({ src, size = 22, round = false, title }: { src?: string; size?: number; round?: boolean; title?: string }) {
   if (!src) return null;
-  return <img className={`cover-thumb${round ? " round" : ""}`} src={src} alt="" title={title} style={{ width: size, height: size }} draggable={false} />;
+  // 显示大小随「缩略图大小」设置缩放（--thumb-k）。
+  const px = `calc(${size}px * var(--thumb-k, 1))`;
+  return <img className={`cover-thumb${round ? " round" : ""}`} src={src} alt="" title={title} style={{ width: px, height: px }} draggable={false} />;
 }

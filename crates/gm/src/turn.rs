@@ -29,8 +29,14 @@ pub struct CheckResult {
     pub roll: i64,
     pub modifier: i64,
     pub total: i64,
+    /// 是否成功（部分成功也算成功，代价由叙述体现）。
     pub success: bool,
     pub reason: String,
+    /// 成功等级与每颗骰子（旧记录没有这些字段）。
+    #[serde(default)]
+    pub degree: Option<chronicle_core::checks::Degree>,
+    #[serde(default)]
+    pub detail: Option<chronicle_core::checks::CheckRoll>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -71,6 +77,18 @@ pub struct TurnResult {
     pub off_script: bool,
     pub intent: String,
     pub remembered: Vec<String>,
+    /// 这一回合的联网搜索（GM 请求、程序执行）。
+    #[serde(default)]
+    pub web_search: Option<serde_json::Value>,
+    /// 玩家提到、但背包里没有的物品（程序事实）。
+    #[serde(default)]
+    pub missing_items: Vec<String>,
+    /// 剧情质量提示（第 35 项，只是建议）：人物在场是否合理、可能换了说法的泄露。
+    #[serde(default)]
+    pub quality: Vec<String>,
+    /// GM 给出的可选行动（程序去重、过滤后）。
+    #[serde(default)]
+    pub choices: Vec<String>,
     /// 回合结束时的故事时间（例如"第 1 天 19:00（傍晚）"）。
     #[serde(default)]
     pub time: String,
@@ -226,12 +244,122 @@ pub fn run_turn_with_stages(world: &Mutex<World>, engine: &Engine, campaign_id: 
     res
 }
 
+fn script_item_kind(w: &World, script_id: Option<&str>, item: &str) -> bool {
+    script_id.is_some_and(|sid| {
+        w.conn()
+            .query_row("SELECT 1 FROM script_items WHERE id = ?1 AND script_id = ?2 AND kind = 'item' AND deleted_at IS NULL", [item, sid], |_| Ok(()))
+            .is_ok()
+    })
+}
+
+/// 开场回合的输入标记（界面在新战役开始后发送）。
+pub const OPENING: &str = "__opening__";
+
+/// 开场回合交给 GM 的指示：先欢迎、介绍剧本，再介绍主角，最后交代眼下的处境，玩家不会一头雾水。
+pub fn opening_prompt(script: Option<&chronicle_core::model::Script>, pc: Option<&chronicle_core::pc::PlayerCharacter>) -> String {
+    let mut facts: Vec<String> = vec![];
+    if let Some(s) = script {
+        facts.push(format!("剧本名：《{}》", s.title));
+        for (k, v) in [("题材", &s.genre), ("基调", &s.tone), ("故事前提", &s.premise), ("背景", &s.background), ("核心设定", &s.core_setting)] {
+            let v = v.trim();
+            if !v.is_empty() {
+                facts.push(format!("{k}：{}", v.chars().take(300).collect::<String>()));
+            }
+        }
+    }
+    if let Some(c) = pc {
+        facts.push(format!("主角：{}", c.name));
+        for (k, v) in [("身份", &c.identity), ("性格", &c.personality), ("介绍", &c.intro)] {
+            let v = v.trim();
+            if !v.is_empty() {
+                facts.push(format!("{k}：{}", v.chars().take(300).collect::<String>()));
+            }
+        }
+        if !c.abilities.is_empty() {
+            facts.push(format!("擅长：{}", c.abilities.join("、")));
+        }
+        if let Some(b) = c.backstory.as_object() {
+            let parts: Vec<String> = b
+                .iter()
+                .filter_map(|(k, v)| {
+                    let t = match v {
+                        serde_json::Value::String(x) => x.clone(),
+                        serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("；"),
+                        _ => String::new(),
+                    };
+                    (!t.trim().is_empty()).then(|| format!("{k}={}", t.chars().take(160).collect::<String>()))
+                })
+                .collect();
+            if !parts.is_empty() {
+                facts.push(format!("身世：{}", parts.join("；")));
+            }
+        }
+    }
+    let title = script.map(|s| s.title.as_str()).unwrap_or("这个故事");
+    let who = pc.map(|c| c.name.as_str()).unwrap_or("玩家的角色");
+    format!(
+        "（游戏开场。这不是玩家的行动，是你作为 GM 对玩家说的开场白。按下面的顺序讲，用第二人称称呼玩家，层次分明，不要一上来就只写景：\n\
+1. 第一句话以「欢迎来到《{title}》」开头。\n\
+2. 用两三句话介绍这个剧本：是什么样的世界、什么题材和基调、故事围绕什么展开（只说玩家该知道的，不剧透秘密和真相）。\n\
+3. 介绍主角「{who}」的基本情况：身份、来历、擅长什么、和这里的人与事有什么关系。\n\
+4. 交代初始剧情：此刻在什么地方、身边有谁、刚刚发生了什么、眼下面对什么问题或悬念。\n\
+5. 最后一句把行动交给玩家（例如「你打算怎么做？」）。\n\
+不要替玩家行动，不要提出检定。在 choices 里给出 2–4 个此刻可以做的具体的事。\n\
+可用的资料：\n{}）",
+        facts.join("\n")
+    )
+}
+
+/// 开场白的程序保证：没有以欢迎开头时，补上「欢迎来到《剧本名》。」。
+pub fn ensure_welcome(narration: &str, title: Option<&str>) -> String {
+    let t = narration.trim_start();
+    let head: String = t.chars().take(12).collect();
+    if head.contains("欢迎") {
+        return t.to_string();
+    }
+    match title.map(str::trim).filter(|x| !x.is_empty()) {
+        Some(x) => format!("欢迎来到《{x}》。{t}"),
+        None => format!("欢迎来到这个故事。{t}"),
+    }
+}
+
+/// 可选行动：去掉空白、重复、过长的；最多 4 条。
+pub fn clean_choices(raw: &[String], narration: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for c in raw {
+        let t: String = c.trim().trim_matches(|ch: char| matches!(ch, '-' | '•' | '·' | '"' | '“' | '”')).trim().to_string();
+        if t.is_empty() || t.chars().count() > 60 || t == narration.trim() {
+            continue;
+        }
+        let key: String = t.chars().filter(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation()).collect();
+        if out.iter().any(|o| o.chars().filter(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation()).collect::<String>() == key) {
+            continue;
+        }
+        out.push(t);
+        if out.len() == 4 {
+            break;
+        }
+    }
+    out
+}
+
 fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, input: &str, cancel: &CancelToken, stage: &dyn Fn(&str)) -> Result<TurnResult> {
     let Engine { gm, npc, templates, opts } = *engine;
     let input = input.trim();
     if input.is_empty() {
         return Err(GmError::Input("请输入玩家的行动".into()));
     }
+    // 开场回合：不是玩家的行动，不记成玩家发言；GM 按剧本的开场与玩家角色讲述开场。
+    let opening = input == OPENING;
+    let opening_text = if opening {
+        let w = lock(world)?;
+        let c = campaign::get_campaign(w.conn(), campaign_id)?;
+        let script = c.script_id.as_deref().and_then(|sid| chronicle_core::scripts::get_script(w.conn(), sid).ok().flatten());
+        opening_prompt(script.as_ref(), chronicle_core::pc::get(w.conn(), campaign_id).as_ref())
+    } else {
+        String::new()
+    };
+    let input = if opening { opening_text.as_str() } else { input };
     let mut out = TurnResult::default();
     let dsl = chronicle_gen::plot_tasks::DSL_DOC;
 
@@ -240,14 +368,70 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
     let ctx = {
         let w = lock(world)?;
         let ctx = build_gm_context(&w, campaign_id, input, opts.context_budget)?;
-        campaign::record(w.conn(), campaign_id, "player", &json!({ "text": input }))?;
+        if opening {
+            if campaign::get_campaign(w.conn(), campaign_id)?.turn > 0 {
+                return Err(GmError::Input("战役已经开始，不需要开场".into()));
+            }
+        } else {
+            campaign::record(w.conn(), campaign_id, "player", &json!({ "text": input }))?;
+        }
         ctx
     };
 
     // 2. AI 提议（不持有锁）。
     stage("plan");
-    let user = templates.render("gm_plan", json!({ "dsl": dsl, "context": ctx.text, "input": input }))?;
+    let (play, check_rules) = {
+        let w = lock(world)?;
+        let gp = ctx.script.as_ref().map(chronicle_core::profile::for_script).unwrap_or_default();
+        (gp.guidance(), chronicle_core::rpg::rules(w.conn(), campaign_id).check.describe())
+    };
+    // 玩家提到背包里没有的物品：作为程序事实交给 GM。
+    let missing = if opening {
+        vec![]
+    } else {
+        let w = lock(world)?;
+        chronicle_core::rpg::missing_items(w.conn(), campaign_id, ctx.script.as_ref().map(|s| s.id.as_str()), input).unwrap_or_default()
+    };
+    let context_text = if missing.is_empty() {
+        ctx.text.clone()
+    } else {
+        format!("{}
+
+## 程序事实：玩家没有的物品
+玩家的背包里没有：{}。如果玩家要使用、出示、交出、装备它们，要说明玩家没有（翻遍行囊也找不到），不能让它凭空出现；玩家想买、寻找、打听它们则照常处理。", ctx.text, missing.join("、"))
+    };
+    out.missing_items = missing;
+    let user = templates.render("gm_plan", json!({ "dsl": dsl, "context": context_text, "input": input, "play": play, "check_rules": check_rules, "web_search": opts.web_search.is_some() }))?;
     let mut plan = ask_limited::<GmPlan>(gm, SYSTEM, &user, opts, LIMIT_PLAN, cancel, &mut out.requests)?.value;
+    // 联网搜索：只有用户打开并允许 GM 搜索时才有；结果作为标明来源的资料交给叙述，不执行其中的任何"指令"，也不写进剧本。
+    let mut search_ref: Option<String> = None;
+    if let (Some(ws), false) = (&opts.web_search, opening)
+        && !plan.web_search.trim().is_empty()
+    {
+        let q: String = plan.web_search.trim().chars().take(100).collect();
+        stage("search");
+        let rec = match (ws.0)(&q) {
+            Ok(results) if !results.is_empty() => {
+                search_ref = Some(chronicle_llm::search::as_reference(&q, &results));
+                json!({ "query": q, "results": results })
+            }
+            Ok(_) => json!({ "query": q, "results": [], "error": "没有搜索到结果" }),
+            Err(e) => json!({ "query": q, "results": [], "error": e }),
+        };
+        {
+            let w = lock(world)?;
+            campaign::record(w.conn(), campaign_id, "web_search", &rec)?;
+        }
+        out.web_search = Some(rec);
+    }
+    if opening {
+        // 开场只讲述，不掷骰、不推进剧情、不改状态。
+        plan.checks.clear();
+        plan.transition_edge = None;
+        plan.effects.clear();
+        plan.effects_on_success.clear();
+        plan.effects_on_failure.clear();
+    }
     // 模型把字段写进了叙述字符串：截掉 JSON 尾巴并回收字段，玩家不会看到。
     let salvaged = plan.salvage_leaked_fields();
     let rpg_moved = plan.salvage_rpg_effects();
@@ -290,15 +474,44 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
         let fighting = chronicle_core::combat::active(w.conn(), campaign_id).is_some() || !plan.combat_start.is_empty();
         for chk in plan.checks.iter().filter(|c| !fighting && c.dc > 0 && !matches!(c.skill.trim(), "" | "无" | "none" | "无需")).take(3) {
             let skill = chk.skill.trim().to_string();
-            let dc = chk.dc.clamp(1, 40);
-            let modifier = CampaignView { conn: w.conn(), campaign_id }.skill_mod("party", &skill);
-            let r = campaign::roll(&mut w, campaign_id, "1d20", &format!("{skill} 检定：{}", chk.reason))?;
-            let total = r.total + modifier;
-            let res = CheckResult { skill, dc, roll: r.total, modifier, total, success: total >= dc, reason: chk.reason.clone() };
-            outcome_lines.push(format!(
-                "- {} 检定：掷出 {} + 修正 {} = {}，难度 {} → {}",
-                res.skill, res.roll, res.modifier, res.total, res.dc, if res.success { "成功" } else { "失败" }
-            ));
+            let rules = chronicle_core::rpg::rules(w.conn(), campaign_id);
+            // 骰池模式的难度是"需要几个成功"（1–6），其他模式是数值难度。
+            let dc = if rules.check.mode == "pool" { chk.dc.clamp(1, 6) } else { chk.dc.clamp(1, 100) };
+            // 难度设置由玩家决定，程序统一调整（GM 不能为了推剧情改难度），并写进检定说明。
+            let (dc, diff_note) = chronicle_core::rpg::difficulty_dc(&rules, dc);
+            let mut modifier = CampaignView { conn: w.conn(), campaign_id }.skill_mod("party", &skill);
+            // 环境修正（光照、天气）：程序按玩家所在地点计算。玩家提到火把、灯、提灯等光源时视为有光。
+            let loc = chronicle_core::worldsim::party_location(w.conn(), campaign_id)?;
+            let local = chronicle_core::worldsim::local_environment(w.conn(), campaign_id, loc.as_deref(), chronicle_core::schedule::clock(w.conn(), campaign_id))?;
+            let lit = ["火把", "灯", "火光", "蜡烛", "照明", "手电", "光源"].iter().any(|x| input.contains(x));
+            let (env_mod, env_note) = chronicle_core::worldsim::env_check_modifier(&local, &skill, lit);
+            modifier += env_mod;
+            let adv: i8 = match chk.advantage.trim() {
+                "advantage" | "优势" => 1,
+                "disadvantage" | "劣势" => -1,
+                _ => 0,
+            };
+            let mut roll = chronicle_core::checks::perform(&mut w, campaign_id, &rules.check, modifier, dc, adv, &format!("{skill} 检定：{}", chk.reason))?;
+            if !diff_note.is_empty() {
+                roll.explain = format!("{}（{diff_note}）", roll.explain);
+            }
+            if !env_note.is_empty() {
+                roll.explain = format!("{}（环境：{env_note}）", roll.explain);
+            }
+            let res = CheckResult {
+                skill,
+                dc,
+                roll: roll.natural,
+                modifier,
+                total: roll.total,
+                success: roll.degree.ok(),
+                reason: chk.reason.clone(),
+                degree: Some(roll.degree),
+                detail: Some(roll.clone()),
+            };
+            outcome_lines.push(format!("- {} 检定：{}{}", res.skill, roll.explain, if roll.degree == chronicle_core::checks::Degree::Partial { "（成功，但要付出代价或留下麻烦）" } else { "" }));
+            // 界面：玻璃球展开显示骰子与判定（结果已经确定，动画只是演出）。
+            stage(&format!("check:{}", serde_json::to_string(&res).unwrap_or_default()));
             out.checks.push(res);
         }
         let all_ok = out.checks.iter().all(|c| c.success);
@@ -320,7 +533,24 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             raw.extend(plan.effects_on_success.clone());
         }
         let raw: Vec<_> = raw.into_iter().map(|m| ctx.map_refs(m)).collect();
-        let (effects, rejected) = validate_effects(&w, script_id.as_deref(), &raw);
+        let (effects, mut rejected) = validate_effects(&w, script_id.as_deref(), &raw);
+        // 物品来源：GM 用效果直接给玩家的物品，必须是剧本里的物品（剧本奖励），或者本回合检定通过后发现的。
+        // 交易、战利品、报酬走各自的程序流程，不经过这里；没有来源的物品不会凭空出现。
+        let found_by_check = !out.checks.is_empty() && all_ok;
+        let effects: Vec<_> = effects
+            .into_iter()
+            .filter(|e| {
+                let chronicle_core::rules::Effect::GiveItem { holder, item, .. } = e else { return true };
+                if holder != chronicle_core::rpg::PARTY || found_by_check || script_item_kind(&w, script_id.as_deref(), item) {
+                    return true;
+                }
+                rejected.push(RejectedEffect {
+                    effect: serde_json::to_value(e).unwrap_or(Value::Null),
+                    reason: "物品没有合理来源：不是剧本奖励，也不是检定通过后发现的（交易、战利品、报酬请走对应流程）".into(),
+                });
+                false
+            })
+            .collect();
         if !effects.is_empty() {
             match campaign::apply_effects(&mut w, campaign_id, &effects, "GM 回合") {
                 Ok(_) => out.applied = effects,
@@ -389,6 +619,28 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             chronicle_core::investigation::add_clue(&mut w, campaign_id, &title, &detail, "gm")?;
             out.discoveries.push(title.trim().to_string());
         }
+        // 因果与伏笔（开场回合不记）。
+        if !opening {
+            let (_, refs) = chronicle_core::story::gm_text(w.conn(), campaign_id)?;
+            let find = |code: &str| refs.iter().find(|(c, _)| c.eq_ignore_ascii_case(code.trim())).map(|(_, id)| id.clone());
+            for code in plan.consequences_done.iter().take(4) {
+                if let Some(id) = find(code).filter(|id| id.starts_with('k')) {
+                    chronicle_core::story::mark_occurred(&mut w, campaign_id, &id)?;
+                    out.quest_updates.push("之前的决定带来了后果".into());
+                }
+            }
+            for code in plan.payoffs.iter().take(3) {
+                if let Some(id) = find(code).filter(|id| id.starts_with('f')) {
+                    chronicle_core::story::pay_off(&mut w, campaign_id, &id, &plan.intent)?;
+                }
+            }
+            for c in plan.consequences.iter().filter(|c| !c.consequence.trim().is_empty()).take(2) {
+                chronicle_core::story::add_consequence(&mut w, campaign_id, &ctx.humanize(&c.decision), &ctx.humanize(&c.consequence), c.after_turns.clamp(0, 30))?;
+            }
+            for f in plan.foreshadow.iter().filter(|f| !f.trim().is_empty()).take(1) {
+                chronicle_core::story::plant(&mut w, campaign_id, &ctx.humanize(f))?;
+            }
+        }
         // 剧情中出现的新任务（最多 1 个）与任务变化（最多 2 条）。
         for q in plan.new_quests.iter().filter(|q| !q.title.trim().is_empty()).take(1) {
             let nq = chronicle_core::quests::NewQuest {
@@ -416,7 +668,12 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
     }
 
     // 4. 有程序判定结果时，AI 按实际结果重写叙述。
-    let needs_narration = !out.checks.is_empty() || out.transition.is_some() || !out.rejected.is_empty() || !out.transition_note.is_empty() || !out.rpg_updates.is_empty();
+    if let Some(r) = &search_ref {
+        outcome_lines.push(format!("- {r}"));
+    } else if let Some(e) = out.web_search.as_ref().and_then(|w| w.get("error")).and_then(|e| e.as_str()) {
+        outcome_lines.push(format!("- 联网搜索没有结果（{e}）：按你自己的知识叙述，不要假装查到了资料"));
+    }
+    let needs_narration = !out.checks.is_empty() || out.transition.is_some() || !out.rejected.is_empty() || !out.transition_note.is_empty() || !out.rpg_updates.is_empty() || out.web_search.is_some();
     out.narration = if needs_narration {
         stage("narrate");
         let ctx2 = {
@@ -425,7 +682,14 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
         };
         let plan_text = format!("意图：{}；原叙述：{}", plan.intent, plan.narration);
         let user = templates.render("gm_narrate", json!({ "context": ctx2.text, "input": input, "plan": plan_text, "outcome": outcome_lines.join("\n") }))?;
-        ask_limited::<Narration>(gm, SYSTEM, &user, opts, LIMIT_NARRATION, cancel, &mut out.requests)?.value.narration
+        let n = ask_limited::<Narration>(gm, SYSTEM, &user, opts, LIMIT_NARRATION, cancel, &mut out.requests)?.value;
+        if n.choices.len() >= 2 {
+            plan.choices = n.choices;
+        } else if !n.choices.is_empty() {
+            let old = std::mem::take(&mut plan.choices);
+            plan.choices = n.choices.into_iter().chain(old).collect();
+        }
+        n.narration
     } else {
         plan.narration.clone()
     };
@@ -447,7 +711,32 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             }
         }
     }
+    if opening && !out.narration.trim().is_empty() {
+        out.narration = ensure_welcome(&out.narration, ctx.script.as_ref().map(|s| s.title.as_str()));
+    }
     out.leaks = find_leaks(&out.narration, &ctx.hidden);
+    // 剧情质量（只提示，不修改）：换了说法的泄露；已经死去 / 失踪的人物在叙述里出现。
+    for p in crate::leak::paraphrase_leaks(&out.narration, &ctx.hidden).into_iter().take(2) {
+        out.quality.push(format!("叙述可能换了说法透露了主持人信息：「{p}」"));
+    }
+    {
+        let w = lock(world)?;
+        let st = campaign::campaign_state(w.conn(), campaign_id)?;
+        for (k, v) in &st.entities {
+            if let Some(id) = k.strip_suffix("|life_status")
+                && matches!(v.as_str(), Some("dead") | Some("missing"))
+                && let Some(n) = chronicle_core::nodes::get_node(w.conn(), id)?
+                && n.title.chars().count() >= 2
+                && out.narration.contains(&n.title)
+                && !["死", "尸", "墓", "遗体", "失踪", "下落不明", "生前", "曾经", "回忆"].iter().any(|x| out.narration.contains(x))
+            {
+                out.quality.push(format!("「{}」已经{}，叙述里却像在场一样出现", n.title, if v.as_str() == Some("dead") { "死亡" } else { "失踪" }));
+            }
+        }
+        if !out.quality.is_empty() {
+            campaign::record(w.conn(), campaign_id, "quality", &json!({ "notes": out.quality }))?;
+        }
+    }
     // 叙述与程序结算不符（实测：结算是击倒，叙述却写"没能触到"）：记下来给主持人看。
     out.conflicts = chronicle_core::director::narration_mismatches(&out.narration, &out.rpg_updates);
     {
@@ -468,7 +757,33 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
         if !out.redirected_speakers.is_empty() {
             campaign::record(w.conn(), campaign_id, "speech_redirected", &json!({ "npcs": out.redirected_speakers }))?;
         }
-        campaign::record(w.conn(), campaign_id, "narration", &json!({ "text": out.narration, "leaks": out.leaks }))?;
+        campaign::record(w.conn(), campaign_id, "narration", &json!({ "text": out.narration, "leaks": out.leaks, "opening": opening }))?;
+        out.choices = clean_choices(&plan.choices, &out.narration);
+        // 可选行动不能用到玩家没有的物品。
+        let sid = ctx.script.as_ref().map(|s| s.id.clone());
+        out.choices.retain(|c| chronicle_core::rpg::missing_items(w.conn(), campaign_id, sid.as_deref(), c).map(|m| m.is_empty()).unwrap_or(true));
+        // 模型给的少于 2 条（实测偶尔只有 1 条）：程序按场景补几条简单的（和在场的人说话、去能到的地方、观察四周）。
+        if out.choices.len() < 2 && !out.narration.trim().is_empty() {
+            let mut extra: Vec<String> = vec![];
+            if let Some(n) = ctx.npcs.iter().find(|n| !out.choices.iter().any(|c| c.contains(n.node.title.as_str()))) {
+                extra.push(format!("和{}说话", n.node.title));
+            }
+            if let Some(r) = chronicle_core::worldsim::reachable(w.conn(), campaign_id, 1).ok().and_then(|v| v.into_iter().next()) {
+                extra.push(format!("前往{}", r.title));
+            }
+            extra.push("仔细观察四周".to_string());
+            for e in extra {
+                if out.choices.len() >= 2 {
+                    break;
+                }
+                if !out.choices.contains(&e) {
+                    out.choices.push(e);
+                }
+            }
+        }
+        if !out.choices.is_empty() {
+            campaign::record(w.conn(), campaign_id, "choices", &json!({ "items": out.choices }))?;
+        }
         campaign::record(w.conn(), campaign_id, "context_trace", &serde_json::to_value(&ctx.trace).unwrap_or(Value::Null))?;
 
     }
@@ -485,16 +800,28 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
         stage("npc");
     }
     for me in speakers {
-        let nctx = {
+        let (nctx, player) = {
             let w = lock(world)?;
-            build_npc_context(&w, campaign_id, me, &ctx.npcs, ctx.script.as_ref(), ctx.current.as_ref())?
+            // 实测：不告诉 NPC 玩家是谁时，模型会把叙述里的「你」当成自己，替玩家说话。
+            let player = chronicle_core::pc::get(w.conn(), campaign_id)
+                .map(|c| if c.identity.trim().is_empty() { c.name } else { format!("{}（{}）", c.name, c.identity.trim()) })
+                .unwrap_or_else(|| "玩家的角色".to_string());
+            (build_npc_context(&w, campaign_id, me, &ctx.npcs, ctx.script.as_ref(), ctx.current.as_ref())?, player)
         };
         let user = templates.render(
             "npc_reply",
             json!({ "name": nctx.name, "card": nctx.card, "knowledge": nctx.knowledge, "attitude": nctx.attitude,
-                    "memories": nctx.memories, "mood": nctx.mood, "scene": nctx.scene, "recent": nctx.recent, "input": input }),
+                    "memories": nctx.memories, "mood": nctx.mood, "scene": nctx.scene, "recent": nctx.recent, "input": input, "player": player }),
         )?;
-        let mut reply = ask_limited::<NpcReplyOut>(npc, NPC_SYSTEM, &user, opts, LIMIT_NPC, cancel, &mut out.requests)?.value;
+        // 实测：本地模型偶尔给出无法解析的 NPC 回应。叙述已经写入，不能因为一句台词让整个回合失败：跳过这个人物的台词并记下原因。
+        let mut reply = match ask_limited::<NpcReplyOut>(npc, NPC_SYSTEM, &user, opts, LIMIT_NPC, cancel, &mut out.requests) {
+            Ok(r) => r.value,
+            Err(GmError::Output(e)) => {
+                out.conflicts.push(format!("{}的回应没能生成（模型输出无法使用：{e}），这回合略过其台词", me.node.title));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         reply.salvage_leaked_fields();
         let delta = reply.attitude_change.clamp(-2, 2);
         // 情绪变化：每项每回合最多 ±10，原因写明是对哪句话的反应。
@@ -556,7 +883,19 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             out.places_heard = chronicle_core::worldsim::hear_of_places(&mut w, campaign_id, &heard)?;
         }
         // 旅行：耗时由程序按路程与天气计算，期间世界照常运转。
-        let dest = plan.travel_to.as_deref().filter(|t| !t.trim().is_empty()).and_then(resolve_place);
+        let mut dest = plan.travel_to.as_deref().filter(|t| !t.trim().is_empty()).and_then(resolve_place);
+        // 模型没填 travel_to，但玩家明说要去 / 走进某个认识的地点：附近的直接到达，远处的按旅行计算（战斗中、剧情刚推进时不处理）。
+        let fighting_now = chronicle_core::combat::active(w.conn(), campaign_id).is_some() || out.combat.as_ref().is_some_and(|c| c.status == "active");
+        if dest.is_none() && !opening && !fighting_now && !out.transition.as_ref().is_some_and(|t| t.taken)
+            && let Some((id, title, nearby)) = chronicle_core::worldsim::place_from_words(w.conn(), campaign_id, input)?
+        {
+            if nearby {
+                chronicle_core::worldsim::move_nearby(&mut w, campaign_id, &id, &title)?;
+                out.travel = format!("来到「{title}」");
+            } else {
+                dest = Some(id);
+            }
+        }
         let travelled = match dest {
             Some(to) => match chronicle_core::worldsim::travel(&mut w, campaign_id, &to, "旅行") {
                 Ok((p, notes)) => {
@@ -610,7 +949,7 @@ pub fn missing_rpg_intents(ctx: &crate::context::GmContext, input: &str, plan: &
     if plan.craft.as_deref().is_none_or(|s| s.trim().is_empty()) && has(&["制作", "做一", "做个", "调制", "熬", "打造", "锻造", "配制", "做成"]) && code('R') {
         v.push("craft");
     }
-    if plan.combat_start.is_empty() && !in_combat && has(&["攻击", "扑", "袭", "动手", "砍", "拔剑", "打起来", "开打", "冲上去", "围攻", "埋伏"]) {
+    if plan.combat_start.is_empty() && !in_combat && has(&["攻击", "扑", "袭", "动手", "砍", "拔剑", "打起来", "开打", "冲上去", "围攻", "埋伏", "冲向", "砸", "劈", "刺向", "揍", "射向", "开枪", "迎战", "拼了"]) {
         v.push("combat_start");
     }
     v
@@ -784,7 +1123,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
             .map(|e| {
                 // 只有敌人的名字确实指这个人物时才让他参战（实测：模型给"野狼"填了铁匠的编号，结果两个铁匠来打玩家）。
                 let npc = ctx.resolve_npc(&e.npc).filter(|n| e.name.contains(n.node.title.as_str()) || n.node.title.contains(e.name.trim())).map(|n| n.node.id.clone());
-                combat::EnemySpec { name: e.name.trim().to_string(), count: if npc.is_some() { 1 } else { e.count.clamp(1, 6) }, npc, level: e.level.clamp(1, 20), loot: vec![] }
+                combat::EnemySpec { name: e.name.trim().to_string(), count: if npc.is_some() { 1 } else { e.count.clamp(1, 6) }, npc, level: e.level.clamp(1, 20), loot: vec![], boss: e.boss }
             })
             .collect();
         // 战斗原因用玩家的原话（实测：模型有时把字段名写进 intent）。
@@ -792,7 +1131,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
         // 同伴：在场、不是敌人的人物。
         let enemy_npcs: Vec<String> = enemies.iter().filter_map(|e| e.npc.clone()).collect();
         let allies: Vec<String> = plan.combat_allies.iter().filter_map(|a| ctx.resolve_npc(a)).map(|n| n.node.id.clone()).filter(|id| !enemy_npcs.contains(id)).take(4).collect();
-        match combat::start(w, campaign_id, &enemies, &allies, &reason) {
+        match combat::start_locked(w, campaign_id, &enemies, &allies, &reason, &plan.combat_no_escape) {
             Ok(rep) => {
                 lines.extend(rep.lines);
                 out.combat = Some(rep.combat);
@@ -873,7 +1212,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
             let _ = campaign::apply_effects(
                 w,
                 campaign_id,
-                &[chronicle_core::rules::Effect::UpsertRecord { kind: "item_source".into(), id: format!("{holder}|{item}"), data: json!({ "source": "剧情" }) }],
+                &[chronicle_core::rules::Effect::UpsertRecord { kind: "item_source".into(), id: format!("{holder}|{item}"), data: json!({ "source": if script_item_kind(w, ctx.script.as_ref().map(|s| s.id.as_str()), item) { "剧本奖励" } else { "检定后发现" } }) }],
                 "物品来源",
             );
         }

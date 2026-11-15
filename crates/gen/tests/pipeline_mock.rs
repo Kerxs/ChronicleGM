@@ -56,7 +56,21 @@ fn outline_json() -> serde_json::Value {
         "endings": [
             {"title": "真相大白", "condition": "揭穿码头老板"},
             {"title": "葬身雾海", "condition": "被幽灵船长击败"}
-        ]
+        ],
+        "player_characters": [
+            {"name": "林雾", "identity": "保险调查员", "personality": "冷静多疑", "abilities": ["查账", "察言观色"], "player_text": "受雇调查失踪货船的保险员。",
+             "backstory": {"origin": "雾港贫民区", "upbringing": "跟着做账房的父亲长大", "occupation": "保险调查员", "key_events": ["父亲死于一场海难"], "relations": ["码头老板：旧识"], "link_to_plot": "父亲的海难与幽灵船长有关"}},
+            {"name": "阿岩", "identity": "退役水手", "personality": "直率", "abilities": ["驾船", "格斗"], "player_text": "在码头打零工的老水手。",
+             "backstory": {"origin": "渔村", "upbringing": "海上长大", "occupation": "水手", "key_events": [], "relations": [], "link_to_plot": "曾在那艘货船上干过活"}}
+        ],
+        "play": {
+            "weights": {"combat": 1, "exploration": 2, "social": 2, "investigation": 3, "survival": 0, "management": 0},
+            "attributes": [{"key": "body", "name": "体魄", "role": "might"}, {"key": "wits", "name": "机敏", "role": "agility"}, {"key": "mind", "name": "学识", "role": "mind"}],
+            "skills": [{"skill": "查账", "attr": "mind"}, {"skill": "格斗", "attr": "体魄"}],
+            "check_mode": "target",
+            "die": "1d20",
+            "style": "阴郁悬疑"
+        }
     })
 }
 
@@ -169,7 +183,9 @@ fn failure_leaves_world_untouched_and_retry_works() {
     mk(&mut w, NewNode::new(NodeKind::City, "雾港"));
     let commits_before = w.commits(100, 0).unwrap().len();
     // 两次都返回结构错误（chapters 为空）。
-    let bad = json!({"title": "x", "opening": {}, "chapters": [], "quests": [], "npcs": [], "endings": []}).to_string();
+    let mut bad = outline_json();
+    bad["chapters"] = json!([]);
+    let bad = bad.to_string();
     let client = Scripted::new(vec![Ok(bad.clone()), Ok(bad)]);
     let out = runner::run(&mut w, &client, outline_task(), &Templates::builtin(), None, &opts(), &CancelToken::new()).unwrap();
     assert!(matches!(out.result, Err(chronicle_gen::GenError::Output(_))));
@@ -412,4 +428,31 @@ fn truncated_output_retries_with_thinking_disabled() {
     let o = GenOptions { stream: false, thinking: Some(false), ..Default::default() };
     runner::run(&mut w, &client, outline_task(), &Templates::builtin(), None, &o, &CancelToken::new()).unwrap();
     assert_eq!(client.requests()[0].thinking, Some(false));
+}
+
+/// 大纲同时生成玩法配置与可选角色（含身世）；开新战役时属性方案与检定规则进入战役规则；
+/// 章节展开的线索数量跟着调查比重走（提示词里能看到）。
+#[test]
+fn outline_brings_game_profile_and_player_characters() {
+    let (_d, mut w) = env();
+    let sid = applied_script(&mut w);
+    let s = scripts::get_script(w.conn(), &sid).unwrap().unwrap();
+    let gp = chronicle_core::profile::for_script(&s);
+    assert_eq!((gp.source.as_str(), gp.weights.investigation, gp.weights.combat), ("ai", 3, 1));
+    assert_eq!(gp.attributes.iter().map(|a| a.key.as_str()).collect::<Vec<_>>(), ["body", "wits", "mind"]);
+    assert_eq!(gp.skills.get("格斗").map(String::as_str), Some("body"), "中文属性名换成 key");
+    let pcs = scripts::items_by_kind(w.conn(), &sid, ScriptItemKind::PlayerCharacter).unwrap();
+    assert_eq!(pcs.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(), ["林雾", "阿岩"]);
+    assert_eq!(pcs[0].payload["backstory"]["origin"], "雾港贫民区");
+    assert!(pcs[0].gm_text.contains("父亲的海难"), "与主线的关联给主持人看");
+    assert!(!pcs[0].player_text.contains("海难"));
+    let c = campaign::create_campaign(&mut w, Some(&sid), "测试团", Some(1)).unwrap();
+    let r = chronicle_core::rpg::rules(w.conn(), &c.id);
+    assert_eq!(chronicle_core::rpg::attr_keys(&r), ["body", "wits", "mind"]);
+    let sheet = chronicle_core::rpg::sheet(w.conn(), &c.id, chronicle_core::rpg::PARTY).unwrap();
+    assert_eq!(sheet.attrs.keys().cloned().collect::<Vec<_>>(), ["body", "mind", "wits"], "玩家默认卡换成剧本的属性");
+    // 章节展开：提示词里的线索数量按调查比重 3 → 4–8 条。
+    let ch = scripts::items_by_kind(w.conn(), &sid, ScriptItemKind::Chapter).unwrap()[0].id.clone();
+    let p = chronicle_gen::tasks::build_prompt(&w, &Task::ExpandChapter { script_id: sid.clone(), chapter_id: ch, guidance: String::new() }, &Templates::builtin(), 6000, false).unwrap();
+    assert!(p.user.contains("本章共 4–8 条"), "{}", p.user);
 }

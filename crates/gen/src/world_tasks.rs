@@ -202,6 +202,44 @@ pub struct SeedInput<'a> {
     pub rules: &'a str,
 }
 
+/// 根据剧本生成世界树：剧本信息、核心设定、大纲、人物、场景里出现的地点作为依据；已有的世界树节点不要重复。
+pub fn build_world_from_script(world: &World, templates: &Templates, budget: usize, script_id: &str, guidance: &str) -> Result<(String, RenderedContext)> {
+    let s = chronicle_core::scripts::require_script(world.conn(), script_id)?;
+    let mut ctx = Context::default();
+    ctx.push("剧本信息", context::script_meta(&s), 0);
+    ctx.push("剧本的核心设定与真相（主持人信息，可以写进世界设定，但不要写进玩家可见的文字）", s.core_setting.clone(), 0);
+    ctx.push("剧本大纲", context::script_outline(world, script_id, true)?, 1);
+    ctx.push("剧本人物（已经在世界树里，不要重复创建，可以在 relations 里引用）", context::cast_text(world, script_id)?, 1);
+    ctx.push("世界核心设定（不得矛盾）", context::core_canon(world, 50)?, 1);
+    let top: Vec<String> = nodes::children(world.conn(), None, 0, 50)?
+        .iter()
+        .flat_map(|r| {
+            let mut v = vec![format!("- {}", r.title)];
+            if let Ok(kids) = nodes::children(world.conn(), Some(&r.id), 0, 50) {
+                v.extend(kids.iter().map(|k| format!("  - {}", k.title)));
+            }
+            v
+        })
+        .collect();
+    ctx.push("已有世界树（不要重复）", top.join("\n"), 2);
+    let rendered = ctx.render(budget);
+    let cats = CATEGORIES.iter().map(|(c, _)| *c).collect::<Vec<_>>().join("、");
+    let idea = format!("为剧本《{}》建立它所在的世界。{}", s.title, s.premise);
+    let rules = if guidance.trim().is_empty() {
+        "世界树必须服务于这个剧本：剧本里出现或提到的地点、势力、组织、物品、历史事件都要有对应节点，不要写与剧本无关的大段设定".to_string()
+    } else {
+        format!("世界树必须服务于这个剧本。{guidance}")
+    };
+    let fields = chronicle_core::profile::for_script(&s).all_node_fields_hint();
+    let rules = if fields.is_empty() { rules } else { format!("{rules}。按这个题材，details 里还要写这些字段：{fields}") };
+    let user = templates.render(
+        "world_seed",
+        json!({"idea": idea, "genre": s.genre, "era": "", "style": s.tone, "rules": rules, "categories": cats,
+               "kinds": kinds_text(), "rel_types": rel_text(), "context": rendered.text}),
+    )?;
+    Ok((user, rendered))
+}
+
 pub fn build_world_seed(world: &World, templates: &Templates, budget: usize, input: SeedInput) -> Result<(String, RenderedContext)> {
     let SeedInput { idea, genre, era, style, rules } = input;
     if idea.trim().is_empty() {
@@ -222,6 +260,8 @@ pub fn build_world_seed(world: &World, templates: &Templates, budget: usize, inp
     ctx.push("已有世界树", top.join("\n"), 2);
     let rendered = ctx.render(budget);
     let cats = CATEGORIES.iter().map(|(c, _)| *c).collect::<Vec<_>>().join("、");
+    let fields = chronicle_core::profile::infer(genre, style, idea).all_node_fields_hint();
+    let rules = if fields.is_empty() { rules.to_string() } else { format!("{rules}{}按这个题材，details 里还要写这些字段：{fields}", if rules.trim().is_empty() { "" } else { "。" }) };
     let user = templates.render(
         "world_seed",
         json!({"idea": idea, "genre": genre, "era": era, "style": style, "rules": rules, "categories": cats,
@@ -236,6 +276,8 @@ pub fn build_expand(world: &World, templates: &Templates, budget: usize, node_id
     node_context(world, &n, &mut ctx)?;
     let rendered = ctx.render(budget);
     let kinds: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+    let fields = chronicle_core::profile::world_profile(world.conn()).map(|p| p.all_node_fields_hint()).unwrap_or_default();
+    let guidance = if fields.is_empty() { guidance.to_string() } else { format!("{guidance}（按这个世界的题材，details 里还要写：{fields}）") };
     let user = templates.render(
         "expand_node",
         json!({"target": context::node_detail(&n), "count": count.clamp(1, 20), "kinds": kinds.join("、"),
@@ -257,10 +299,13 @@ pub fn build_rewrite(world: &World, templates: &Templates, budget: usize, node_i
         RewriteMode::Expand => "expand",
         RewriteMode::Complete => "complete",
     };
+    // 可用字段：通用字段 + 按世界题材补充的字段。
+    let extra = chronicle_core::profile::world_profile(world.conn()).map(|p| p.node_fields_hint(n.kind.as_str())).unwrap_or_default();
+    let fields = if extra.is_empty() { payload_fields(n.kind) } else { format!("{}、{extra}", payload_fields(n.kind)) };
     let user = templates.render(
         "rewrite_node",
         json!({"target": context::node_detail(&n), "mode": mode_s, "instruction": instruction, "context": rendered.text,
-               "fields": payload_fields(n.kind)}),
+               "fields": fields}),
     )?;
     Ok((user, rendered))
 }

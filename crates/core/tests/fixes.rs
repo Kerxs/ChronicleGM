@@ -180,7 +180,7 @@ fn battlefield_obstacles_cover_morale_and_ranged_enemies() {
     s.hp = 200;
     rpg::save_sheet(w, &cid, &s, "x").unwrap();
     rpg::give_item(w, &cid, PARTY, &bow, 1, "x").unwrap();
-    let c = combat::start(w, &cid, &[EnemySpec { name: "强盗".into(), npc: None, level: 1, count: 1, loot: vec![] }, EnemySpec { name: "弓手".into(), npc: None, level: 1, count: 1, loot: vec![] }], &[], "埋伏").unwrap().combat;
+    let c = combat::start(w, &cid, &[EnemySpec { name: "强盗".into(), npc: None, level: 1, count: 1, loot: vec![], boss: false }, EnemySpec { name: "弓手".into(), npc: None, level: 1, count: 1, loot: vec![], boss: false }], &[], "埋伏").unwrap().combat;
     assert!((3..=5).contains(&c.obstacles.len()), "{:?}", c.obstacles);
     assert!(c.obstacles.iter().all(|&(x, y)| !c.units.iter().any(|u| u.x == x && u.y == y)));
     let archer = c.units.iter().find(|u| u.name == "弓手").unwrap();

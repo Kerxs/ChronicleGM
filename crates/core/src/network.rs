@@ -76,6 +76,9 @@ pub struct NetworkQuery {
     /// 最多节点数（默认 400）。
     #[serde(default)]
     pub limit: usize,
+    /// 剧透模式：显示主持人可见的关系（由程序按全局设置填写，界面传的值会被覆盖）。
+    #[serde(default)]
+    pub spoilers: bool,
 }
 
 fn yes() -> bool {
@@ -130,11 +133,11 @@ pub fn network(conn: &Connection, q: &NetworkQuery) -> Result<Network> {
             "SELECT r.id, r.src_id, r.dst_id, r.rel_type, r.label, r.directed FROM relations r
              JOIN nodes a ON a.id = r.src_id AND a.deleted_at IS NULL AND a.kind IN ({k})
              JOIN nodes b ON b.id = r.dst_id AND b.deleted_at IS NULL AND b.kind IN ({k})
-             WHERE r.deleted_at IS NULL AND (r.src_id IN (SELECT value FROM json_each(?1)) OR r.dst_id IN (SELECT value FROM json_each(?1)))",
+             WHERE r.deleted_at IS NULL AND (?2 OR r.visibility <> 'gm') AND (r.src_id IN (SELECT value FROM json_each(?1)) OR r.dst_id IN (SELECT value FROM json_each(?1)))",
             k = kinds.join(",")
         ))?;
         let rows: Vec<(String, String, String, String, String, bool)> = stmt
-            .query_map([serde_json::to_string(&ids)?], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+            .query_map(rusqlite::params![serde_json::to_string(&ids)?, q.spoilers], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<rusqlite::Result<_>>()?;
         for (id, a, b, t, label, directed) in rows {
             if !type_ok(&t) {

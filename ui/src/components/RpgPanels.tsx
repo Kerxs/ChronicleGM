@@ -1,5 +1,6 @@
 // 游戏页的"角色"与"战斗"面板：角色卡、背包与装备、买卖、制作、成长记录、规则设置；回合制战斗。
 // 所有数值由后端程序计算，这里只显示和发出操作。
+import { PanelSkeleton } from "./Skeleton";
 import { useEffect, useState } from "react";
 import type React from "react";
 import { api, type RpgOverview } from "../api";
@@ -19,7 +20,14 @@ const ATTRS: [string, string][] = [
   ["wis", "感知"],
   ["cha", "魅力"],
 ];
+/** 战役的属性方案（来自剧本的玩法配置；没有时是默认六项）。 */
+const attrList = (r: RuleSet | undefined): [string, string][] => (r?.attributes?.length ? r.attributes.map((a) => [a.key, a.name] as [string, string]) : ATTRS);
 const RARITY: Record<string, string> = { common: "普通", uncommon: "优秀", rare: "稀有", epic: "史诗", legendary: "传说" };
+const RARITY_KEYS = ["common", "uncommon", "rare", "epic", "legendary"];
+/** 稀有度的显示名：剧本题材的叫法（规则里的 rarity_labels），没有就用默认。 */
+const rarityLabel = (rules: { rarity_labels?: string[] }, key: string) => rules.rarity_labels?.[RARITY_KEYS.indexOf(key)] || RARITY[key] || key;
+/** 最小货币单位的名称（价格以它计）。 */
+const smallestUnit = (rules: { currency: string[] }) => rules.currency[rules.currency.length - 1] ?? "铜币";
 const SLOT: Record<string, string> = { weapon: "武器", armor: "护甲", shield: "盾牌", accessory: "饰品" };
 const GROWTH: Record<string, string> = { xp: "经验", level: "升级", skill: "技能", attr: "属性", wound: "伤势", heal: "恢复", craft: "制作", edit: "修改", status: "状态" };
 const mod = (v: number) => {
@@ -56,7 +64,7 @@ export function CharacterPanel({ ctx, campaignId, gmView, ended, refreshKey, onC
   useEffect(() => {
     void load();
   }, [campaignId, refreshKey]);
-  if (!ov) return <p className="hint">加载中…</p>;
+  if (!ov) return <PanelSkeleton />;
   const s = ov.sheet;
   const fail = (e: Error) => ctx.notify(e.message, "error");
   const act = (kind: string, target = "", item = "", qty = 1, reason = "") =>
@@ -84,7 +92,7 @@ export function CharacterPanel({ ctx, campaignId, gmView, ended, refreshKey, onC
           {!ended && <button className="small" onClick={() => setEdit(edit ? null : { ...s, attrs: { ...s.attrs } })}>{edit ? "取消编辑" : "编辑"}</button>}
         </div>
         <div className="row wrap">
-          {ATTRS.map(([k, l]) => (
+          {attrList(ov.rules).map(([k, l]) => (
             <span key={k} className="attr">
               {l} <strong>{s.attrs[k] ?? 10}</strong>（{mod(s.attrs[k] ?? 10)}）
               {s.unspent_attr > 0 && !ended && <button className="small" onClick={() => act("spend_attr", k)}>+1</button>}
@@ -129,7 +137,7 @@ export function CharacterPanel({ ctx, campaignId, gmView, ended, refreshKey, onC
             </div>
             {gmView && (
               <div className="row wrap">
-                {ATTRS.map(([k, l]) => (
+                {attrList(ov.rules).map(([k, l]) => (
                   <label key={k} className="check">
                     {l} <input type="number" min={1} max={40} value={edit.attrs[k] ?? 10} onChange={(e) => setEdit({ ...edit, attrs: { ...edit.attrs, [k]: Number(e.target.value) } })} style={{ width: 50 }} />
                   </label>
@@ -186,7 +194,7 @@ export function CharacterPanel({ ctx, campaignId, gmView, ended, refreshKey, onC
                   <span className={`rarity r-${i.item.rarity}`}>{i.item.title}</span> ×{i.qty}
                   {i.equipped && <span className="ok-text">（已装备）</span>}
                   <div className="hint">
-                    {[RARITY[i.item.rarity], SLOT[i.item.slot], i.item.damage && `伤害 ${i.item.damage}`, i.item.armor ? `护甲 +${i.item.armor}` : "", i.item.heal && `恢复 ${i.item.heal}`, i.source && `来源：${i.source}`].filter(Boolean).join(" · ")}
+                    {[rarityLabel(ov.rules, i.item.rarity), SLOT[i.item.slot], i.item.damage && `伤害 ${i.item.damage}`, i.item.armor ? `护甲 +${i.item.armor}` : "", i.item.heal && `恢复 ${i.item.heal}`, i.source && `来源：${i.source}`].filter(Boolean).join(" · ")}
                   </div>
                 </td>
                 <td>
@@ -209,12 +217,12 @@ export function CharacterPanel({ ctx, campaignId, gmView, ended, refreshKey, onC
         <div className="card">
           <strong>{m.name}的商品</strong>
           <span className="hint">
-            　收购按价值的 {Math.round(m.shop.buy_rate * 100)}%{m.shop.discount >= 0.01 ? `，关系好打 ${((1 - m.shop.discount) * 10).toFixed(1)} 折` : ""}；商人有 {m.shop.merchant_money} 铜
+            　收购按价值的 {Math.round(m.shop.buy_rate * 100)}%{m.shop.discount >= 0.01 ? `，关系好打 ${((1 - m.shop.discount) * 10).toFixed(1)} 折` : ""}；商人有 {m.shop.merchant_money} {smallestUnit(ov.rules)}
           </span>
           <ul className="list">
             {m.shop.items.map((it) => (
               <li key={it.item.id}>
-                <span className={`rarity r-${it.item.rarity}`}>{it.item.title}</span>　{it.buy_price} 铜{it.stock !== null ? `（剩 ${it.stock}）` : ""}
+                <span className={`rarity r-${it.item.rarity}`}>{it.item.title}</span>　{it.buy_price} {smallestUnit(ov.rules)}{it.stock !== null ? `（剩 ${it.stock}）` : ""}
                 {!ended && <button className="small" disabled={it.stock === 0} onClick={() => act("buy", m.id, it.item.id, 1)}>买</button>}
               </li>
             ))}
@@ -271,6 +279,15 @@ export function CharacterPanel({ ctx, campaignId, gmView, ended, refreshKey, onC
             </button>
           ) : (
             <div className="rules">
+              <label className="check" title="由程序统一调整检定难度和临时敌人的等级，并写进每次检定的说明；GM 不能为了推剧情改难度">
+                难度
+                <select value={rules.difficulty} onChange={(e) => setRules({ ...rules, difficulty: e.target.value })}>
+                  <option value="easy">简单（检定难度 -2，敌人等级 -1）</option>
+                  <option value="normal">普通</option>
+                  <option value="hard">困难（检定难度 +2，敌人等级 +1）</option>
+                  <option value="brutal">残酷（检定难度 +4，敌人等级 +2）</option>
+                </select>
+              </label>
               <div className="row wrap">
                 {(
                   [
@@ -342,7 +359,7 @@ export function CombatPanel({ ctx, campaignId, gmView, ended, refreshKey, onChan
   const [ov, setOv] = useState<RpgOverview | null>(null);
   const [allies, setAllies] = useState<{ id: string; name: string }[]>([]);
   const [pick, setPick] = useState<string[]>([]);
-  const [enemies, setEnemies] = useState<EnemySpec[]>([{ name: "强盗", npc: null, level: 1, count: 2, loot: [] }]);
+  const [enemies, setEnemies] = useState<EnemySpec[]>([{ name: "强盗", npc: null, level: 1, count: 2, loot: [], boss: false }]);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const load = () => api.rpgOverview(ctx.worldId, campaignId).then(setOv).catch((e: Error) => ctx.notify(e.message, "error"));
@@ -353,7 +370,7 @@ export function CombatPanel({ ctx, campaignId, gmView, ended, refreshKey, onChan
       .then((s) => setAllies(s.npcs.filter((n) => n.status.life_status !== "dead").map((n) => ({ id: n.status.npc_id, name: n.status.name }))))
       .catch(() => setAllies([]));
   }, [campaignId, refreshKey]);
-  if (!ov) return <p className="hint">加载中…</p>;
+  if (!ov) return <PanelSkeleton />;
   const fail = (e: Error) => ctx.notify(e.message, "error");
   const done = (lines: string[]) => {
     if (lines.length) ctx.notify(lines.slice(-4).join("；"));
@@ -387,7 +404,7 @@ export function CombatPanel({ ctx, campaignId, gmView, ended, refreshKey, onChan
               <button className="link danger" onClick={() => setEnemies(enemies.filter((_, j) => j !== i))}>×</button>
             </div>
           ))}
-          <button className="small" onClick={() => setEnemies([...enemies, { name: "", npc: null, level: 1, count: 1, loot: [] }])}>添加敌人</button>
+          <button className="small" onClick={() => setEnemies([...enemies, { name: "", npc: null, level: 1, count: 1, loot: [], boss: false }])}>添加敌人</button>
           {allies.length > 0 && (
             <div className="row wrap">
               <span className="hint">同伴：</span>
@@ -497,7 +514,13 @@ export function CombatPanel({ ctx, campaignId, gmView, ended, refreshKey, onChan
                 {a.name}（{a.ap} 点）
               </button>
             ))}
-            <button disabled={busy} onClick={() => run({ kind: "flee" })}>逃跑</button>
+            <button
+              disabled={busy}
+              title={c.no_escape ? `无法逃跑：${c.no_escape}` : c.units.some((u) => u.boss && !u.out && u.side === "enemy") ? "首领还在，首领战无法逃跑" : "掷敏捷检定，难度随相邻敌人增加；被包围时无法逃跑"}
+              onClick={() => run({ kind: "flee" })}
+            >
+              逃跑
+            </button>
             <button className="primary" disabled={busy} onClick={() => run({ kind: "end_turn" })}>结束回合</button>
           </div>
         )}
@@ -514,7 +537,7 @@ export function CombatPanel({ ctx, campaignId, gmView, ended, refreshKey, onChan
             const u = c.units.find((x) => x.id === id)!;
             return (
               <li key={id} className={i === c.turn ? "current-row" : ""}>
-                <span className={`side-text side-${u.side}`}>{SIDE[u.side]}</span> <strong>{u.name}</strong>
+                <span className={`side-text side-${u.side}`}>{SIDE[u.side]}</span> <strong>{u.name}</strong>{u.boss && <span className="badge bad">首领</span>}
                 <span className="hint">（先攻 {u.init}）</span> 生命 {Math.max(0, u.hp)}/{u.max_hp} <HpBar hp={u.hp} max={u.max_hp} /> 防御 {u.ac} · {u.weapon}
                 {u.statuses.length > 0 && <span className="warn-text">　{u.statuses.map((s) => s.name).join("、")}</span>}
                 {u.out && <span className="hint">　{OUT[u.out]}</span>}

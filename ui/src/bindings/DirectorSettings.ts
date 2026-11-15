@@ -20,4 +20,12 @@ auto_adopt_on_stall: boolean,
 /**
  * 采用的建议在 GM 上下文里保留几回合。
  */
-guidance_turns: number, };
+guidance_turns: number, 
+/**
+ * 剧情节奏：0 松弛（给玩家很多自由探索的时间）… 100 紧凑（事情一件接一件）。
+ */
+pacing_level: number, 
+/**
+ * 玩家偏离剧本时只提示主持人，不设法把玩家拉回主线。
+ */
+hint_only: boolean, };

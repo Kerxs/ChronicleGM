@@ -6,12 +6,29 @@ import type { EntityResult } from "./EntityResult";
 import type { NpcLine } from "./NpcLine";
 import type { RejectedEffect } from "./RejectedEffect";
 import type { TransitionOutcome } from "./TransitionOutcome";
+import type { JsonValue } from "./serde_json/JsonValue";
 
 export type TurnResult = { turn: number, narration: string, 
 /**
  * 叙述中原样出现的主持人信息片段（仅提示，不拦截）。
  */
 leaks: Array<string>, checks: Array<CheckResult>, applied: Array<Effect>, rejected: Array<RejectedEffect>, transition: TransitionOutcome | null, transition_note: string, npc_lines: Array<NpcLine>, entities: Array<EntityResult>, off_script: boolean, intent: string, remembered: Array<string>, 
+/**
+ * 这一回合的联网搜索（GM 请求、程序执行）。
+ */
+web_search: JsonValue | null, 
+/**
+ * 玩家提到、但背包里没有的物品（程序事实）。
+ */
+missing_items: Array<string>, 
+/**
+ * 剧情质量提示（第 35 项，只是建议）：人物在场是否合理、可能换了说法的泄露。
+ */
+quality: Array<string>, 
+/**
+ * GM 给出的可选行动（程序去重、过滤后）。
+ */
+choices: Array<string>, 
 /**
  * 回合结束时的故事时间（例如"第 1 天 19:00（傍晚）"）。
  */

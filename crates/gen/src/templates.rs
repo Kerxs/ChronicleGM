@@ -24,6 +24,10 @@ const BUILTIN: &[(&str, &str)] = &[
     ("gm_narrate", include_str!("../prompts/gm_narrate.j2")),
     ("rpg_intent", include_str!("../prompts/rpg_intent.j2")),
     ("director", include_str!("../prompts/director.j2")),
+    ("script_review", include_str!("../prompts/script_review.j2")),
+    ("pc_generate", include_str!("../prompts/pc_generate.j2")),
+    ("quest_generate", include_str!("../prompts/quest_generate.j2")),
+    ("npc_day", include_str!("../prompts/npc_day.j2")),
     ("npc_reply", include_str!("../prompts/npc_reply.j2")),
     ("session_summary", include_str!("../prompts/session_summary.j2")),
 ];

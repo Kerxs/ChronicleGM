@@ -1,3 +1,5 @@
+import AppearanceData from "../components/AppearanceData";
+import SearchSettings from "../components/SearchSettings";
 import { useCallback, useEffect, useState } from "react";
 import { api, type AppInfo, type ProviderView, type ScanResult } from "../api";
 import type { DiscoveredService } from "../bindings/DiscoveredService";
@@ -131,11 +133,12 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
     <section className="settings">
       <p className="hint">模型由你自己准备；这里负责识别、测试与选择，不会下载或安装任何东西。默认也不启动程序，只有在下面的「模型启动参数」里配置了托管，才会按你填的参数启动和停止。</p>
 
+      <SearchSettings notify={notify} />
       <div className="card">
         <h3>自动识别本机服务</h3>
         <div className="row">
           <input value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="其他地址（可选），如 http://127.0.0.1:9090" style={{ flex: 1 }} />
-          <button className="primary" disabled={scanning} onClick={() => void discover()}>
+          <button className="primary" disabled={scanning} onClick={() => void discover()} data-tour="models-scan">
             {scanning ? "识别中…" : "扫描"}
           </button>
         </div>
@@ -326,6 +329,7 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
           </>
         )}
       </div>
+      <AppearanceData notify={notify} />
       {info && (
         <div className="card about">
           <h3>关于</h3>

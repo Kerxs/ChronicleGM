@@ -31,6 +31,27 @@ pub struct BoardClue {
     /// 主持人信息（只在主持人视角给出）。
     pub gm_note: String,
     pub turn: i64,
+    /// 在哪里发现的（剧本线索的 found_at / location_name）。
+    #[serde(default)]
+    pub found_at: String,
+    /// 相关人物（名字）。
+    #[serde(default)]
+    pub related: Vec<String>,
+    /// 还没有被任何推理用作证据（未解决的线索）。
+    #[serde(default)]
+    pub unresolved: bool,
+}
+
+/// 还没发现的剧本线索（只在剧透模式给出）：解锁条件与位置，方便主持人掌握进度。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct HiddenClue {
+    pub id: String,
+    pub title: String,
+    pub found_at: String,
+    pub related: Vec<String>,
+    /// 解锁条件（文字或条件表达式的说明）。
+    pub unlock: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -68,6 +89,26 @@ pub struct Board {
     pub clues: Vec<BoardClue>,
     pub links: Vec<ClueLink>,
     pub hypotheses: Vec<Hypothesis>,
+    /// 还没发现的剧本线索（剧透模式才有）。
+    #[serde(default)]
+    pub hidden: Vec<HiddenClue>,
+}
+
+/// 线索 payload 里的位置、相关人物（人物写编号时换成名字）、解锁条件。
+fn clue_meta(conn: &Connection, p: &Value) -> (String, Vec<String>, String) {
+    let found_at = ["found_at", "location_name", "location"].iter().map(|k| s(p, k)).find(|x| !x.is_empty()).unwrap_or_default();
+    let found_at = crate::nodes::get_node(conn, &found_at).ok().flatten().map(|n| n.title).unwrap_or(found_at);
+    let related: Vec<String> = ["related", "npcs", "npc_ids", "related_npcs"]
+        .iter()
+        .flat_map(|k| ids(p, k))
+        .map(|x| crate::nodes::get_node(conn, &x).ok().flatten().map(|n| n.title).unwrap_or(x))
+        .collect();
+    let unlock = match p.get("unlock_when").or_else(|| p.get("unlock")) {
+        Some(Value::String(t)) => t.clone(),
+        Some(v) if v.is_object() => format!("条件：{v}"),
+        _ => String::new(),
+    };
+    (found_at, related, unlock)
 }
 
 fn records(conn: &Connection, campaign_id: &str, kind: &str) -> Result<Vec<(String, Value)>> {
@@ -94,13 +135,16 @@ pub fn board(conn: &Connection, campaign_id: &str, gm_view: bool) -> Result<Boar
     // 1. 已揭示的剧本线索。
     {
         let mut stmt = conn.prepare(
-            "SELECT r.clue_id, r.turn, i.title, i.player_text, i.gm_text FROM clue_reveals r
+            "SELECT r.clue_id, r.turn, i.title, i.player_text, i.gm_text, i.payload FROM clue_reveals r
              LEFT JOIN script_items i ON i.id = r.clue_id WHERE r.campaign_id = ?1 ORDER BY r.turn",
         )?;
-        for row in stmt.query_map([campaign_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?))
-        })? {
-            let (id, turn, title, player, gm) = row?;
+        type Row = (String, i64, Option<String>, Option<String>, Option<String>, Option<String>);
+        let rows: Vec<Row> = stmt
+            .query_map([campaign_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (id, turn, title, player, gm, payload) in rows {
+            let p: Value = payload.and_then(|x| serde_json::from_str(&x).ok()).unwrap_or(Value::Null);
+            let (found_at, related, _) = clue_meta(conn, &p);
             clues.push(BoardClue {
                 title: title.unwrap_or_else(|| "（未知线索）".into()),
                 detail: player.unwrap_or_default(),
@@ -108,6 +152,9 @@ pub fn board(conn: &Connection, campaign_id: &str, gm_view: bool) -> Result<Boar
                 id,
                 source: "script".into(),
                 turn,
+                found_at,
+                related,
+                unresolved: false,
             });
         }
     }
@@ -115,7 +162,7 @@ pub fn board(conn: &Connection, campaign_id: &str, gm_view: bool) -> Result<Boar
     let mut recs = records(conn, campaign_id, "clue")?;
     recs.sort_by_key(|(_, v)| v.get("turn").and_then(Value::as_i64).unwrap_or(0));
     for (id, v) in recs {
-        clues.push(BoardClue { id, source: s(&v, "source"), title: s(&v, "title"), detail: s(&v, "detail"), gm_note: String::new(), turn: v.get("turn").and_then(Value::as_i64).unwrap_or(0) });
+        clues.push(BoardClue { id, source: s(&v, "source"), title: s(&v, "title"), detail: s(&v, "detail"), gm_note: String::new(), turn: v.get("turn").and_then(Value::as_i64).unwrap_or(0), found_at: s(&v, "found_at"), related: ids(&v, "related"), unresolved: false });
     }
     let links: Vec<ClueLink> = records(conn, campaign_id, "clue_link")?
         .into_iter()
@@ -165,7 +212,24 @@ pub fn board(conn: &Connection, campaign_id: &str, gm_view: bool) -> Result<Boar
         }
         h.conflicts = conflicts.into_iter().collect();
     }
-    Ok(Board { clues, links, hypotheses })
+    // 4. 未解决的线索：还没被任何推理用作证据（玩家笔记不算线索）。
+    let used: BTreeSet<&str> = hypotheses.iter().flat_map(|h| h.evidence.iter().chain(h.against.iter()).chain(h.indirect.iter())).map(String::as_str).collect();
+    for c in clues.iter_mut() {
+        c.unresolved = c.source != "player" && !used.contains(c.id.as_str());
+    }
+    // 5. 还没发现的剧本线索（只在剧透模式给出）。
+    let mut hidden = vec![];
+    if gm_view && let Some(sid) = campaign::get_campaign(conn, campaign_id)?.script_id {
+        let known: BTreeSet<String> = clues.iter().map(|c| c.id.clone()).collect();
+        for it in crate::scripts::items_by_kind(conn, &sid, crate::model::ScriptItemKind::Clue)? {
+            if known.contains(&it.id) {
+                continue;
+            }
+            let (found_at, related, unlock) = clue_meta(conn, &it.payload);
+            hidden.push(HiddenClue { id: it.id, title: it.title, found_at, related, unlock });
+        }
+    }
+    Ok(Board { clues, links, hypotheses, hidden })
 }
 
 fn turn_of(conn: &Connection, campaign_id: &str) -> Result<i64> {

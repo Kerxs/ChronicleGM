@@ -1,16 +1,21 @@
 use chronicle_core::db::{self, Migration, WORLD_MIGRATIONS};
 use chronicle_core::*;
 
+/// 世界库的最新版本（迁移列表里最大的版本号）。
+fn latest() -> i64 {
+    db::WORLD_MIGRATIONS.iter().map(|m| m.version).max().unwrap()
+}
+
 #[test]
 fn fresh_world_is_migrated_without_backup() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("w.cgw");
     let w = World::create(&path, &dir.path().join("b"), "x").unwrap();
-    assert_eq!(db::user_version(w.conn()).unwrap(), 10);
+    assert_eq!(db::user_version(w.conn()).unwrap(), latest());
     assert_eq!(w.name().unwrap(), "x");
     drop(w);
     let (_, rep) = World::open(&path, &dir.path().join("b")).unwrap();
-    assert_eq!((rep.from, rep.to, rep.backup), (10, 10, None));
+    assert_eq!((rep.from, rep.to, rep.backup), (latest(), latest(), None));
     assert!(!dir.path().join("b").exists() || std::fs::read_dir(dir.path().join("b")).unwrap().next().is_none());
 }
 
@@ -52,7 +57,7 @@ fn real_upgrade_v1_to_v2_backfills_script_search() {
     let dir = tempfile::tempdir().unwrap();
     let path = v1_db_with_data(dir.path());
     let (w, rep) = World::open(&path, &dir.path().join("b")).unwrap();
-    assert_eq!((rep.from, rep.to), (1, 10));
+    assert_eq!((rep.from, rep.to), (1, latest()));
     assert!(rep.backup.as_ref().unwrap().exists());
     // 旧数据在新的剧本搜索中可以找到（迁移时回填了索引）。
     let hits = chronicle_core::search::search_script_items(w.conn(), Some("S1"), "海浪拍打", false, 10).unwrap();
@@ -212,7 +217,7 @@ fn upgrade_v8_to_v9_adds_node_images() {
         .unwrap();
     }
     let (w, rep) = World::open(&path, &dir.path().join("b")).unwrap();
-    assert_eq!((rep.from, rep.to), (8, 10));
+    assert_eq!((rep.from, rep.to), (8, latest()));
     assert!(rep.backup.as_ref().unwrap().exists(), "升级前自动备份");
     assert_eq!(nodes::get_node(w.conn(), "n1").unwrap().unwrap().title, "雾港");
     let png = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0];
@@ -239,11 +244,45 @@ fn upgrade_v9_to_v10_adds_thumbs() {
         img_id = images::add_image(&conn, "n1", &png, 1, 1, "旧图").unwrap().id;
     }
     let (w, rep) = World::open(&path, &dir.path().join("b")).unwrap();
-    assert_eq!((rep.from, rep.to), (9, 10));
+    assert_eq!((rep.from, rep.to), (9, latest()));
     assert!(rep.backup.as_ref().unwrap().exists(), "升级前自动备份");
     let cov = images::cover_thumbs(w.conn(), &["n1".to_string()]).unwrap();
     assert_eq!((cov[0].image_id.as_str(), cov[0].thumb.is_none(), cov[0].caption.as_str()), (img_id.as_str(), true, "旧图"));
     images::set_thumb(w.conn(), &img_id, &png).unwrap();
     assert!(images::cover_thumbs(w.conn(), &["n1".to_string()]).unwrap()[0].thumb.is_some());
     assert_eq!(images::image_data(w.conn(), &img_id).unwrap().1, png.to_vec(), "原图不变");
+}
+
+/// v10 → v11：已有剧本的玩法配置为空，程序按题材推断；保存配置后能读回。
+#[test]
+fn upgrade_v10_to_v11_adds_game_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("w.cgw");
+    {
+        let mut conn = db::open_connection(&path).unwrap();
+        let v10: Vec<Migration> = WORLD_MIGRATIONS.iter().filter(|m| m.version <= 10).map(|m| m.clone_static()).collect();
+        db::migrate(&mut conn, &v10, &dir.path().join("b"), "old").unwrap();
+        conn.execute_batch(
+            "INSERT INTO world_meta VALUES ('name', '旧世界');
+             INSERT INTO scripts (id, title, genre, premise, background, core_setting, player_count, duration_hours, tone, scale_profile, status, source, rev, created_at, updated_at)
+             VALUES ('s1', '雨夜', '推理悬疑', '密室谋杀', '', '', 4, 3.0, '冷硬', '{}', 'draft', 'user', 1, 0, 0);",
+        )
+        .unwrap();
+    }
+    let (mut w, rep) = World::open(&path, &dir.path().join("b")).unwrap();
+    assert_eq!((rep.from, rep.to), (10, latest()));
+    assert!(rep.backup.as_ref().unwrap().exists(), "升级前自动备份");
+    let s = scripts::get_script(w.conn(), "s1").unwrap().unwrap();
+    assert_eq!(s.game_profile, serde_json::json!({}));
+    let p = chronicle_core::profile::for_script(&s);
+    assert_eq!((p.source.as_str(), p.weights.investigation), ("inferred", 3), "推理题材推断为调查比重 3");
+    let mut gp = p.clone();
+    gp.weights.investigation = 1;
+    gp.source = "user".into();
+    let patch = ScriptPatch { game_profile: Some(serde_json::to_value(&gp).unwrap()), ..Default::default() };
+    w.write(&Author::User, "改玩法", |x| x.update_script("s1", patch, None)).unwrap();
+    let s = scripts::get_script(w.conn(), "s1").unwrap().unwrap();
+    assert_eq!(chronicle_core::profile::for_script(&s).weights.investigation, 1);
+    let bad = ScriptPatch { game_profile: Some(serde_json::json!({"check": {"mode": "nope"}, "source": "user"})), ..Default::default() };
+    assert!(w.write(&Author::User, "坏配置", |x| x.update_script("s1", bad, None)).is_err(), "不合法的配置被拒绝");
 }

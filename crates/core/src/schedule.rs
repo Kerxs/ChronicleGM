@@ -114,7 +114,11 @@ pub fn effective_at(conn: &Connection, campaign_id: &str, payload: &Value, minut
 }
 
 pub fn npc_status(conn: &Connection, campaign_id: &str, npc: &crate::model::Node) -> Result<NpcStatus> {
-    let minutes = clock(conn, campaign_id);
+    npc_status_at(conn, campaign_id, npc, clock(conn, campaign_id))
+}
+
+/// 某个时刻（故事时间，分钟）人物在做什么、在哪里。
+pub fn npc_status_at(conn: &Connection, campaign_id: &str, npc: &crate::model::Node, minutes: i64) -> Result<NpcStatus> {
     let life = campaign::entity_overrides(conn, campaign_id, &npc.id)?
         .get("life_status")
         .and_then(|v| v.as_str().map(str::to_string))
@@ -179,6 +183,10 @@ fn npcs(conn: &Connection, campaign_id: &str) -> Result<Vec<crate::model::Node>>
 
 pub fn all_npc_status(conn: &Connection, campaign_id: &str) -> Result<Vec<NpcStatus>> {
     npcs(conn, campaign_id)?.iter().map(|n| npc_status(conn, campaign_id, n)).collect()
+}
+
+pub fn all_npc_status_at(conn: &Connection, campaign_id: &str, minutes: i64) -> Result<Vec<NpcStatus>> {
+    npcs(conn, campaign_id)?.iter().map(|n| npc_status_at(conn, campaign_id, n, minutes)).collect()
 }
 
 /// 推进世界时间（批量、由程序计算）。返回 NPC 活动变化的说明。

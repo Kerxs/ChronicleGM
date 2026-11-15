@@ -45,6 +45,18 @@ fn classify(name: &str, stem: &str) -> Option<(String, i64)> {
     Some((kind.to_string(), ts.unwrap_or(0)))
 }
 
+/// 删除一个备份文件（只能删这个世界自己的备份，文件名不能带路径）。
+pub fn delete_backup(world: &World, file_name: &str) -> Result<()> {
+    if file_name.contains(['/', '\\']) || file_name.contains("..") {
+        return Err(crate::error::CoreError::Invalid("备份文件名不对".into()));
+    }
+    if classify(file_name, &stem(world)).is_none() {
+        return Err(crate::error::CoreError::Invalid("这不是这个世界的备份".into()));
+    }
+    std::fs::remove_file(world.backup_dir().join(file_name))?;
+    Ok(())
+}
+
 /// 列出这个世界的全部备份（新的在前）。
 pub fn list_backups(world: &World) -> Result<Vec<BackupInfo>> {
     let dir = world.backup_dir();

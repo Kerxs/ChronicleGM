@@ -4,16 +4,21 @@
 //! NPC 只知道自己应该知道的事。
 
 pub mod ask;
+pub mod compress;
 pub mod context;
 pub mod director;
 pub mod leak;
+pub mod npcday;
 pub mod outputs;
+pub mod pcgen;
+pub mod questgen;
+pub mod review;
 pub mod speech;
 pub mod turn;
 pub mod validate;
 
-pub use ask::GmOptions;
-pub use turn::{Engine, TurnResult, run_turn, run_turn_with_stages, summarize};
+pub use ask::{GmOptions, WebSearch};
+pub use turn::{Engine, OPENING, TurnResult, ensure_welcome, opening_prompt, run_turn, run_turn_with_stages, summarize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GmError {

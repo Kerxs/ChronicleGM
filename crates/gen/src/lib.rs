@@ -4,6 +4,7 @@
 
 pub mod context;
 pub mod outputs;
+pub mod play;
 pub mod parse;
 pub mod plot_tasks;
 pub mod runner;

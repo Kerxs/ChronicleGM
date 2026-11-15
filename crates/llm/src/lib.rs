@@ -7,7 +7,9 @@ pub mod discovery;
 pub mod gguf;
 pub mod image;
 pub mod redact;
+pub mod search;
 pub mod secrets;
+pub mod transcribe;
 pub mod tts;
 pub mod types;
 

@@ -127,6 +127,140 @@ pub struct Environment {
     pub travel_factor: f64,
 }
 
+/// 玩家口头说要去 / 走进的地点（实测：模型常常不填 travel_to，"举着火把走进潮洞"后位置没变）。
+/// 返回 (地点 ID, 名称, 是否就在附近)：附近 = 和当前地点在同一个上级之下（同一座城里的另一处、当前地点里面的地方），直接到达；
+/// 否则必须是道路能到的地点，由调用方按旅行处理。没有移动的说法、或没提到认识的地点时返回 None。
+pub fn place_from_words(conn: &Connection, campaign_id: &str, text: &str) -> Result<Option<(String, String, bool)>> {
+    const MOVE: &[&str] = &["走进", "进入", "钻进", "来到", "前往", "去往", "赶往", "回到", "走到", "跑到", "跑进", "进到", "上到", "下到", "爬上", "进去", "去"];
+    if !MOVE.iter().any(|v| text.contains(v)) {
+        return Ok(None);
+    }
+    let here = party_location(conn, campaign_id)?;
+    let here_node = here.as_deref().and_then(|h| crate::nodes::get_node(conn, h).ok().flatten());
+    let mut cands: Vec<(String, String, bool)> = vec![];
+    if let Some(h) = &here_node {
+        // 附近：当前地点里面的地方，以及同一个上级下面的其他地方。
+        let base = h.parent_id.clone().unwrap_or_else(|| h.id.clone());
+        let base_path = crate::nodes::get_node(conn, &base)?.map(|n| n.path).unwrap_or_default();
+        let mut stmt = conn.prepare("SELECT id, title, path FROM nodes WHERE deleted_at IS NULL AND kind IN ('site','city','region','nation') AND id <> ?1 AND (path LIKE ?2 || '%' OR path LIKE ?3 || '%') LIMIT 200")?;
+        let rows: Vec<(String, String, String)> = stmt.query_map(rusqlite::params![h.id, base_path, h.path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.filter_map(|x| x.ok()).collect();
+        for (id, title, _) in rows {
+            cands.push((id, title, true));
+        }
+    }
+    for r in reachable(conn, campaign_id, 20)? {
+        if !cands.iter().any(|c| c.0 == r.id) {
+            cands.push((r.id, r.title, false));
+        }
+    }
+    // 名字最长的优先（"潮洞深处"优先于"潮洞"）。
+    // 移动的说法要紧挨在地点名前面（中间最多隔 3 个字，例如"走进那座潮洞"），避免"我去问莫伦潮洞的事"也被当成去潮洞。
+    let verb_before = |title: &str| -> bool {
+        text.match_indices(title).any(|(i, _)| {
+            let before: String = text[..i].chars().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect();
+            MOVE.iter().any(|v| before.ends_with(v) || (before.contains(v) && before.chars().count() - before.rfind(v).map(|b| before[..b].chars().count() + v.chars().count()).unwrap_or(0) <= 3))
+        })
+    };
+    cands.retain(|c| c.1.chars().count() >= 2 && text.contains(c.1.as_str()) && Some(&c.0) != here.as_ref() && verb_before(&c.1));
+    cands.sort_by_key(|c| std::cmp::Reverse(c.1.chars().count()));
+    Ok(cands.into_iter().next())
+}
+
+/// 走到附近的地方：直接改位置，不按旅行计算路程（几分钟的事）。
+pub fn move_nearby(world: &mut World, campaign_id: &str, to: &str, title: &str) -> Result<()> {
+    campaign::apply_effects(world, campaign_id, &[Effect::SetVar { key: PARTY_LOCATION_VAR.into(), value: json!(to) }], &format!("来到「{title}」"))?;
+    Ok(())
+}
+
+/// 某个地点此刻的环境（第 31 项）：各地区天气不同；室内不受天气影响；光照由时段、天气、室内外决定。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct LocalEnv {
+    pub location: Option<String>,
+    pub weather: String,
+    pub indoor: bool,
+    /// 明亮 / 昏暗 / 漆黑
+    pub light: String,
+    /// 对检定的影响说明（给 GM 看）。
+    pub effects: Vec<String>,
+}
+
+const INDOOR_WORDS: &[&str] = &["屋", "馆", "店", "室", "殿", "厅", "宅", "庙", "铺", "堂", "楼", "塔", "牢", "窟", "洞", "地下", "矿"];
+const DARK_WORDS: &[&str] = &["洞", "窟", "地下", "矿", "牢", "墓"];
+
+fn top_region(conn: &Connection, loc: &str) -> String {
+    crate::nodes::get_node(conn, loc).ok().flatten().map(|n| n.path.split('/').find(|s| !s.is_empty()).unwrap_or(loc).to_string()).unwrap_or_else(|| loc.to_string())
+}
+
+pub fn local_environment(conn: &Connection, campaign_id: &str, location: Option<&str>, minutes: i64) -> Result<LocalEnv> {
+    let env = environment_at(conn, campaign_id, minutes)?;
+    let c = campaign::get_campaign(conn, campaign_id)?;
+    let node = location.and_then(|l| crate::nodes::get_node(conn, l).ok().flatten());
+    // 不同的大地区天气不同（同一地区内一致）；剧情指定了天气时以指定为准。
+    let overridden = (CampaignView { conn, campaign_id }).var(WEATHER_OVERRIDE_VAR).is_some_and(|v| v.get("day").and_then(Value::as_i64) == Some(env.day));
+    let weather = match (&node, overridden) {
+        (Some(n), false) => {
+            let region = top_region(conn, &n.id);
+            let salt = region.bytes().fold(0i64, |h, b| h.wrapping_mul(31).wrapping_add(b as i64));
+            weather_at(c.rng_seed ^ salt, env.day, &env.season, minutes).to_string()
+        }
+        _ => env.weather.clone(),
+    };
+    let title = node.as_ref().map(|n| n.title.clone()).unwrap_or_default();
+    let indoor = node.as_ref().is_some_and(|n| n.payload.get("indoor").and_then(Value::as_bool).unwrap_or_else(|| INDOOR_WORDS.iter().any(|w| n.title.contains(w))));
+    let dark_place = DARK_WORDS.iter().any(|w| title.contains(w)) || node.as_ref().is_some_and(|n| n.payload.get("dark").and_then(Value::as_bool) == Some(true));
+    let night = matches!(env.daypart.as_str(), "深夜" | "夜晚" | "凌晨");
+    let dusk = matches!(env.daypart.as_str(), "傍晚" | "黄昏" | "清晨");
+    let gloomy = ["雾", "暴雨", "暴雪", "雷"].iter().any(|w| weather.contains(w));
+    let light = if dark_place || (night && !indoor) {
+        "漆黑"
+    } else if night || dusk || (gloomy && !indoor) {
+        "昏暗"
+    } else {
+        "明亮"
+    };
+    let mut effects = vec![];
+    match light {
+        "漆黑" => effects.push("漆黑：察觉、搜索、射击类检定 -4（有光源时 -1）".to_string()),
+        "昏暗" => effects.push("昏暗：察觉、搜索、射击类检定 -2".to_string()),
+        _ => {}
+    }
+    if !indoor && is_bad_weather(&weather) {
+        effects.push(format!("{weather}：攀爬、运动、射击类检定 -2"));
+    }
+    Ok(LocalEnv { location: node.map(|n| n.title), weather: if indoor { format!("室内（外面{weather}）") } else { weather }, indoor, light: light.into(), effects })
+}
+
+/// 环境对一次检定的修正（程序计算，有原因）。`lit` 表示玩家带着光源。
+pub fn env_check_modifier(env: &LocalEnv, skill: &str, lit: bool) -> (i64, String) {
+    let sees = ["察觉", "侦查", "搜索", "观察", "感知", "射击", "弓", "远程", "投掷", "追踪"].iter().any(|w| skill.contains(w));
+    let body = ["攀爬", "运动", "游泳", "跳跃", "射击", "弓", "远程", "驾驶", "骑"].iter().any(|w| skill.contains(w));
+    let mut m = 0;
+    let mut why = vec![];
+    if sees {
+        match (env.light.as_str(), lit) {
+            ("漆黑", false) => {
+                m -= 4;
+                why.push("漆黑 -4");
+            }
+            ("漆黑", true) => {
+                m -= 1;
+                why.push("漆黑但有光源 -1");
+            }
+            ("昏暗", _) => {
+                m -= 2;
+                why.push("光线昏暗 -2");
+            }
+            _ => {}
+        }
+    }
+    if body && !env.indoor && is_bad_weather(&env.weather) {
+        m -= 2;
+        why.push("恶劣天气 -2");
+    }
+    (m, why.join("，"))
+}
+
 pub fn days_per_season(conn: &Connection, campaign_id: &str) -> i64 {
     CampaignView { conn, campaign_id }.var(DAYS_PER_SEASON_VAR).and_then(|v| v.as_i64()).filter(|d| *d > 0).unwrap_or(30)
 }
@@ -921,13 +1055,19 @@ pub fn simulate(world: &mut World, campaign_id: &str, before: i64, after: i64) -
         let env = environment_at(world.conn(), campaign_id, (day - 1) * 1440 + 8 * 60)?;
         let fs = factions(world.conn(), campaign_id)?;
         if fs.is_empty() {
-            // 没有势力时只补货。
-            let eff = crate::rpg::restock_effects(world.conn(), campaign_id)?;
+            // 没有势力时：补货与 NPC 推演。
+            let mut eff = crate::rpg::restock_effects(world.conn(), campaign_id)?;
+            let (more_eff, more_events) = crate::npcsim::daily(world.conn(), campaign_id, day, seed)?;
+            eff.extend(more_eff);
+            eff.extend(crate::npcsim::rumor_day(world.conn(), campaign_id, day, seed, &more_events)?);
+            record_events(day, more_events, &mut eff, &mut notes);
             if !eff.is_empty() {
-                campaign::apply_effects(world, campaign_id, &eff, &format!("第 {day} 天：商人补货"))?;
+                campaign::apply_effects(world, campaign_id, &eff, &format!("第 {day} 天：商人补货与人物动向"))?;
             }
             continue;
         }
+        // 已经瓦解的势力不再参与推演。
+        let fs: Vec<FactionState> = fs.into_iter().filter(|f| !crate::npcsim::is_collapsed(world.conn(), campaign_id, &f.id)).collect();
         let names: HashMap<String, String> = fs.iter().map(|f| (f.id.clone(), f.name.clone())).collect();
         let (mut eff, mut events) = faction_day(seed, day, &env.season, &env.weather, &fs, &names);
         // 停战时胜方占领败方的一个地点（优先与胜方领土接壤或相连的）。
@@ -938,6 +1078,12 @@ pub fn simulate(world: &mut World, campaign_id: &str, before: i64, after: i64) -
             events.push(("conquest".into(), format!("{}占领了{}（原属{}）", names.get(winner).cloned().unwrap_or_default(), title, names.get(loser).cloned().unwrap_or_default()), vec![winner.clone(), loser.clone(), place.clone()]));
         }
         eff.extend(npc_reactions_to_events(world.conn(), campaign_id, day, &events, &names)?);
+        // NPC 与势力的其他变化：瓦解、倒戈、失踪、人物碰面（程序推演，见 npcsim.rs）。
+        let (more_eff, more_events) = crate::npcsim::daily(world.conn(), campaign_id, day, seed)?;
+        eff.extend(more_eff);
+        events.extend(more_events);
+        // 传闻：当天的公开事件开始流传，旧传闻在碰面的人之间传开（越传越走样）。
+        eff.extend(crate::npcsim::rumor_day(world.conn(), campaign_id, day, seed, &events)?);
         // 商人每天补货、恢复本钱。
         eff.extend(crate::rpg::restock_effects(world.conn(), campaign_id)?);
         record_events(day, events, &mut eff, &mut notes);

@@ -145,8 +145,10 @@ fn fork_restores_complete_state_and_never_touches_original() {
     let mut f = fx();
     let (c, at2, facts2, cp2, roll3) = play_original(&mut f);
     let w = &mut f.e.world;
-    // 战役没结束时不能回溯。
-    assert!(timeline::fork(w, &c.id, cp2, "", false).is_err());
+    // 进行中也可以从检查点开出新时间线（读档），原时间线照常继续。
+    let mid = timeline::fork(w, &c.id, cp2, "进行中读档", false).unwrap();
+    assert_eq!(campaign::get_campaign(w.conn(), &c.id).unwrap().status, "active");
+    assert_eq!(mid.parent_id.as_deref(), Some(c.id.as_str()));
     let end = timeline::end_campaign(w, &c.id, "").unwrap();
     assert_eq!(end.label, "ending");
     let ended = campaign::get_campaign(w.conn(), &c.id).unwrap();

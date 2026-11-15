@@ -36,6 +36,63 @@ pub struct LlmRequestRecord {
     pub latency_ms: Option<i64>,
     /// 已脱敏的错误信息。
     pub error: Option<String>,
+    /// 首个 token 时间（流式才有）。
+    pub first_token_ms: Option<i64>,
+    pub prompt_per_second: Option<f64>,
+    pub predicted_per_second: Option<f64>,
+    /// 请求时模型的上下文长度（算上下文占用）。
+    pub context_length: Option<i64>,
+    /// 语音：合成出的音频时长（毫秒）。
+    pub audio_ms: Option<i64>,
+}
+
+/// 一项指标的统计（没有数据时为空）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct MetricStat {
+    pub n: i64,
+    pub avg: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// 运行监控：按服务和任务汇总。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct RunStats {
+    pub provider_id: String,
+    pub task: String,
+    pub requests: i64,
+    pub failures: i64,
+    pub latency_ms: MetricStat,
+    pub first_token_ms: MetricStat,
+    pub prompt_per_second: MetricStat,
+    pub predicted_per_second: MetricStat,
+    pub prompt_tokens: MetricStat,
+    pub completion_tokens: MetricStat,
+    /// 上下文占用（输入 token / 上下文长度，0–1）。
+    pub context_usage: MetricStat,
+    /// 语音实时率（合成耗时 / 音频时长，越小越快）。
+    pub tts_rtf: MetricStat,
+}
+
+/// 最近一次请求（界面的简洁视图）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct RecentRequest {
+    pub provider_id: String,
+    pub model: String,
+    pub task: String,
+    pub ok: bool,
+    pub created_at: i64,
+    pub latency_ms: Option<i64>,
+    pub first_token_ms: Option<i64>,
+    pub prompt_per_second: Option<f64>,
+    pub predicted_per_second: Option<f64>,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub context_length: Option<i64>,
+    pub audio_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -136,6 +193,58 @@ impl Library {
         let (world, _) = World::open(&path, &self.backups_dir())?;
         self.conn.execute("UPDATE worlds SET last_opened_at = ?2 WHERE id = ?1", params![id, now_ms()])?;
         Ok(world)
+    }
+
+    /// 删除世界：把世界文件移到数据目录的 trash 文件夹（连同说明文件），从列表里去掉。可以恢复。
+    /// 调用前要先关闭这个世界（释放文件）。
+    pub fn trash_world(&self, id: &str) -> Result<()> {
+        let info = self.get_world(id)?;
+        let src = self.world_path(&info);
+        let dir = self.data_dir.join("trash");
+        std::fs::create_dir_all(&dir)?;
+        let dst = dir.join(&info.file_name);
+        if dst.exists() {
+            return Err(CoreError::Invalid("回收站里已经有同名的世界文件".into()));
+        }
+        std::fs::rename(&src, &dst)?;
+        std::fs::write(dir.join(format!("{}.json", info.file_name)), serde_json::to_string(&info)?)?;
+        self.conn.execute("DELETE FROM worlds WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// 回收站里的世界。
+    pub fn world_trash(&self) -> Result<Vec<WorldInfo>> {
+        let dir = self.data_dir.join("trash");
+        let mut out = vec![];
+        let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(out) };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("json")
+                && let Ok(s) = std::fs::read_to_string(&p)
+                && let Ok(info) = serde_json::from_str::<WorldInfo>(&s)
+                && dir.join(&info.file_name).exists()
+            {
+                out.push(info);
+            }
+        }
+        out.sort_by_key(|w| std::cmp::Reverse(w.updated_at));
+        Ok(out)
+    }
+
+    pub fn restore_world(&self, id: &str) -> Result<WorldInfo> {
+        let dir = self.data_dir.join("trash");
+        let info = self.world_trash()?.into_iter().find(|w| w.id == id).ok_or_else(|| CoreError::NotFound("回收站里的世界", id.into()))?;
+        let dst = self.worlds_dir().join(&info.file_name);
+        if dst.exists() {
+            return Err(CoreError::Invalid("世界文件夹里已经有同名的文件".into()));
+        }
+        std::fs::rename(dir.join(&info.file_name), &dst)?;
+        let _ = std::fs::remove_file(dir.join(format!("{}.json", info.file_name)));
+        self.conn.execute(
+            "INSERT INTO worlds (id, name, file_name, created_at, updated_at, last_opened_at) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![info.id, info.name, info.file_name, info.created_at, now_ms(), info.last_opened_at],
+        )?;
+        self.get_world(id)
     }
 
     pub fn rename_world(&self, id: &str, name: &str) -> Result<()> {
@@ -273,13 +382,79 @@ impl Library {
     pub fn log_request(&self, rec: &LlmRequestRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO llm_requests (provider_id, model, task, job_id, ok, attempts, prompt_tokens, completion_tokens,
-                latency_ms, error, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                latency_ms, error, created_at, first_token_ms, prompt_per_second, predicted_per_second, context_length, audio_ms)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 rec.provider_id, rec.model, rec.task, rec.job_id, rec.ok, rec.attempts, rec.prompt_tokens,
-                rec.completion_tokens, rec.latency_ms, rec.error, now_ms()
+                rec.completion_tokens, rec.latency_ms, rec.error, now_ms(), rec.first_token_ms, rec.prompt_per_second,
+                rec.predicted_per_second, rec.context_length, rec.audio_ms
             ],
         )?;
         Ok(())
+    }
+
+    /// 运行监控统计（只统计成功的请求；`since` 毫秒时间戳之后）。
+    pub fn run_stats(&self, since: i64) -> Result<Vec<RunStats>> {
+        let m = |e: &str| format!("COUNT({e}), AVG({e}), MIN({e}), MAX({e})");
+        let sql = format!(
+            "SELECT provider_id, task, COUNT(*), SUM(ok = 0), {}, {}, {}, {}, {}, {}, {}, {}
+             FROM llm_requests WHERE created_at >= ?1 GROUP BY provider_id, task ORDER BY provider_id, task",
+            m("CASE WHEN ok THEN latency_ms END"),
+            m("CASE WHEN ok THEN first_token_ms END"),
+            m("CASE WHEN ok THEN prompt_per_second END"),
+            m("CASE WHEN ok THEN predicted_per_second END"),
+            m("CASE WHEN ok THEN prompt_tokens END"),
+            m("CASE WHEN ok THEN completion_tokens END"),
+            m("CASE WHEN ok AND context_length > 0 THEN CAST(prompt_tokens AS REAL) / context_length END"),
+            m("CASE WHEN ok AND audio_ms > 0 THEN CAST(latency_ms AS REAL) / audio_ms END"),
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let stat = |r: &rusqlite::Row, i: usize| -> rusqlite::Result<MetricStat> {
+            Ok(MetricStat { n: r.get(i)?, avg: r.get(i + 1)?, min: r.get::<_, Option<f64>>(i + 2)?, max: r.get::<_, Option<f64>>(i + 3)? })
+        };
+        let rows = stmt.query_map([since], |r| {
+            Ok(RunStats {
+                provider_id: r.get(0)?,
+                task: r.get(1)?,
+                requests: r.get(2)?,
+                failures: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                latency_ms: stat(r, 4)?,
+                first_token_ms: stat(r, 8)?,
+                prompt_per_second: stat(r, 12)?,
+                predicted_per_second: stat(r, 16)?,
+                prompt_tokens: stat(r, 20)?,
+                completion_tokens: stat(r, 24)?,
+                context_usage: stat(r, 28)?,
+                tts_rtf: stat(r, 32)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// 最近的请求（新的在前）。
+    pub fn recent_requests(&self, limit: i64) -> Result<Vec<RecentRequest>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT provider_id, model, task, ok, created_at, latency_ms, first_token_ms, prompt_per_second, predicted_per_second,
+                prompt_tokens, completion_tokens, context_length, audio_ms FROM llm_requests ORDER BY seq DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok(RecentRequest {
+                provider_id: r.get(0)?,
+                model: r.get(1)?,
+                task: r.get(2)?,
+                ok: r.get(3)?,
+                created_at: r.get(4)?,
+                latency_ms: r.get(5)?,
+                first_token_ms: r.get(6)?,
+                prompt_per_second: r.get(7)?,
+                predicted_per_second: r.get(8)?,
+                prompt_tokens: r.get(9)?,
+                completion_tokens: r.get(10)?,
+                context_length: r.get(11)?,
+                audio_ms: r.get(12)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn request_stats(&self) -> Result<Vec<ProviderStats>> {

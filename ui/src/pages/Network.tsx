@@ -1,3 +1,4 @@
+import SpoilerHint from "../components/SpoilerHint";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, MiniMap, type Edge, type Node as FlowNode, type ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -64,15 +65,21 @@ export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { c
     api.relationTypes().then(setRelTypes).catch(() => {});
   }, [ctx.worldId]);
 
+  // spoilers 由程序按全局剧透模式填写，这里传的值会被覆盖。
   useEffect(() => {
+    let live = true; // 条件变了之后，旧请求晚到的结果不再覆盖新的
     api
-      .relationNetwork(ctx.worldId, { campaign_id: campaign || null, search: applied, rel_types: typeFilter ? [typeFilter] : [], include_world: includeWorld, min_strength: minStrength, limit })
+      .relationNetwork(ctx.worldId, { campaign_id: campaign || null, search: applied, rel_types: typeFilter ? [typeFilter] : [], include_world: includeWorld, min_strength: minStrength, limit, spoilers: false })
       .then((n) => {
+        if (!live) return;
         timing.mark();
         setNet(n);
         setPos(forceLayout(n.nodes.map((x) => x.id), n.edges.map((e) => [e.a, e.b])));
       })
-      .catch((e: Error) => ctx.notify(e.message, "error"));
+      .catch((e: Error) => live && ctx.notify(e.message, "error"));
+    return () => {
+      live = false;
+    };
   }, [ctx.worldId, campaign, applied, typeFilter, minStrength, includeWorld, ctx.tick, limit]);
 
   const typeLabel = (t: string) => relTypes.find((x) => x.id === t)?.label ?? t;
@@ -122,6 +129,7 @@ export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { c
   return (
     <section className="network-page">
       <h2>人物关系网络</h2>
+      <SpoilerHint ctx={ctx} what="人物关系" />
       <div className="row wrap">
         <select value={campaign} onChange={(e) => setCampaign(e.target.value)}>
           <option value="">只看世界设定中的关系</option>

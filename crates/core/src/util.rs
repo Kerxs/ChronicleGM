@@ -68,6 +68,53 @@ pub fn normalize_name(s: &str) -> String {
         .collect()
 }
 
+/// 估算 token 数（没有服务端分词时用）：汉字等宽字符按 1 个，其余按 4 个字符 1 个。
+pub fn estimate_tokens(text: &str) -> usize {
+    let (mut wide, mut other) = (0usize, 0usize);
+    for c in text.chars() {
+        if (c as u32) >= 0x2E80 {
+            wide += 1;
+        } else {
+            other += 1;
+        }
+    }
+    wide + other.div_ceil(4)
+}
+
+/// 编辑距离（按字符，最多算到 limit+1 就停）。
+pub fn edit_distance(a: &str, b: &str, limit: usize) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.len().abs_diff(b.len()) > limit {
+        return limit + 1;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut cur = vec![i; b.len() + 1];
+        let mut best = cur[0];
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            best = best.min(cur[j]);
+        }
+        if best > limit {
+            return limit + 1;
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// 两个名字（已规范化）是否"近似"：长度 3 以上差一个字，或长度 6 以上差两个字。
+pub fn names_similar(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let n = a.chars().count().min(b.chars().count());
+    let limit = if n >= 6 { 2 } else if n >= 3 { 1 } else { 0 };
+    limit > 0 && edit_distance(a, b, limit) <= limit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

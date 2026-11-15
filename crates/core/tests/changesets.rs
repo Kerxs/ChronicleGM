@@ -183,3 +183,26 @@ fn bad_temp_ids_rejected() {
     let errs: Vec<_> = cs.validation.errors().map(|i| (i.op, i.code.as_str())).collect();
     assert!(errs.contains(&(0, "bad_temp_id")) && errs.contains(&(2, "bad_temp_id")));
 }
+
+#[test]
+fn global_and_similar_names_are_flagged() {
+    let mut e = env();
+    mk(&mut e.world, NewNode::new(NodeKind::Character, "艾琳娜"));
+    mk(&mut e.world, NewNode::new(NodeKind::City, "白石港"));
+    let o = ops(json!([
+        {"op":"create_node","node":{"kind":"character","title":"艾琳娜"}},
+        {"op":"create_node","node":{"kind":"character","title":"艾莉娜"}},
+        {"op":"create_node","node":{"kind":"character","title":"白石港"}},
+        {"op":"create_node","node":{"kind":"site","title":"白石滩"}},
+        {"op":"create_node","node":{"kind":"character","title":"阿岩"}}
+    ]));
+    let cs = propose(&mut e.world, new_cs(Mode::Normal, o)).unwrap();
+    let w: Vec<_> = cs.validation.issues.iter().map(|i| (i.op, i.code.as_str())).collect();
+    assert!(w.contains(&(0, "duplicate_character")), "{w:?}");
+    assert!(w.contains(&(1, "similar_character")), "差一个字：{w:?}");
+    assert!(w.contains(&(2, "possible_duplicate")), "跨类型同名：{w:?}");
+    assert!(w.contains(&(3, "similar_name")), "{w:?}");
+    assert!(!w.iter().any(|(op, _)| *op == 4), "两个字的名字不做近似比较：{w:?}");
+    assert!(chronicle_core::util::names_similar("灰烬骑士团长", "灰烬骑土团长"));
+    assert!(!chronicle_core::util::names_similar("王都", "王城"));
+}

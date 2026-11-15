@@ -45,6 +45,22 @@ export function toTranscript(events: EventEntry[]): Line[] {
       case "transition":
         out.push({ ...base, who: "system", text: "➜ 剧情推进", gmOnly: false });
         break;
+      case "quality": {
+        const notes = Array.isArray(p.notes) ? (p.notes as string[]) : [];
+        if (notes.length) out.push({ ...base, who: "system", text: `剧情质量提示：${notes.join("；")}`, gmOnly: true, warn: true });
+        break;
+      }
+      case "web_search": {
+        const list = Array.isArray(p.results) ? (p.results as P[]) : [];
+        const sources = [...new Set(list.map((r) => s(r.source)).filter(Boolean))].slice(0, 4);
+        out.push({
+          ...base,
+          who: "system",
+          text: list.length ? `🔎 GM 联网查了「${s(p.query)}」：${list.length} 条资料（来源：${sources.join("、")}）` : `🔎 GM 想查「${s(p.query)}」，但没有结果（${s(p.error)}），按已有知识叙述`,
+          gmOnly: false,
+        });
+        break;
+      }
       case "transition_failed":
         out.push({ ...base, who: "system", text: "✗ 尝试推进剧情，但条件没有满足", gmOnly: false });
         break;

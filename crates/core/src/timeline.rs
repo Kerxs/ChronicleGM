@@ -274,6 +274,29 @@ pub fn end_campaign(world: &mut World, campaign_id: &str, ending: &str) -> Resul
 }
 
 /// 可以回溯到的历史节点（带简短预览，便于选择）。
+/// 手动存档：在当前位置保存一个带名字的检查点（label = "save:<名字>"；快速存档的名字是"快速存档"）。
+pub fn save_point(world: &mut World, campaign_id: &str, name: &str) -> Result<Checkpoint> {
+    let name: String = name.trim().chars().take(40).collect();
+    let name = if name.is_empty() { "快速存档".to_string() } else { name };
+    let c = campaign::get_campaign(world.conn(), campaign_id)?;
+    if c.status != "active" {
+        return Err(CoreError::Invalid("这条时间线已经结束，不能再存档（可以从它的存档点读档开新时间线）".into()));
+    }
+    if campaign::incomplete_turn(world.conn(), campaign_id)?.is_some() {
+        return Err(CoreError::Invalid("有一个没完成的回合，先处理它再存档".into()));
+    }
+    let tx = world.conn.transaction()?;
+    let id = checkpoint(&tx, campaign_id, &format!("save:{name}"))?;
+    tx.commit()?;
+    let (cp, _) = load_checkpoint(world.conn(), id)?;
+    Ok(cp)
+}
+
+/// 最近一次快速存档。
+pub fn last_quicksave(conn: &Connection, campaign_id: &str) -> Result<Option<Checkpoint>> {
+    Ok(conn.query_row("SELECT * FROM campaign_checkpoints WHERE campaign_id = ?1 AND label = 'save:快速存档' ORDER BY id DESC LIMIT 1", [campaign_id], cp_row).optional()?)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct ForkPoint {
@@ -305,13 +328,13 @@ pub fn fork_points(conn: &Connection, campaign_id: &str) -> Result<Vec<ForkPoint
     Ok(out)
 }
 
-/// 从已结束战役的某个检查点开出新时间线。原时间线不被修改。
+/// 从某个检查点开出新时间线（进行中的战役也可以：读档 = 从存档点开出新时间线）。原时间线不被修改。
 pub fn fork(world: &mut World, source_id: &str, checkpoint_id: i64, name: &str, reseed: bool) -> Result<Campaign> {
+    if campaign::get_campaign(world.conn(), source_id)?.status == "active" && campaign::incomplete_turn(world.conn(), source_id)?.is_some() {
+        return Err(CoreError::Invalid("这条时间线有一个没完成的回合，先处理它（重新输入或点「知道了」）再读档".into()));
+    }
     let tx = world.conn.transaction()?;
     let src = campaign::get_campaign(&tx, source_id)?;
-    if src.status != "ended" {
-        return Err(CoreError::Invalid("只能在战役结束后回溯。请先结束这条时间线".into()));
-    }
     let (cp, st) = load_checkpoint(&tx, checkpoint_id)?;
     if cp.campaign_id != source_id {
         return Err(CoreError::Invalid("这个检查点不属于该时间线".into()));

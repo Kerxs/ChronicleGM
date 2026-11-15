@@ -74,11 +74,43 @@ pub struct ChatRequest {
     pub thinking: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct Usage {
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    /// 首个内容 token 到达的时间（毫秒，从发出请求算起；只有流式请求能测到）。
+    #[serde(default)]
+    pub first_token_ms: Option<u64>,
+    /// 服务返回的计时（llama-server 的 timings；其他服务通常没有）。
+    #[serde(default)]
+    pub prompt_ms: Option<f64>,
+    #[serde(default)]
+    pub prompt_per_second: Option<f64>,
+    #[serde(default)]
+    pub predicted_ms: Option<f64>,
+    #[serde(default)]
+    pub predicted_per_second: Option<f64>,
+}
+
+impl Usage {
+    /// 读取 llama-server 的 `timings` 对象（没有就不动）。
+    pub fn read_timings(&mut self, t: &serde_json::Value) {
+        if !t.is_object() {
+            return;
+        }
+        let f = |k: &str| t.get(k).and_then(serde_json::Value::as_f64).filter(|v| v.is_finite() && *v >= 0.0);
+        self.prompt_ms = f("prompt_ms").or(self.prompt_ms);
+        self.prompt_per_second = f("prompt_per_second").or(self.prompt_per_second);
+        self.predicted_ms = f("predicted_ms").or(self.predicted_ms);
+        self.predicted_per_second = f("predicted_per_second").or(self.predicted_per_second);
+        if self.prompt_tokens.is_none() {
+            self.prompt_tokens = t.get("prompt_n").and_then(serde_json::Value::as_u64);
+        }
+        if self.completion_tokens.is_none() {
+            self.completion_tokens = t.get("predicted_n").and_then(serde_json::Value::as_u64);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -180,6 +212,8 @@ pub enum ServiceType {
     Chat,
     Speech,
     Image,
+    /// 语音识别（语音输入）：OpenAI 兼容 `POST /audio/transcriptions`。
+    Transcription,
 }
 
 /// 语音合成（OpenAI 兼容 `POST /audio/speech`）与生成图片（OpenAI 兼容 `POST /images/generations`）的选项。

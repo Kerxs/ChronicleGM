@@ -12,4 +12,16 @@ detail: string,
 /**
  * 主持人信息（只在主持人视角给出）。
  */
-gm_note: string, turn: number, };
+gm_note: string, turn: number, 
+/**
+ * 在哪里发现的（剧本线索的 found_at / location_name）。
+ */
+found_at: string, 
+/**
+ * 相关人物（名字）。
+ */
+related: Array<string>, 
+/**
+ * 还没有被任何推理用作证据（未解决的线索）。
+ */
+unresolved: boolean, };

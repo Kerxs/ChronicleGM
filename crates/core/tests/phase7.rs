@@ -100,13 +100,15 @@ fn tension_follows_danger_and_deadlines() {
     let (w, c) = (&mut f.e.world, f.camp.clone());
     let (calm, why) = director::tension_now(w.conn(), &c);
     assert!(calm < 30 && why[0].contains("平静"));
-    chronicle_core::combat::start(w, &c, &[chronicle_core::combat::EnemySpec { name: "强盗".into(), npc: None, level: 1, count: 1, loot: vec![] }], &[], "x").unwrap();
+    chronicle_core::combat::start(w, &c, &[chronicle_core::combat::EnemySpec { name: "强盗".into(), npc: None, level: 1, count: 1, loot: vec![], boss: false }], &[], "x").unwrap();
     let (hot, why) = director::tension_now(w.conn(), &c);
     assert!(hot >= calm + 40 && why.iter().any(|x| x.contains("战斗中")), "{hot} {why:?}");
 }
 
 fn note(id: &str, turn: i64, texts: &[(&str, bool)]) -> DirectorNote {
     DirectorNote {
+        conformity: None,
+        deviations: vec![],
         id: id.into(),
         turn,
         trigger: "manual".into(),

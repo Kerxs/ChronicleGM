@@ -140,6 +140,10 @@ pub enum ServerKind {
     OpenAiCompatible,
     /// 语音合成服务（Breeze TTS），不能用于文本生成。
     BreezeTts,
+    /// OpenAI 兼容的语音合成服务（Kokoro-FastAPI、openai-edge-tts 等），不能用于文本生成。
+    OpenAiSpeech,
+    /// GPT-SoVITS 的 api_v2（`/tts`），不能用于文本生成。
+    GptSovits,
 }
 
 impl ServerKind {
@@ -153,6 +157,8 @@ impl ServerKind {
             ServerKind::Vllm => "vLLM",
             ServerKind::OpenAiCompatible => "OpenAI 兼容服务",
             ServerKind::BreezeTts => "Breeze TTS（语音）",
+            ServerKind::OpenAiSpeech => "OpenAI 兼容语音服务",
+            ServerKind::GptSovits => "GPT-SoVITS（语音）",
         }
     }
 }
@@ -235,11 +241,18 @@ pub struct MediaOptions {
     /// 图片尺寸，例如 `1024x1024`（为空 = 1024x1024）。
     #[serde(default)]
     pub image_size: String,
+    /// 语音接口：空 / `openai` = OpenAI 兼容 `/audio/speech`；`gpt_sovits` = GPT-SoVITS api_v2（`/tts`）。
+    /// GPT-SoVITS 的声音写成「参考音频路径|参考音频里说的话|语言」。
+    #[serde(default)]
+    pub tts_api: String,
+    /// 朗读文字的语言（GPT-SoVITS 的 text_lang；为空 = zh）。
+    #[serde(default)]
+    pub text_lang: String,
 }
 
 impl Default for MediaOptions {
     fn default() -> Self {
-        Self { voice: String::new(), voices: vec![], audio_format: String::new(), send_instructions: true, image_size: String::new() }
+        Self { voice: String::new(), voices: vec![], audio_format: String::new(), send_instructions: true, image_size: String::new(), tts_api: String::new(), text_lang: String::new() }
     }
 }
 

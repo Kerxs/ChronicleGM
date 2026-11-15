@@ -38,14 +38,14 @@ async function log(worldId: string | null) {
 export const TOUR: TourStep[] = [
   {
     id: "hello",
-    say: "你好，我是这里的 GM。接下来我带你玩一小段：配置模型、打开示例世界、选角色、听开场、做几个行动。随时可以暂停，下次从这里接着来。",
+    say: "你好，我是这里的 GM。接下来我带你玩一小段：配置模型、打开示例世界、选角色、听开场、做几个行动。随时可以暂停，之后从标题栏世界菜单的「游戏教程」接着来。",
   },
   {
     id: "models",
     page: "settings",
     target: ["models-scan"],
     say: "先让我能说话：在你的电脑上启动模型服务（llama-server、Ollama、LM Studio 都可以），然后点「扫描」，把找到的服务添加进来并测试。也可以在下面添加云端服务。",
-    until: async () => (await api.listProviders()).some((p) => p.config.server_kind !== "breeze_tts" && p.config.capabilities?.chat),
+    until: async () => (await api.listProviders()).some((p) => p.config.service === "chat" && p.config.server_kind !== "breeze_tts" && p.config.capabilities?.chat),
     waiting: "配置好、测试通过后会自动继续",
     skipLabel: "暂时没有模型，先往下看",
   },

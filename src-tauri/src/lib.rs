@@ -1304,6 +1304,8 @@ fn speech_route_for(state: &AppState, cfg: ProviderConfig) -> Res<SpeechRoute> {
         chronicle_llm::tts::SpeechTarget::local(&cfg.base_url)
     } else {
         chronicle_llm::tts::SpeechTarget {
+            api: chronicle_llm::tts::SpeechApi::from_name(&cfg.media.tts_api),
+            text_lang: cfg.media.text_lang.clone(),
             base_url: cfg.base_url.clone(),
             api_key: key,
             model: if breeze { String::new() } else { cfg.model.clone() },
@@ -2731,7 +2733,11 @@ async fn test_media_provider(state: &AppState, cfg: &ProviderConfig) -> Res<Capa
         let t = std::time::Duration::from_secs(cfg2.timeout_secs.clamp(10, 120));
         match cfg2.service {
             chronicle_llm::types::ServiceType::Speech => {
-                let target = chronicle_llm::tts::SpeechTarget {
+                // 本机 Breeze 按实际朗读时的方式请求（不发模型名、不带 Key），测试结果才和真正朗读一致。
+                let breeze_local = cfg2.server_kind == Some(chronicle_llm::types::ServerKind::BreezeTts) && cfg2.is_loopback();
+                let target = if breeze_local { chronicle_llm::tts::SpeechTarget::local(&cfg2.base_url) } else { chronicle_llm::tts::SpeechTarget {
+                    api: chronicle_llm::tts::SpeechApi::from_name(&cfg2.media.tts_api),
+                    text_lang: cfg2.media.text_lang.clone(),
                     base_url: cfg2.base_url.clone(),
                     api_key: key,
                     model: cfg2.model.clone(),
@@ -2739,7 +2745,7 @@ async fn test_media_provider(state: &AppState, cfg: &ProviderConfig) -> Res<Capa
                     format: cfg2.media.audio_format.clone(),
                     send_instructions: false,
                     send_seed: cfg2.is_loopback(),
-                };
+                } };
                 let a = chronicle_llm::tts::synthesize_to(&target, "测试", &chronicle_llm::tts::VoiceSpec::default(), t, &CancelToken::new()).map_err(|e| e.to_string())?;
                 Ok(!a.bytes.is_empty())
             }
@@ -2767,6 +2773,21 @@ async fn test_media_provider(state: &AppState, cfg: &ProviderConfig) -> Res<Capa
         notes.push("生图服务只检查了 API Key 与模型列表；真正生成一张图要在节点的「图片」页签里点「AI 生成图片」（会计费）".into());
     }
     Ok(Capabilities { chat: ok, streaming: false, json_schema: false, vision: false, context_length: None, tested_at: chronicle_core::util::now_ms(), notes })
+}
+
+/// 读取语音服务的声音列表（不合成、不计费）。`api_key` 为空时用已保存的 Key。
+#[tauri::command]
+async fn provider_voices(state: State<'_, AppState>, id: Option<String>, base_url: String, api_key: Option<String>) -> Res<Vec<String>> {
+    let key = match api_key.filter(|k| !k.trim().is_empty()) {
+        Some(k) => Some(k.trim().to_string()),
+        None => match id {
+            Some(id) => state.secrets.get(&id)?,
+            None => None,
+        },
+    };
+    tauri::async_runtime::spawn_blocking(move || discovery::list_voices(&base_url, key.as_deref(), std::time::Duration::from_secs(15)).map_err(|e| e.to_string()))
+        .await
+        .map_err(err)?
 }
 
 /// 读取服务的模型列表（不计费）。`api_key` 为空时用已保存的 Key。
@@ -3301,6 +3322,7 @@ pub fn run() {
             scene_view,
             describe_node_image,
             provider_models,
+            provider_voices,
             generate_image,
             archive_list,
             archive_stats,

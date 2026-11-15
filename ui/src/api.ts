@@ -580,6 +580,7 @@ export const api = {
   listProviders: () => call<ProviderView[]>("list_providers"),
   /** 读取服务的模型列表（不计费）；apiKey 为空时用已保存的 Key。 */
   providerModels: (id: string | null, baseUrl: string, apiKey: string | null) => call<string[]>("provider_models", { id, baseUrl, apiKey }),
+  providerVoices: (id: string | null, baseUrl: string, apiKey: string | null) => call<string[]>("provider_voices", { id, baseUrl, apiKey }),
   /** 用生图服务生成一张图片（不保存）。 */
   generateImage: (prompt: string, size: string | null) => call<{ data_url: string; revised_prompt: string | null; provider: string; ms: number }>("generate_image", { prompt, size }),
   saveProvider: (config: ProviderConfig, apiKey: string | null) =>

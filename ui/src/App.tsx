@@ -136,10 +136,14 @@ export default function App() {
     return () => clearTimeout(t);
   }, []);
   useEffect(() => {
-    // 第一次打开时自动开始教程（上次暂停的从暂停处接着来）；看完或跳过后不再自动出现。
+    // 只在第一次打开软件时自动开始教程，开始时就记下"已经出现过"。
+    // 以前暂停（或中途关掉软件）后每次启动都会再弹出来；现在暂停后要从标题栏的世界菜单「游戏教程」接着来。
     Promise.all([api.uiPref("ui.onboarded"), api.uiPref("ui.tutorial")])
       .then(([seen, at]) => {
-        if (seen !== "1" && at !== "done") setTour(Number(at) || 0);
+        if (seen !== "1" && at !== "done") {
+          setTour(Number(at) || 0);
+          void api.setUiPref("ui.onboarded", "1").catch(() => {});
+        }
       })
       .catch(() => {});
     api.uiPref("ui.nav_collapsed").then((v) => setCollapsed(v === "1")).catch(() => {});
@@ -154,6 +158,8 @@ export default function App() {
     if (finished) {
       void api.setUiPref("ui.onboarded", "1").catch(() => {});
       void api.setUiPref("ui.tutorial", "done").catch(() => {});
+    } else {
+      notify("教程已暂停，不会再自动出现。想接着看，点标题栏的世界菜单 →「游戏教程」。");
     }
   };
   const openTour = () => {

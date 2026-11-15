@@ -254,7 +254,7 @@ export default function Tutorial({
                 上一步
               </button>
             )}
-            <button className="link" onClick={() => onClose(false)} title="下次从这一步接着来（世界菜单里可以重新打开；Esc）">
+            <button className="link" onClick={() => onClose(false)} title="暂停后不会再自动出现；从标题栏世界菜单的「游戏教程」接着这一步看（Esc）">
               暂停
             </button>
             <button

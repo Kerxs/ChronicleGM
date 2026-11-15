@@ -74,6 +74,7 @@ fn cloud_speech_sends_key_model_voice_and_returns_mp3() {
         format: "mp3".into(),
         send_instructions: false,
         send_seed: false,
+        ..Default::default()
     };
     let v = VoiceSpec { instructions: "不会发出去".into(), voice_id: String::new(), seed: Some(1) };
     let a = synthesize_to(&target, "你好", &v, T, &CancelToken::new()).unwrap();
@@ -191,4 +192,111 @@ fn transcription_sends_multipart_and_reads_text() {
     let text = transcribe(&t, b"fake-audio", "audio/webm;codecs=opus", "zh", std::time::Duration::from_secs(3)).unwrap();
     assert_eq!(text, "我推开酒馆的门");
     assert!(transcribe(&t, b"", "audio/webm", "zh", std::time::Duration::from_secs(1)).is_err());
+}
+
+/// GPT-SoVITS api_v2：POST /tts，参数名按它的源码（text、text_lang、ref_audio_path、prompt_text、prompt_lang、media_type）。
+#[test]
+fn gpt_sovits_request_follows_api_v2() {
+    use chronicle_llm::tts::SpeechApi;
+    let srv = MockServer::start(|_, _| Reply::Bytes(200, "audio/wav".into(), wav()));
+    let target = SpeechTarget { api: SpeechApi::GptSovits, base_url: srv.url.clone(), default_voice: r"D:/ref/旁白.wav|今天天气很好。|zh".into(), send_seed: true, ..Default::default() };
+    let v = VoiceSpec { instructions: "不会发出去".into(), voice_id: String::new(), seed: Some(3) };
+    let a = synthesize_to(&target, "欢迎来到雾湾。", &v, T, &CancelToken::new()).unwrap();
+    assert_eq!(a.mime, "audio/wav");
+    let r = &srv.requests.lock().unwrap()[0];
+    assert_eq!((r.method.as_str(), r.path.as_str()), ("POST", "/tts"));
+    assert_eq!(
+        r.json(),
+        json!({ "text": "欢迎来到雾湾。", "text_lang": "zh", "ref_audio_path": r"D:/ref/旁白.wav", "prompt_text": "今天天气很好。", "prompt_lang": "zh", "media_type": "wav", "streaming_mode": false, "seed": 3 })
+    );
+    // 地址写成 /v1 也去掉；NPC 的声音（voice_id）覆盖默认参考音频。
+    let srv2 = MockServer::start(|_, _| Reply::Bytes(200, "audio/wav".into(), wav()));
+    let t2 = SpeechTarget { api: SpeechApi::GptSovits, base_url: format!("{}/v1", srv2.url), default_voice: "a.wav".into(), text_lang: "ja".into(), ..Default::default() };
+    let v2 = VoiceSpec { voice_id: "npc.wav".into(), ..Default::default() };
+    synthesize_to(&t2, "こんにちは", &v2, T, &CancelToken::new()).unwrap();
+    let b = srv2.requests.lock().unwrap()[0].json();
+    assert_eq!(srv2.requests.lock().unwrap()[0].path, "/tts");
+    assert_eq!((b["ref_audio_path"].as_str(), b["prompt_text"].as_str(), b["prompt_lang"].as_str(), b["text_lang"].as_str()), (Some("npc.wav"), Some(""), Some("zh"), Some("ja")));
+    assert!(b.get("seed").is_none());
+}
+
+#[test]
+fn gpt_sovits_without_reference_audio_or_with_400_reports_why() {
+    use chronicle_llm::tts::SpeechApi;
+    let t = SpeechTarget { api: SpeechApi::GptSovits, base_url: "http://127.0.0.1:9".into(), ..Default::default() };
+    let e = synthesize_to(&t, "你好", &VoiceSpec::default(), T, &CancelToken::new()).unwrap_err();
+    assert!(e.to_string().contains("参考音频"), "{e}");
+    let srv = MockServer::start(|_, _| Reply::Json(400, json!({ "message": "tts failed", "Exception": "ref audio not found" })));
+    let t = SpeechTarget { api: SpeechApi::GptSovits, base_url: srv.url.clone(), default_voice: "missing.wav".into(), ..Default::default() };
+    match synthesize_to(&t, "你好", &VoiceSpec::default(), T, &CancelToken::new()).unwrap_err() {
+        LlmError::Http { status, body } => assert!(status == 400 && body.contains("ref audio not found")),
+        e => panic!("{e:?}"),
+    }
+}
+
+#[test]
+fn sovits_voice_string_parses_path_text_and_language() {
+    use chronicle_llm::tts::parse_sovits_voice;
+    let v = parse_sovits_voice(r#""D:\声音 样本.wav" | 你好呀 | ja"#);
+    assert_eq!((v.ref_audio_path.as_str(), v.prompt_text.as_str(), v.prompt_lang.as_str()), (r"D:\声音 样本.wav", "你好呀", "ja"));
+    assert_eq!(parse_sovits_voice("a.wav").prompt_lang, "zh");
+}
+
+/// 声音列表：Kokoro-FastAPI 的 /v1/audio/voices（对象带 id），没有时退到 openai-edge-tts 的 /v1/voices/all。
+#[test]
+fn voice_lists_are_read_from_kokoro_or_edge_endpoints() {
+    use chronicle_llm::discovery::list_voices;
+    let kokoro = MockServer::start(|r, _| {
+        if r.path == "/v1/audio/voices" { Reply::Json(200, json!({ "voices": [{ "id": "zf_xiaobei" }, { "id": "zm_yunxi" }] })) } else { Reply::Json(404, json!({})) }
+    });
+    assert_eq!(list_voices(&kokoro.url, None, T).unwrap(), vec!["zf_xiaobei", "zm_yunxi"]);
+    let edge = MockServer::start(|r, _| {
+        if r.path == "/v1/voices/all" { Reply::Json(200, json!([{ "ShortName": "zh-CN-XiaoxiaoNeural" }, { "name": "zh-CN-YunxiNeural" }])) } else { Reply::Json(404, json!({})) }
+    });
+    assert_eq!(list_voices(&format!("{}/v1", edge.url), Some("k"), T).unwrap(), vec!["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural"]);
+    assert_eq!(edge.requests.lock().unwrap().last().unwrap().header("authorization"), Some("Bearer k"));
+    let none = MockServer::start(|_, _| Reply::Json(404, json!({})));
+    assert!(list_voices(&none.url, None, T).is_err());
+}
+
+/// 识别语音服务：Kokoro（有声音列表）、GPT-SoVITS（GET /tts 返回 400 + message）、只有 tts 模型的 OpenAI 兼容服务；都不能用于文本生成。
+#[test]
+fn discovery_recognizes_speech_services() {
+    use chronicle_llm::ServerKind;
+    use chronicle_llm::discovery::probe;
+    let kokoro = MockServer::start(|r, _| match r.path.as_str() {
+        "/v1/audio/voices" => Reply::Json(200, json!({ "voices": ["zf_xiaobei", "af_bella"] })),
+        "/v1/models" => Reply::Json(200, json!({ "data": [{ "id": "kokoro" }] })),
+        _ => Reply::Json(404, json!({})),
+    });
+    let s = probe(&kokoro.url, Some(ServerKind::OpenAiSpeech), T).unwrap();
+    assert_eq!((s.kind, s.usable_for_chat), (ServerKind::OpenAiSpeech, false));
+    assert_eq!(s.voices, vec!["zf_xiaobei", "af_bella"]);
+    assert_eq!(s.models[0].id, "kokoro");
+
+    let sovits = MockServer::start(|r, _| if r.path.starts_with("/tts") { Reply::Json(400, json!({ "message": "text is required" })) } else { Reply::Json(404, json!({})) });
+    let s = probe(&sovits.url, Some(ServerKind::GptSovits), T).unwrap();
+    assert_eq!((s.kind, s.usable_for_chat), (ServerKind::GptSovits, false));
+    assert!(sovits.requests.lock().unwrap().iter().all(|r| r.method == "GET"), "识别时不发合成请求");
+
+    let edge = MockServer::start(|r, _| if r.path == "/v1/models" { Reply::Json(200, json!({ "data": [{ "id": "tts-1" }, { "id": "tts-1-hd" }] })) } else { Reply::Json(404, json!({})) });
+    let s = probe(&edge.url, Some(ServerKind::OpenAiSpeech), T).unwrap();
+    assert_eq!((s.kind, s.usable_for_chat), (ServerKind::OpenAiSpeech, false));
+
+    // 普通语言模型服务不受影响。
+    let chat = MockServer::start(|r, _| if r.path == "/v1/models" { Reply::Json(200, json!({ "data": [{ "id": "qwen3-8b" }] })) } else { Reply::Json(404, json!({})) });
+    assert!(probe(&chat.url, None, T).unwrap().usable_for_chat);
+}
+
+/// 就绪检查：有 /health 的看 200；没有 /health 的服务（GPT-SoVITS 返回 404）也算在运行；连不上算没就绪。
+#[test]
+fn speech_health_accepts_services_without_health_endpoint() {
+    use chronicle_llm::tts::health;
+    let ok = MockServer::start(|_, _| Reply::Json(200, json!({ "status": "ok" })));
+    assert!(health(&ok.url, T));
+    let no_health = MockServer::start(|_, _| Reply::Json(404, json!({ "detail": "Not Found" })));
+    assert!(health(&no_health.url, T));
+    let broken = MockServer::start(|_, _| Reply::Json(503, json!({})));
+    assert!(!health(&broken.url, T));
+    assert!(!health("http://127.0.0.1:9", Duration::from_millis(500)));
 }

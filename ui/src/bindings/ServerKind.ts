@@ -3,4 +3,4 @@
 /**
  * 识别到的服务类型。
  */
-export type ServerKind = "llama_server" | "ollama" | "lm_studio" | "kobold_cpp" | "text_gen_web_ui" | "vllm" | "open_ai_compatible" | "breeze_tts";
+export type ServerKind = "llama_server" | "ollama" | "lm_studio" | "kobold_cpp" | "text_gen_web_ui" | "vllm" | "open_ai_compatible" | "breeze_tts" | "open_ai_speech" | "gpt_sovits";

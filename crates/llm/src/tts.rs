@@ -1,4 +1,5 @@
-//! 语音合成客户端（OpenAI 兼容的 `POST /v1/audio/speech`）。
+//! 语音合成客户端：OpenAI 兼容的 `POST /v1/audio/speech`（Breeze、Kokoro-FastAPI、openai-edge-tts、OpenAI、硅基流动……），
+//! 以及 GPT-SoVITS 的 `api_v2.py`（`POST /tts`，按它源码里的参数实现）。
 //!
 //! 按 Breeze TTS 自带的接口文档（docs/server.md）实现，并在本机实测：
 //! - JSON 请求：`input`（文字）、`instructions`（声音描述）、`voice`（保存的声音，可省略）、`response_format: "wav"`、`seed`；
@@ -28,9 +29,46 @@ pub struct VoiceSpec {
     pub seed: Option<i64>,
 }
 
-/// 语音服务：本机 Breeze，或云端 OpenAI 兼容的 `/audio/speech`（OpenAI、硅基流动等）。
+/// 语音服务的接口类型。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SpeechApi {
+    /// OpenAI 兼容的 `/audio/speech`。
+    #[default]
+    OpenAi,
+    /// GPT-SoVITS `api_v2.py`：`POST /tts`，需要参考音频。
+    GptSovits,
+}
+
+impl SpeechApi {
+    /// 服务设置里保存的接口名（`media.tts_api`）。
+    pub fn from_name(s: &str) -> Self {
+        if s.trim().eq_ignore_ascii_case("gpt_sovits") { SpeechApi::GptSovits } else { SpeechApi::OpenAi }
+    }
+}
+
+/// GPT-SoVITS 的"声音"：`参考音频路径|参考音频里说的话|参考音频的语言`，后两项可以省略。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SovitsVoice {
+    pub ref_audio_path: String,
+    pub prompt_text: String,
+    pub prompt_lang: String,
+}
+
+pub fn parse_sovits_voice(s: &str) -> SovitsVoice {
+    let mut it = s.split('|').map(str::trim);
+    let ref_audio_path = it.next().unwrap_or("").trim_matches('"').to_string();
+    let prompt_text = it.next().unwrap_or("").to_string();
+    let prompt_lang = it.next().filter(|x| !x.is_empty()).unwrap_or("zh").to_string();
+    SovitsVoice { ref_audio_path, prompt_text, prompt_lang }
+}
+
+/// 语音服务：本机 Breeze / Kokoro / GPT-SoVITS，或云端 OpenAI 兼容的 `/audio/speech`（OpenAI、硅基流动等）。
 #[derive(Debug, Clone, Default)]
 pub struct SpeechTarget {
+    /// 接口类型（默认 OpenAI 兼容）。
+    pub api: SpeechApi,
+    /// 要朗读的文字的语言（GPT-SoVITS 的 `text_lang`；为空 = zh）。
+    pub text_lang: String,
     /// 例如 `http://127.0.0.1:8137`（Breeze）或 `https://api.openai.com/v1`。
     pub base_url: String,
     pub api_key: Option<String>,
@@ -97,6 +135,9 @@ pub fn synthesize_to(target: &SpeechTarget, text: &str, voice: &VoiceSpec, timeo
     if text.is_empty() {
         return Err(LlmError::Config("没有要朗读的文字".into()));
     }
+    if target.api == SpeechApi::GptSovits {
+        return sovits_synthesize(target, text, voice, timeout, cancel);
+    }
     let agent = make_agent(timeout);
     let url = api_url(&target.base_url, "audio/speech");
     let format = if target.format.trim().is_empty() { "wav" } else { target.format.trim() };
@@ -117,16 +158,49 @@ pub fn synthesize_to(target: &SpeechTarget, text: &str, voice: &VoiceSpec, timeo
         body["seed"] = s.into();
     }
     let payload = serde_json::to_vec(&body).map_err(|e| LlmError::Config(e.to_string()))?;
+    post_audio(&agent, &url, &payload, target.api_key.as_deref(), cancel)
+}
+
+/// GPT-SoVITS `api_v2.py`：`POST {根地址}/tts`，JSON 里给文字、语言和参考音频；成功返回音频，失败返回 400 + `{"message": …}`。
+fn sovits_synthesize(target: &SpeechTarget, text: &str, voice: &VoiceSpec, timeout: Duration, cancel: &CancelToken) -> Result<Audio, LlmError> {
+    let v = if voice.voice_id.trim().is_empty() { target.default_voice.trim() } else { voice.voice_id.trim() };
+    let sv = parse_sovits_voice(v);
+    if sv.ref_audio_path.is_empty() {
+        return Err(LlmError::Config("GPT-SoVITS 需要参考音频：在这个语音服务的设置里填「参考音频路径|参考音频里说的话|语言」".into()));
+    }
+    let root = target.base_url.trim_end_matches('/').trim_end_matches("/v1").to_string();
+    let url = join_url(&root, "tts");
+    let text_lang = if target.text_lang.trim().is_empty() { "zh" } else { target.text_lang.trim() };
+    let mut body = serde_json::json!({
+        "text": text,
+        "text_lang": text_lang,
+        "ref_audio_path": sv.ref_audio_path,
+        "prompt_text": sv.prompt_text,
+        "prompt_lang": sv.prompt_lang,
+        "media_type": "wav",
+        "streaming_mode": false,
+    });
+    if target.send_seed
+        && let Some(s) = voice.seed
+    {
+        body["seed"] = s.into();
+    }
+    let payload = serde_json::to_vec(&body).map_err(|e| LlmError::Config(e.to_string()))?;
+    post_audio(&make_agent(timeout), &url, &payload, target.api_key.as_deref(), cancel)
+}
+
+/// 发送合成请求并读回音频：忙（409 / 429）时退避重试，5xx 重试两次。
+fn post_audio(agent: &ureq::Agent, url: &str, payload: &[u8], api_key: Option<&str>, cancel: &CancelToken) -> Result<Audio, LlmError> {
     let mut wait = Duration::from_millis(400);
     for attempt in 0..12 {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
-        let mut req = agent.post(&url).header("Content-Type", "application/json");
-        if let Some(k) = target.api_key.as_deref().filter(|k| !k.is_empty()) {
+        let mut req = agent.post(url).header("Content-Type", "application/json");
+        if let Some(k) = api_key.filter(|k| !k.is_empty()) {
             req = req.header("Authorization", &format!("Bearer {k}"));
         }
-        let mut resp = req.send(&payload[..]).map_err(|e| LlmError::Transport(e.to_string()))?;
+        let mut resp = req.send(payload).map_err(|e| LlmError::Transport(e.to_string()))?;
         let status = resp.status().as_u16();
         // 409：Breeze 的生成槽占满；429 / 5xx：云端限流或临时故障。都退避后重试。
         let busy = status == 409 || status == 429;
@@ -196,10 +270,16 @@ pub fn wav_seconds(wav: &[u8]) -> f64 {
     ((wav.len() - 44) as f64 / block) / rate
 }
 
-/// 语音服务是否就绪（`GET /health`）。
+/// 语音服务是否在运行：`GET /health` 返回 200（Breeze、Kokoro），或者服务能应答（GPT-SoVITS 等没有 /health，
+/// 会返回 404，但说明服务开着）。只有连不上或 5xx 才算没就绪。
 pub fn health(base_url: &str, timeout: Duration) -> bool {
     let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
-    make_agent(timeout).get(&join_url(root, "health")).call().is_ok_and(|r| r.status().as_u16() == 200)
+    let agent = make_agent(timeout);
+    match agent.get(&join_url(root, "health")).call() {
+        Ok(r) if r.status().as_u16() == 200 => true,
+        Ok(r) => r.status().as_u16() < 500,
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]

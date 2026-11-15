@@ -20,7 +20,7 @@ export function blankProvider(service: ServiceType = "chat"): ProviderConfig {
     allow_campaign_content: false,
     thinking: "auto",
     service,
-    media: { voice: "", voices: [], audio_format: "", send_instructions: true, image_size: "" },
+    media: { voice: "", voices: [], audio_format: "", send_instructions: true, image_size: "", tts_api: "", text_lang: "" },
   };
 }
 
@@ -55,9 +55,35 @@ export default function CloudProviderForm({ initial, hasKey, onSaved, onCancel, 
         audio_format: p.audio_format ?? "",
         send_instructions: p.send_instructions ?? true,
         image_size: p.sizes?.[0] ?? "",
+        tts_api: p.tts_api ?? "",
+        text_lang: "",
       },
     }));
   }
+
+  // 语音：读取服务里实际有的声音（Kokoro-FastAPI 的 /v1/audio/voices、openai-edge-tts 的 /v1/voices/all）。
+  const [voiceList, setVoiceList] = useState<string[] | null>(null);
+  async function fetchVoices() {
+    setLoading(true);
+    try {
+      const list = await api.providerVoices(editing ? cfg.id : null, cfg.base_url, key || null);
+      setVoiceList(list);
+      notify(`读到 ${list.length} 个声音`);
+    } catch (e) {
+      notify(`读取声音列表失败：${(e as Error).message}（可以照服务的文档手动填写）`, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+  const sovits = cfg.service === "speech" && cfg.media.tts_api === "gpt_sovits";
+  const sv = (() => {
+    const [path = "", text = "", lang = "zh"] = cfg.media.voice.split("|").map((x) => x.trim());
+    return { path, text, lang: lang || "zh" };
+  })();
+  const setSv = (patch: Partial<typeof sv>) => {
+    const n = { ...sv, ...patch };
+    setMedia("voice", [n.path, n.text, n.lang].join("|").replace(/\|zh$/, n.text ? "|zh" : "").replace(/\|+$/, ""));
+  };
 
   function switchService(s: ServiceType) {
     const first = CLOUD_PRESETS.find((p) => p.service === s)!;
@@ -145,10 +171,68 @@ export default function CloudProviderForm({ initial, hasKey, onSaved, onCancel, 
       {cfg.service === "speech" && (
         <div className="grid2">
           <label>
+            接口类型
+            <select
+              value={cfg.media.tts_api === "gpt_sovits" ? "gpt_sovits" : ""}
+              onChange={(e) => setCfg((c) => ({ ...c, model: e.target.value === "gpt_sovits" && !c.model ? "gpt-sovits" : c.model, media: { ...c.media, tts_api: e.target.value, voice: "", audio_format: e.target.value === "gpt_sovits" ? "wav" : c.media.audio_format } }))}
+            >
+              <option value="">OpenAI 兼容（/audio/speech）</option>
+              <option value="gpt_sovits">GPT-SoVITS（api_v2 的 /tts）</option>
+            </select>
+          </label>
+          {sovits && (
+            <label>
+              朗读文字的语言
+              <select value={cfg.media.text_lang || "zh"} onChange={(e) => setMedia("text_lang", e.target.value)}>
+                <option value="zh">中文</option>
+                <option value="yue">粤语</option>
+                <option value="en">英文</option>
+                <option value="ja">日文</option>
+                <option value="ko">韩文</option>
+                <option value="auto">自动</option>
+              </select>
+            </label>
+          )}
+        </div>
+      )}
+      {sovits && (
+        <div className="grid2">
+          <label>
+            旁白的参考音频（GPT-SoVITS 能读到的路径，3–10 秒）
+            <input value={sv.path} onChange={(e) => setSv({ path: e.target.value.replace(/^"|"$/g, "") })} placeholder="例如 D:\GPT-SoVITS\参考\旁白.wav" />
+          </label>
+          <label>
+            参考音频里说的话（可以不填，填了效果更好）
+            <input value={sv.text} onChange={(e) => setSv({ text: e.target.value.replace(/\|/g, " ") })} />
+          </label>
+          <label>
+            参考音频的语言
+            <select value={sv.lang} onChange={(e) => setSv({ lang: e.target.value })}>
+              <option value="zh">中文</option>
+              <option value="yue">粤语</option>
+              <option value="en">英文</option>
+              <option value="ja">日文</option>
+              <option value="ko">韩文</option>
+            </select>
+          </label>
+          <label>
+            分给 NPC 的声音（每行一个：参考音频路径|音频里说的话|语言）
+            <textarea rows={3} value={cfg.media.voices.join("\n")} onChange={(e) => setMedia("voices", e.target.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean))} />
+          </label>
+        </div>
+      )}
+      {cfg.service === "speech" && !sovits && (
+        <div className="grid2">
+          <label>
             旁白的声音
-            <input list="cloud-voices" value={cfg.media.voice} onChange={(e) => setMedia("voice", e.target.value)} placeholder="例如 alloy" />
+            <span className="row">
+              <input list="cloud-voices" value={cfg.media.voice} onChange={(e) => setMedia("voice", e.target.value)} placeholder="例如 alloy" style={{ flex: 1 }} />
+              <button type="button" className="small" disabled={!cfg.base_url || loading} onClick={() => void fetchVoices()} title="读取服务里有哪些声音（不合成、不计费）">
+                读取声音列表
+              </button>
+            </span>
             <datalist id="cloud-voices">
-              {(current?.voices ?? cfg.media.voices).map((v) => (
+              {(voiceList ?? current?.voices ?? cfg.media.voices).map((v) => (
                 <option key={v} value={v} />
               ))}
             </datalist>

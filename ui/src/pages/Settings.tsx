@@ -19,7 +19,9 @@ const KIND_LABEL: Record<string, string> = {
   text_gen_web_ui: "text-generation-webui",
   vllm: "vLLM",
   open_ai_compatible: "OpenAI 兼容服务",
-  breeze_tts: "Breeze TTS（语音，不能用于文本生成）",
+  breeze_tts: "Breeze TTS（语音合成）",
+  open_ai_speech: "OpenAI 兼容语音合成（Kokoro、Edge-TTS 等）",
+  gpt_sovits: "GPT-SoVITS（语音合成）",
 };
 
 function emptyConfig(): ProviderConfig {
@@ -77,6 +79,40 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
       notify("已添加，正在实测能力…");
       await load();
       await test(cfg.id, ctxLen);
+    } catch (e) {
+      notify((e as Error).message, "error");
+    }
+  }
+
+  // 识别到的本机语音服务：添加为「语音合成」，合成"测试"两个字检查能用；还没有指定朗读用哪个服务时自动选它。
+  // GPT-SoVITS 需要参考音频，添加后直接打开编辑表单让你填，填好再测试。
+  async function addSpeech(s: DiscoveredService) {
+    try {
+      const base = { ...blankProvider("speech"), name: `${KIND_LABEL[s.kind] ?? s.kind}`, server_kind: s.kind, service: "speech" as const };
+      const zh = s.voices.filter((v) => /^z[fm]_|^zh-/i.test(v));
+      const draft =
+        s.kind === "breeze_tts"
+          ? { ...base, base_url: s.root_url, model: "breeze-tts" }
+          : s.kind === "gpt_sovits"
+            ? { ...base, base_url: s.root_url, model: "gpt-sovits", media: { ...base.media, tts_api: "gpt_sovits", audio_format: "wav", send_instructions: false } }
+            : {
+                ...base,
+                base_url: s.base_url,
+                model: s.models[0]?.id || (s.voices.length ? "kokoro" : "tts-1"),
+                media: { ...base.media, voice: zh[0] ?? s.voices[0] ?? "", voices: (zh.length ? zh : s.voices).slice(0, 8), audio_format: "mp3", send_instructions: false },
+              };
+      const cfg = await api.saveProvider(draft, null);
+      if (!routeOf("tts")) await api.setRoute("tts", cfg.id).catch(() => {});
+      await load();
+      if (s.kind === "gpt_sovits") {
+        setEditingId(cfg.id);
+        // 编辑表单在页面下方：滚过去，免得找不到。
+        window.setTimeout(() => document.querySelector(`[data-provider="${cfg.id}"] .cloud-form`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+        notify("已添加 GPT-SoVITS。请在下面填参考音频（路径和音频里说的话），保存后点「重新测试」。");
+        return;
+      }
+      notify("已添加，正在合成一句测试语音…");
+      await test(cfg.id);
     } catch (e) {
       notify((e as Error).message, "error");
     }
@@ -142,12 +178,25 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
             {scanning ? "识别中…" : "扫描"}
           </button>
         </div>
-        <p className="hint">只扫描 127.0.0.1 的常见端口：8080（llama-server）、11434（Ollama）、1234（LM Studio）、5001、5000、8000、8137（Breeze TTS）。</p>
+        <p className="hint">只扫描 127.0.0.1 的常见端口：8080（llama-server）、11434（Ollama）、1234（LM Studio）、5001、5000、8000、8137（Breeze TTS），以及语音合成常用的 8880（Kokoro）、5050（Edge-TTS）、9880（GPT-SoVITS）。</p>
         {found && found.length === 0 && <p className="hint">没有发现正在运行的服务。请先启动 llama-server 等程序后再扫描。</p>}
         {found?.map((s) => (
           <div key={s.root_url} className="found">
             <strong>{KIND_LABEL[s.kind] ?? s.kind}</strong> <span className="hint">{s.root_url}</span>
-            {!s.usable_for_chat && <div className="hint">语音服务将在后续阶段接入，目前不用于文本生成。</div>}
+            {!s.usable_for_chat && (
+              <div className="row">
+                <span className="hint">
+                  语音合成服务：用来朗读 GM 的讲述和 NPC 的台词（不能用于文本生成）。
+                  {s.voices.length > 0 && `有 ${s.voices.length} 个声音。`}
+                  {s.kind === "gpt_sovits" && "添加后需要填参考音频。"}
+                </span>
+                {providers.some((p) => p.config.service === "speech" && p.config.base_url.replace(/\/+$/, "").replace(/\/v1$/, "") === s.root_url.replace(/\/+$/, "")) ? (
+                  <span className="hint">已添加</span>
+                ) : (
+                  <button onClick={() => void addSpeech(s)}>添加并测试</button>
+                )}
+              </div>
+            )}
             {s.usable_for_chat &&
               s.models.map((m) => (
                 <div key={m.id} className="row">
@@ -169,7 +218,7 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
           const c = p.config.capabilities;
           const st = stats.find((s) => s.provider_id === p.config.id);
           return (
-            <div key={p.config.id} className="provider">
+            <div key={p.config.id} className="provider" data-provider={p.config.id}>
               <div className="row">
                 <span className={`svc svc-${isSpeech(p) ? "speech" : p.config.service}`}>{isSpeech(p) ? "语音合成" : SERVICE_LABEL[p.config.service]}</span>
                 <strong>{p.config.name}</strong>
@@ -212,7 +261,7 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
                     {p.config.service === "speech" ? "允许发送叙述与台词" : p.config.service === "image" ? "允许发送图片描述" : "允许发送世界与剧本内容"}
                   </label>
                 )}
-                {!p.loopback && <button onClick={() => setEditingId(editingId === p.config.id ? null : p.config.id)}>{editingId === p.config.id ? "收起" : "编辑"}</button>}
+                {(!p.loopback || p.config.service !== "chat") && <button onClick={() => setEditingId(editingId === p.config.id ? null : p.config.id)}>{editingId === p.config.id ? "收起" : "编辑"}</button>}
                 {p.config.service === "chat" && <label className="check" title="关闭后生成更快，内容可能简短一些（需要服务支持 chat_template_kwargs，如 llama-server）">
                   思考模式
                   <select

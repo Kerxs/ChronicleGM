@@ -14,4 +14,8 @@ base_url: string, kind: ServerKind, models: Array<DiscoveredModel>,
 /**
  * 能否用于文本生成（TTS 等服务为 false）。
  */
-usable_for_chat: boolean, };
+usable_for_chat: boolean, 
+/**
+ * 语音服务提供的声音（读得到时）。
+ */
+voices: Array<string>, };

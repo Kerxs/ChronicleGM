@@ -23,4 +23,13 @@ send_instructions: boolean,
 /**
  * 图片尺寸，例如 `1024x1024`（为空 = 1024x1024）。
  */
-image_size: string, };
+image_size: string, 
+/**
+ * 语音接口：空 / `openai` = OpenAI 兼容 `/audio/speech`；`gpt_sovits` = GPT-SoVITS api_v2（`/tts`）。
+ * GPT-SoVITS 的声音写成「参考音频路径|参考音频里说的话|语言」。
+ */
+tts_api: string, 
+/**
+ * 朗读文字的语言（GPT-SoVITS 的 text_lang；为空 = zh）。
+ */
+text_lang: string, };

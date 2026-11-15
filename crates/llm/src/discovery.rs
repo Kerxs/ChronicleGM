@@ -21,6 +21,10 @@ pub const DEFAULT_PORTS: &[(u16, ServerKind)] = &[
     (5000, ServerKind::TextGenWebUi),
     (8000, ServerKind::Vllm),
     (8137, ServerKind::BreezeTts),
+    // 语音合成：Kokoro-FastAPI、openai-edge-tts、GPT-SoVITS api_v2 的默认端口（按各项目文档）。
+    (8880, ServerKind::OpenAiSpeech),
+    (5050, ServerKind::OpenAiSpeech),
+    (9880, ServerKind::GptSovits),
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -41,6 +45,9 @@ pub struct DiscoveredService {
     pub models: Vec<DiscoveredModel>,
     /// 能否用于文本生成（TTS 等服务为 false）。
     pub usable_for_chat: bool,
+    /// 语音服务提供的声音（读得到时）。
+    #[serde(default)]
+    pub voices: Vec<String>,
 }
 
 fn get_json(agent: &ureq::Agent, url: &str) -> Option<Value> {
@@ -67,14 +74,39 @@ pub fn probe(root_url: &str, hint: Option<ServerKind>, timeout: Duration) -> Opt
             .filter_map(|m| m["name"].as_str().or(m["model"].as_str()))
             .map(|id| DiscoveredModel { id: id.to_string(), context_length: None })
             .collect();
-        return Some(DiscoveredService { root_url: root, base_url, kind: ServerKind::Ollama, models, usable_for_chat: true });
+        return Some(DiscoveredService { root_url: root, base_url, kind: ServerKind::Ollama, models, usable_for_chat: true, voices: vec![] });
     }
 
     // Breeze TTS：/health 返回采样率。
     if let Some(h) = get_json(&agent, &join_url(&root, "health"))
         && h.get("sample_rate").is_some()
     {
-        return Some(DiscoveredService { root_url: root, base_url, kind: ServerKind::BreezeTts, models: vec![], usable_for_chat: false });
+        return Some(DiscoveredService { root_url: root, base_url, kind: ServerKind::BreezeTts, models: vec![], usable_for_chat: false, voices: vec![] });
+    }
+
+    // Kokoro-FastAPI 等：`GET /v1/audio/voices` 返回 `{"voices": [...]}`。
+    if let Some(v) = get_json(&agent, &join_url(&base_url, "audio/voices"))
+        && v.get("voices").is_some_and(Value::is_array)
+    {
+        let voices = parse_voice_list(&v);
+        let models = get_json(&agent, &join_url(&base_url, "models"))
+            .and_then(|m| m["data"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|m| m["id"].as_str().map(|id| DiscoveredModel { id: id.to_string(), context_length: None }))
+            .collect();
+        return Some(DiscoveredService { root_url: root, base_url, kind: ServerKind::OpenAiSpeech, models, usable_for_chat: false, voices });
+    }
+
+    // GPT-SoVITS api_v2：`GET /tts` 不带参数时返回 400 和 `{"message": "... is required"}`（源码里的参数检查），不会合成。
+    if (hint == Some(ServerKind::GptSovits) || hint.is_none())
+        && let Ok(mut r) = agent.get(&join_url(&root, "tts")).call()
+        && r.status().as_u16() == 400
+        && let Ok(t) = r.body_mut().with_config().limit(64 * 1024).read_to_string()
+        && let Ok(v) = serde_json::from_str::<Value>(&t)
+        && v["message"].as_str().is_some_and(|m| m.contains("required"))
+    {
+        return Some(DiscoveredService { root_url: root, base_url, kind: ServerKind::GptSovits, models: vec![], usable_for_chat: false, voices: vec![] });
     }
 
     // llama-server：/props
@@ -127,7 +159,60 @@ pub fn probe(root_url: &str, hint: Option<ServerKind>, timeout: Duration) -> Opt
             Some(k) => k,
         }
     };
-    Some(DiscoveredService { root_url: root, base_url, kind, models, usable_for_chat: true })
+    // 模型列表里全是语音模型（例如 openai-edge-tts 的 tts-1 / tts-1-hd）：是语音合成服务，不能用来生成文字。
+    if props.is_none() && !models.is_empty() && models.iter().all(|m| is_speech_model(&m.id)) {
+        return Some(DiscoveredService { root_url: root, base_url, kind: ServerKind::OpenAiSpeech, models, usable_for_chat: false, voices: vec![] });
+    }
+    Some(DiscoveredService { root_url: root, base_url, kind, models, usable_for_chat: true, voices: vec![] })
+}
+
+/// 模型名看起来是语音合成模型。
+pub fn is_speech_model(id: &str) -> bool {
+    let l = id.to_ascii_lowercase();
+    l.starts_with("tts") || l.contains("-tts") || l.contains("_tts") || l.contains("kokoro") || l.contains("speech") || l.contains("sovits")
+}
+
+/// 从声音列表的 JSON 里取出声音名：`{"voices": [...]}` 或直接是数组；元素是字符串，或带 id / name / ShortName / voice_id 的对象。
+pub fn parse_voice_list(v: &Value) -> Vec<String> {
+    let arr = v.get("voices").and_then(Value::as_array).or_else(|| v.as_array()).cloned().unwrap_or_default();
+    let mut out: Vec<String> = arr
+        .iter()
+        .filter_map(|x| match x {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(o) => ["id", "ShortName", "short_name", "voice_id", "name"].iter().find_map(|k| o.get(*k).and_then(Value::as_str)).map(str::to_string),
+            _ => None,
+        })
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    out.dedup();
+    out
+}
+
+/// 读取语音服务的声音列表（不合成，不计费）：依次试 `/audio/voices`（Kokoro-FastAPI）和 `/voices/all`（openai-edge-tts）。
+pub fn list_voices(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Result<Vec<String>, LlmError> {
+    let base = if base_url.trim_end_matches('/').ends_with("/v1") { base_url.trim_end_matches('/').to_string() } else { format!("{}/v1", base_url.trim_end_matches('/').trim_end_matches("/v1")) };
+    let agent = make_agent(timeout);
+    let mut last = String::new();
+    for path in ["audio/voices", "voices/all"] {
+        let mut req = agent.get(&join_url(&base, path));
+        if let Some(k) = api_key.filter(|k| !k.is_empty()) {
+            req = req.header("Authorization", &format!("Bearer {k}"));
+        }
+        match req.call() {
+            Ok(mut r) if r.status().as_u16() == 200 => {
+                let t = r.body_mut().with_config().limit(8 * 1024 * 1024).read_to_string().map_err(|e| LlmError::Transport(e.to_string()))?;
+                if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                    let list = parse_voice_list(&v);
+                    if !list.is_empty() {
+                        return Ok(list);
+                    }
+                }
+            }
+            Ok(r) => last = format!("{path}：HTTP {}", r.status().as_u16()),
+            Err(e) => last = format!("{path}：{e}"),
+        }
+    }
+    Err(LlmError::Transport(if last.is_empty() { "服务没有提供声音列表".into() } else { format!("服务没有提供声音列表（{last}）") }))
 }
 
 /// 并行扫描默认端口与用户追加的地址。

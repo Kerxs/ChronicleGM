@@ -17,6 +17,8 @@ export interface CloudPreset {
   note?: string;
   /** 本机服务：不需要 Key。 */
   local?: boolean;
+  /** 语音接口：不填 = OpenAI 兼容；gpt_sovits = GPT-SoVITS api_v2。 */
+  tts_api?: "gpt_sovits";
 }
 
 export const CLOUD_PRESETS: CloudPreset[] = [
@@ -54,7 +56,43 @@ export const CLOUD_PRESETS: CloudPreset[] = [
     audio_format: "mp3",
     send_instructions: false,
   },
-  { id: "custom-tts", name: "其他（OpenAI 兼容 /audio/speech）", service: "speech", base_url: "", models: [], audio_format: "mp3", send_instructions: false },
+  {
+    id: "kokoro-tts",
+    name: "本机 Kokoro-FastAPI",
+    service: "speech",
+    base_url: "http://127.0.0.1:8880/v1",
+    models: ["kokoro"],
+    voices: ["zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi", "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang"],
+    audio_format: "mp3",
+    send_instructions: false,
+    local: true,
+    note: "github.com/remsky/Kokoro-FastAPI，默认端口 8880，OpenAI 兼容。z 开头的是中文声音；点「读取声音列表」可以看到服务里实际有哪些。",
+  },
+  {
+    id: "edge-tts",
+    name: "本机 openai-edge-tts（微软 Edge 在线语音）",
+    service: "speech",
+    base_url: "http://127.0.0.1:5050/v1",
+    models: ["tts-1"],
+    voices: ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-YunjianNeural", "zh-CN-XiaoyiNeural", "zh-CN-YunyangNeural"],
+    audio_format: "mp3",
+    send_instructions: false,
+    local: true,
+    note: "github.com/travisvn/openai-edge-tts，默认端口 5050。它在本机运行，但会把文字发给微软的在线语音服务合成。如果它开着 REQUIRE_API_KEY，API Key 填它的 API_KEY（任意字符串）。",
+  },
+  {
+    id: "gpt-sovits",
+    name: "本机 GPT-SoVITS（api_v2）",
+    service: "speech",
+    base_url: "http://127.0.0.1:9880",
+    models: ["gpt-sovits"],
+    audio_format: "wav",
+    send_instructions: false,
+    local: true,
+    tts_api: "gpt_sovits",
+    note: "github.com/RVC-Boss/GPT-SoVITS：在它的目录里运行 python api_v2.py -a 127.0.0.1 -p 9880。需要一段 3–10 秒的参考音频（填 GPT-SoVITS 能读到的路径）和这段音频里说的话。",
+  },
+  { id: "custom-tts", name: "其他（OpenAI 兼容 /audio/speech，本机或云端）", service: "speech", base_url: "", models: [], audio_format: "mp3", send_instructions: false },
   // ---------- 生成图片 ----------
   { id: "openai-image", name: "OpenAI 图片", service: "image", base_url: "https://api.openai.com/v1", models: ["gpt-image-1", "dall-e-3"], sizes: ["1024x1024", "1024x1536", "1536x1024"] },
   { id: "zhipu-image", name: "智谱 CogView", service: "image", base_url: "https://open.bigmodel.cn/api/paas/v4", models: ["cogview-4"], sizes: ["1024x1024", "768x1344", "1344x768"] },

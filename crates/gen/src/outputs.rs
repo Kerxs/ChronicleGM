@@ -169,6 +169,46 @@ pub struct PcOutline {
     /// 给玩家看的角色介绍（2–3 句）。
     pub player_text: String,
     pub backstory: Backstory,
+    /// 随身的初始装备（2–6 件）：武器写伤害骰与射程，用弹药的武器写弹药名，弹药单独列一项并写数量。
+    #[serde(default)]
+    pub equipment: Vec<StartItemOut>,
+}
+
+/// 初始装备的一件物品。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct StartItemOut {
+    pub name: String,
+    /// 数量（弹药、消耗品写具体数量）。
+    #[serde(default)]
+    pub qty: i64,
+    /// 只能填 weapon（武器）/ armor（护甲）/ shield（盾）/ accessory（饰品）四个英文词之一，其他物品留空字符串（不要写"主手""腰""背"）。
+    #[serde(default)]
+    pub slot: String,
+    /// 武器的伤害骰，例如 1d6、1d10；不是武器留空字符串（不要写"无"）。
+    #[serde(default)]
+    pub damage: String,
+    /// 射程（格）：近战 1，弓 / 枪 6–12。
+    #[serde(default)]
+    pub range: i64,
+    /// 护甲值（护甲 / 盾牌，1–4）。
+    #[serde(default)]
+    pub armor: i64,
+    /// 品质：common / uncommon / rare / epic / legendary（初始装备一般 common 或 uncommon）。
+    #[serde(default)]
+    pub rarity: String,
+    /// 这件武器用的弹药名（要和弹药那一项的 name 完全相同）；不用弹药留空字符串（不要写"无"）。
+    #[serde(default)]
+    pub ammo: String,
+    /// 一句话外观或状态（例如"枪托有修补过的裂痕"）。
+    #[serde(default)]
+    pub description: String,
+}
+
+/// 按角色设定推断出的初始装备。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct KitOut {
+    #[serde(default)]
+    pub items: Vec<StartItemOut>,
 }
 
 /// 剧本大纲（第一段生成）。

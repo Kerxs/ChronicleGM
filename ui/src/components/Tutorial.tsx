@@ -4,6 +4,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { api } from "../api";
 import type { Page } from "../App";
 import { TOUR, type TourStep } from "../lib/tutorialSteps";
+import OrbCanvas from "./OrbCanvas";
+import { useLowPower } from "../lib/lowPower";
 
 type Rect = { x: number; y: number; w: number; h: number };
 
@@ -37,11 +39,11 @@ function overlaps(a: Rect, b: Rect) {
 
 /** 玻璃球与气泡的位置：没有目标时在屏幕中间；有目标时依次试右、左、下、上，选第一个放得下且不挡住目标的位置；
  *  都不行就放到不挡目标的角落。`size` 是整个引导（球 + 气泡）的实际尺寸。 */
-export function placeGuide(target: Rect | null, size: { w: number; h: number }, vw: number, vh: number) {
+export function placeGuide(target: Rect | null, size: { w: number; h: number }, vw: number, vh: number, prefer?: number) {
   const { w, h } = size;
   const clampX = (x: number) => Math.min(Math.max(EDGE, x), Math.max(EDGE, vw - w - EDGE));
   const clampY = (y: number) => Math.min(Math.max(EDGE, y), Math.max(EDGE, vh - h - EDGE));
-  if (!target) return { x: clampX(vw / 2 - w / 2), y: clampY(vh / 2 - h / 2 - 40), side: "below" as const };
+  if (!target) return { x: clampX(vw / 2 - w / 2), y: clampY(vh / 2 - h / 2 - 40), side: "below" as const, slot: -1 };
   const pad = 8;
   const t = { x: target.x - pad, y: target.y - pad, w: target.w + pad * 2, h: target.h + pad * 2 };
   const cands = [
@@ -54,13 +56,15 @@ export function placeGuide(target: Rect | null, size: { w: number; h: number }, 
     { x: vw - w - EDGE, y: EDGE, side: "below" as const },
     { x: EDGE, y: EDGE, side: "below" as const },
   ];
-  for (const c of cands) {
+  // 上次用的位置还放得下就继续用（避免内容稍有变化时左右来回跳）。
+  const order = prefer != null && prefer >= 0 && prefer < cands.length ? [cands[prefer], ...cands] : cands;
+  for (const c of order) {
     const inside = c.x >= EDGE - 0.5 && c.y >= EDGE - 0.5 && c.x + w <= vw - EDGE + 0.5 && c.y + h <= vh - EDGE + 0.5;
-    if (inside && !overlaps({ x: c.x, y: c.y, w, h }, t)) return c;
+    if (inside && !overlaps({ x: c.x, y: c.y, w, h }, t)) return { ...c, slot: cands.indexOf(c) };
   }
   // 窗口太小，怎么放都会挡住：放在离目标最远的一边。
   const belowRoom = vh - (t.y + t.h);
-  return { x: clampX(t.x), y: belowRoom > t.y ? vh - h - EDGE : EDGE, side: "below" as const };
+  return { x: clampX(t.x), y: belowRoom > t.y ? vh - h - EDGE : EDGE, side: "below" as const, slot: -1 };
 }
 
 export default function Tutorial({
@@ -72,11 +76,12 @@ export default function Tutorial({
 }: {
   worldId: string | null;
   startAt: number;
-  go: (p: Page) => void;
+  go: (p: Page | { name: "lobby" }) => void;
   onSelectWorld: (id: string) => void;
   onClose: (finished: boolean) => void;
 }) {
   const [idx, setIdx] = useState(Math.min(Math.max(0, startAt), TOUR.length - 1));
+  const lowPower = useLowPower();
   const [rect, setRect] = useState<Rect | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -95,6 +100,7 @@ export default function Tutorial({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  const slotRef = useRef<{ step: number; slot: number }>({ step: -1, slot: -1 });
   const envRef = useRef({ worldId });
   envRef.current = { worldId };
 
@@ -133,8 +139,13 @@ export default function Tutorial({
 
   // 进入一步：切到对应页面。
   useEffect(() => {
-    if (step.page) go({ name: step.page } as Page);
+    if (step.page) go({ name: step.page } as Page | { name: "lobby" });
     void api.setUiPref("ui.tutorial", String(idx)).catch(() => {});
+    // 告诉页面这一步要讲哪里（游戏面板收着时要先展开）。页面切换后再发一次。
+    const say = () => window.dispatchEvent(new CustomEvent("tour-step", { detail: step.target ?? [] }));
+    say();
+    const t = window.setTimeout(say, 500);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx]);
 
@@ -203,18 +214,32 @@ export default function Tutorial({
     }
   }
 
-  const pos = placeGuide(rect, guideSize, window.innerWidth, window.innerHeight);
+  // 没有要指的东西时：大厅里有大玻璃球，就由它来说话（气泡放在它旁边，不再另放一个小球、不压暗屏幕）。
+  const speakerEl = !rect ? document.querySelector<HTMLElement>(".lobby-center .orb-canvas, .lobby-center .orb-static") : null;
+  const sr = speakerEl?.getBoundingClientRect();
+  const speaker = sr && sr.width > 0 ? { x: sr.left, y: sr.top, w: sr.width, h: sr.height } : null;
+  const pos = placeGuide(rect ?? speaker, guideSize, window.innerWidth, window.innerHeight, slotRef.current.step === idx ? slotRef.current.slot : undefined);
+  slotRef.current = { step: idx, slot: pos.slot };
   const pad = 6;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  // 遮罩：整屏 SVG，挖一个圆角洞露出目标（之前用 9999px 的阴影，WebView2 里会被裁成只暗一半，逐帧动画也会卡顿抖动）。
+  const hole = rect ? { x: rect.x - pad, y: rect.y - pad, w: rect.w + pad * 2, h: rect.h + pad * 2 } : null;
+  const r = 12;
+  const holePath = hole
+    ? `M${hole.x + r},${hole.y}h${hole.w - 2 * r}a${r},${r} 0 0 1 ${r},${r}v${hole.h - 2 * r}a${r},${r} 0 0 1 -${r},${r}h-${hole.w - 2 * r}a${r},${r} 0 0 1 -${r},-${r}v-${hole.h - 2 * r}a${r},${r} 0 0 1 ${r},-${r}z`
+    : "";
   return (
     <div className="tour" role="dialog" aria-label="游戏教程">
-      {rect ? (
-        <div className="tour-spot" style={{ transform: `translate(${rect.x - pad}px, ${rect.y - pad}px)`, width: rect.w + pad * 2, height: rect.h + pad * 2 }} />
-      ) : (
-        <div className="tour-dim" />
+      {!speaker && (
+        <svg className={`tour-mask${hole ? "" : " soft"}`} width={vw} height={vh} viewBox={`0 0 ${vw} ${vh}`} aria-hidden="true">
+          <path d={`M0,0H${vw}V${vh}H0Z${holePath}`} fillRule="evenodd" />
+        </svg>
       )}
-      <div ref={guideRef} className={`tour-guide side-${pos.side}`} style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
+      {hole && <div className="tour-ring" style={{ transform: `translate(${hole.x}px, ${hole.y}px)`, width: hole.w, height: hole.h }} />}
+      <div ref={guideRef} className={`tour-guide side-${pos.side}${speaker ? " no-orb" : ""}`} style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
         <div className="tour-orb" aria-hidden="true">
-          <span />
+          {lowPower ? <span /> : <OrbCanvas size={72} active={!!step.until} />}
         </div>
         <div className="tour-bubble" key={step.id}>
           <div className="tour-progress">

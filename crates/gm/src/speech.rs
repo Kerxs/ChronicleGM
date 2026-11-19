@@ -5,13 +5,16 @@
 //! 改由对应 NPC 亲自回答。只处理能明确归属到某个在场 NPC 的直接引语。
 
 /// 引号对（中文弯引号、直角引号、英文直引号、全角直引号）。
-const QUOTES: [(char, char); 4] = [('“', '”'), ('「', '」'), ('"', '"'), ('＂', '＂')];
+const QUOTES: [(char, char); 6] = [('“', '”'), ('「', '」'), ('"', '"'), ('＂', '＂'), ('‘', '’'), ('\'', '\'')];
 
 /// 能作为 `open` 的右引号的字符：模型常混用弯引号与直引号（如 “……" 或 "……”）。
 fn closes(open: char, c: char) -> bool {
     match open {
-        '“' | '"' | '＂' => matches!(c, '”' | '"' | '＂'),
+        // 实测模型会混用：“……’、‘……”。
+        '“' | '"' | '＂' => matches!(c, '”' | '"' | '＂' | '’'),
         '「' => c == '」',
+        // 实测模型也用弯单引号 ‘……’ 和英文单引号 '……' 写台词。
+        '‘' | '\'' => matches!(c, '’' | '\'' | '”'),
         _ => false,
     }
 }
@@ -49,6 +52,35 @@ pub struct Extracted {
 
 /// `names`：在场 NPC 的名字。
 pub fn extract_ventriloquism(narration: &str, names: &[&str]) -> Extracted {
+    // 剧本格式的台词：一行以"人物名：……"开头（实测："苏桦：（不耐烦地瞥了一眼）喂，船匠……"）。
+    let mut speakers: Vec<usize> = vec![];
+    let mut kept: Vec<&str> = vec![];
+    for line in narration.lines() {
+        let t = line.trim_start();
+        let who = names.iter().position(|n| {
+            !n.is_empty() && t.strip_prefix(*n).is_some_and(|r| r.starts_with('：') || r.starts_with(':'))
+        });
+        match who {
+            Some(idx) => {
+                if !speakers.contains(&idx) {
+                    speakers.push(idx);
+                }
+            }
+            None => kept.push(line),
+        }
+    }
+    let rest = kept.join("\n");
+    let mut q = extract_quotes(&rest, names);
+    for s in std::mem::take(&mut q.speakers) {
+        if !speakers.contains(&s) {
+            speakers.push(s);
+        }
+    }
+    Extracted { narration: q.narration, speakers }
+}
+
+/// 引号里的台词（见 [`extract_ventriloquism`]）。
+fn extract_quotes(narration: &str, names: &[&str]) -> Extracted {
     let chars: Vec<char> = narration.chars().collect();
     let alias_list: Vec<Vec<String>> = names.iter().map(|n| aliases(n)).collect();
     let mut remove: Vec<(usize, usize)> = vec![];
@@ -72,7 +104,9 @@ pub fn extract_ventriloquism(narration: &str, names: &[&str]) -> Extracted {
         while e < chars.len() && e - q_end <= 15 && !BOUNDARY.contains(&chars[e]) && !QUOTES.iter().any(|(o, _)| *o == chars[e]) {
             e += 1;
         }
-        let after_end = if e < chars.len() && BOUNDARY.contains(&chars[e]) { e + 1 } else { e };
+        // 15 个字内没有句子边界：只切到引号为止，不从句子中间切断（实测留下了"翼翼地检查着……"这样的半句）。
+        let at_boundary = e >= chars.len() || BOUNDARY.contains(&chars[e]);
+        let after_end = if e < chars.len() && BOUNDARY.contains(&chars[e]) { e + 1 } else if at_boundary { e } else { q_end + 1 };
         let before: String = chars[s..q_start].iter().collect();
         let after: String = chars[q_end + 1..e].iter().collect();
         let owner_of = |t: &str| alias_list.iter().position(|al| al.iter().any(|a| t.contains(a.as_str())));
@@ -118,7 +152,39 @@ pub fn extract_ventriloquism(narration: &str, names: &[&str]) -> Extracted {
     }
     out.extend(&chars[last.min(chars.len())..]);
     let cleaned = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
-    Extracted { narration: cleaned, speakers }
+    Extracted { narration: drop_orphan_quote_tails(&cleaned), speakers }
+}
+
+/// 删掉孤立的半截引语：一句话以右引号结束、前面却没有左引号（实测："……缝隙。潮洞里的那位……不喜欢火光。’"）。
+fn drop_orphan_quote_tails(text: &str) -> String {
+    const END: [char; 4] = ['。', '！', '？', '\n'];
+    let mut out: Vec<char> = vec![];
+    let mut open = 0i32;
+    // 每一句的开头位置（最后一个是当前这句）。
+    let mut starts: Vec<usize> = vec![0];
+    for c in text.chars() {
+        match c {
+            '“' | '‘' | '「' => open += 1,
+            '”' | '’' | '」' if open == 0 => {
+                // 孤立的右引号：连同它所属的那一句一起删掉（引号紧跟在句号后面时，属于刚结束的那一句）。
+                let ended = out.last().is_some_and(|x| END.contains(x));
+                if ended && starts.len() >= 2 {
+                    starts.pop();
+                }
+                let s = *starts.last().unwrap_or(&0);
+                out.truncate(s);
+                continue;
+            }
+            '”' | '’' | '」' => open -= 1,
+            _ => {}
+        }
+        out.push(c);
+        if END.contains(&c) && open == 0 {
+            starts.push(out.len());
+        }
+    }
+    let s: String = out.into_iter().collect();
+    s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 #[cfg(test)]
@@ -173,6 +239,37 @@ mod tests {
         let r = extract_ventriloquism(n, &["村长老格", "铁匠阿岩"]);
         assert_eq!(r.speakers, vec![1]);
         assert!(!r.narration.contains("是你啊"), "{}", r.narration);
+    }
+
+    #[test]
+    fn single_quotes_from_real_turn() {
+        let n = "镇长苏桦猛地放下手中的海图，眼神里闪过一丝惊慌，声音压得极低：‘大约一个小时前！当时我正忙着核对出航船只的清单。’";
+        let e = extract_ventriloquism(n, &["苏桦"]);
+        assert_eq!(e.speakers, vec![0]);
+        assert!(!e.narration.contains("大约一个小时前"), "{}", e.narration);
+        let n2 = "莫伦的声音从灯塔脚下传来：'别在那儿站着发呆！'你握紧了铜锤。";
+        let e2 = extract_ventriloquism(n2, &["莫伦"]);
+        assert_eq!(e2.speakers, vec![0]);
+        assert!(!e2.narration.contains("发呆"));
+    }
+
+    #[test]
+    fn script_style_lines_are_npc_speech() {
+        let n = "片刻之后，苏桦的声音从旁边传来。\n苏桦：（不耐烦地瞥了一眼）喂，船匠，别在这儿装睡。\n阿澜也凑了过来。\n阿澜：灯塔熄了也是常事。";
+        let e = extract_ventriloquism(n, &["苏桦", "阿澜"]);
+        assert_eq!(e.speakers, vec![0, 1]);
+        assert!(!e.narration.contains("装睡") && !e.narration.contains("常事"), "{}", e.narration);
+        assert!(e.narration.contains("凑了过来"));
+    }
+
+    #[test]
+    fn cut_never_splits_a_sentence_and_orphan_tails_are_dropped() {
+        let n = "莫伦在一旁来回踱步，时不时瞥你一眼：“别磨蹭了！”他手里拿着一块木板，小心翼翼地检查着上面的裂缝和每一个钉眼。";
+        let e = extract_ventriloquism(n, &["莫伦"]);
+        assert_eq!(e.speakers, vec![0]);
+        assert!(!e.narration.starts_with("翼翼") && !e.narration.contains("磨蹭"), "{}", e.narration);
+        let o = drop_orphan_quote_tails("你躲在货箱后，耳朵紧贴着木板缝隙。潮洞里的那位……不喜欢火光。’");
+        assert_eq!(o, "你躲在货箱后，耳朵紧贴着木板缝隙。");
     }
 
     #[test]

@@ -221,7 +221,7 @@ export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onCh
           <strong>{con.scene.title || "（自由沙盒）"}</strong> <span className="hint">{con.scene.kind}</span>　地点：{con.scene.location || "—"}
         </div>
         {con.scene.player_text && <div>{con.scene.player_text}</div>}
-        {con.scene.gm_text && <div className="gm-text">主持人信息：{con.scene.gm_text}</div>}
+        {con.scene.gm_text && <div className="gm-text">GM 笔记：{con.scene.gm_text}</div>}
         <div className="hint">在场：{con.scene.present.join("、") || "无"}</div>
         {con.scene.edges.length > 0 && (
           <table className="grid-table">

@@ -199,7 +199,7 @@ export default function ReviewPage({ ctx, initialId }: { ctx: Ctx; initialId?: s
                       )}
                     </div>
                     {d.player && <div className="player">{d.player}</div>}
-                    {d.gm && <div className="gm">主持人：{d.gm}</div>}
+                    {d.gm && <div className="gm">GM 笔记：{d.gm}</div>}
                     {iss.length > 0 && (
                       <ul className="issues">
                         {iss.map((x, k) => (

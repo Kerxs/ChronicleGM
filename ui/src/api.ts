@@ -36,6 +36,8 @@ import type { ImportResult } from "./bindings/ImportResult";
 import type { CampaignCheck } from "./bindings/CampaignCheck";
 import type { Bond } from "./bindings/Bond";
 import type { Board } from "./bindings/Board";
+import type { GameState } from "./bindings/GameState";
+import type { CustomAction } from "./bindings/CustomAction";
 import type { HypothesisInput } from "./bindings/HypothesisInput";
 import type { QuestView } from "./bindings/QuestView";
 import type { NpcStatus } from "./bindings/NpcStatus";
@@ -157,6 +159,36 @@ export interface ScriptView {
   script: Script;
   items: ScriptItem[];
   cast: CastView[];
+}
+
+// ===== 内置模型管理的类型（对应 crates/models） =====
+export interface LlmHardware { os: string; arch: string; cpu_threads: number; ram_mb: number; nvidia: { name: string; driver: string; vram_mb: number; vram_free_mb: number }[]; cuda: [number, number] | null; vulkan: boolean }
+export type LlmBackend = { kind: "cpu" } | { kind: "cuda"; major: number; minor: number } | { kind: "vulkan" } | { kind: "metal" };
+export interface LlmInstalled { tag: string; backend: LlmBackend; dir: string; installed_at: number; version_line: string }
+export interface LlmPlan { tag: string; backend: LlmBackend; assets: { name: string; size: number }[]; reason: string }
+export interface LlmRuntimeView {
+  state: { current: LlmInstalled | null; previous: LlmInstalled | null; auto_check: boolean; last_check: number; latest_seen: string | null; prefer: string | null };
+  health: { state: "not_installed" } | { state: "ok"; exe: string } | { state: "broken"; reason: string };
+  install: Record<string, unknown> | null;
+  root: string;
+}
+export interface LlmModelSummary { source: string; id: string; author: string; downloads: number; likes: number; updated: string; license: string | null; tags: string[]; gated: boolean }
+export interface LlmRepoFile { path: string; size: number; sha256: string | null; quant: string | null; mmproj: boolean; split: [number, number] | null; url: string }
+export interface LlmModelDetail { summary: LlmModelSummary; files: LlmRepoFile[]; card: string }
+export interface LlmTaskFile { path: string; url: string; size: number; sha256: string | null; done?: boolean; mmproj: boolean }
+export type LlmTaskState = { state: "queued" } | { state: "running" } | { state: "paused" } | { state: "retrying"; attempt: number; error: string } | { state: "failed"; error: string } | { state: "done" } | { state: "cancelled" };
+export interface LlmTask { id: string; source: string; repo: string; files: LlmTaskFile[]; state: LlmTaskState; created_at: number; finished_at: number | null; outputs: string[]; downloaded: number; speed: number; retries: number }
+export interface LlmModelEntry { id: string; name: string; path: string; size: number; source: string; repo: string; quant: string | null; arch: string | null; context_length: number | null; size_label: string | null; mmproj: string | null; added_at: number }
+export interface LlmOverrides { ctx?: number; gpu_layers?: number | null; threads?: number | null; cache_type?: string | null; flash_attn?: boolean | null; vram_reserve_mb?: number | null }
+export interface LlmTuned { args: string[]; gpu_layers: number; total_layers: number; ctx: number; threads: number; batch: number; ubatch: number; cache_type: string; flash_attn: boolean; est_vram_mb: number; est_ram_mb: number; ok: boolean; problems: string[]; notes: string[] }
+export interface LlmServeView {
+  config: { model_id: string | null; port: number };
+  model: LlmModelEntry | null;
+  process: { state: unknown; pid: number | null; started_at: number | null; last_load_ms: number | null; log_file: string } | null;
+  runtime: LlmInstalled | null;
+  stats: { healthy: boolean; prompt_tps: number | null; gen_tps: number | null; ctx: number | null; ctx_used: number | null; busy: boolean };
+  resources: { cpu_percent: number; ram_total_mb: number; ram_available_mb: number; models: { name: string; mem_mb: number; private_mb: number; cpu_percent: number }[]; gpus: { name: string; util_percent: number; mem_used_mb: number; mem_total_mb: number }[] } | null;
+  tuned: LlmTuned | null;
 }
 
 export interface ProviderView {
@@ -405,6 +437,24 @@ export const api = {
   /** 剧透模式（全局，默认关闭）。 */
   spoilerMode: () => call<boolean>("spoiler_mode"),
   setSpoilerMode: (on: boolean) => call<null>("set_spoiler_mode", { on }),
+  /** 掷骰方式（全局）：auto 程序掷；click 点击掷骰；physical 掷实体骰子后输入点数。 */
+  diceMode: () => call<"auto" | "click" | "physical">("dice_mode"),
+  setDiceMode: (mode: "auto" | "click" | "physical") => call<null>("set_dice_mode", { mode }),
+  /** 游戏状态机（大厅 / 初始化 / 开场 / 探索 / 等待掷骰 / 战斗 / 战后 / 结局）。 */
+  gameState: (worldId: string, campaignId: string) => call<GameState>("game_state", { worldId, campaignId }),
+  /** 世界初始化 7 步（后台执行；进度通过 game-state 事件推送）。 */
+  gameInit: (worldId: string, campaignId: string) => call<GameState>("game_init", { worldId, campaignId }),
+  gameInitCancel: (campaignId: string) => call<boolean>("game_init_cancel", { campaignId }),
+  /** 战斗描述（规则引擎结算后由 AI 写；异步，不阻塞操作）。 */
+  gmCombatNarrate: (worldId: string, campaignId: string, lines: string[]) => call<string>("gm_combat_narrate", { worldId, campaignId, lines }),
+  combatSkills: (worldId: string, campaignId: string) => call<CustomAction[]>("combat_skills", { worldId, campaignId }),
+  combatLast: (worldId: string, campaignId: string) => call<Combat | null>("combat_last", { worldId, campaignId }),
+  /** 战斗转场播放完：进入行动。 */
+  gameCombatReady: (worldId: string, campaignId: string) => call<GameState>("game_combat_ready", { worldId, campaignId }),
+  /** 战后结算看完：回到探索。 */
+  gameResumeExploring: (worldId: string, campaignId: string) => call<GameState>("game_resume_exploring", { worldId, campaignId }),
+  /** 把亲手掷出的点数交回正在等待的回合（null = 交给程序掷）。 */
+  gmDiceAnswer: (campaignId: string, faces: number[][] | null) => call<boolean>("gm_dice_answer", { campaignId, faces }),
   searchSettings: () => call<{ config: SearchConfig; has_key: string[] }>("search_settings"),
   /** keys：要保存的 Key（空字符串表示删除）。 */
   saveSearchSettings: (config: SearchConfig, keys: Record<string, string>) => call<null>("save_search_settings", { config, keys }),
@@ -590,6 +640,48 @@ export const api = {
   listRoutes: () => call<[string, string][]>("list_routes"),
   setRoute: (task: string, providerId: string | null) => call<void>("set_route", { task, providerId }),
   providerStats: () => call<ProviderStats[]>("provider_stats"),
+
+  // ===== 内置 llama.cpp 与模型管理 =====
+  llmHw: (refresh = false) => call<LlmHardware>("llm_hw", { refresh }),
+  llmRuntimeStatus: (deep = false) => call<LlmRuntimeView>("llm_runtime_status", { deep }),
+  llmRuntimeCheck: () => call<{ tag: string; published_at: string; newer: boolean; plan: LlmPlan | null }>("llm_runtime_check"),
+  llmRuntimeInstall: (prefer: string | null) => call<void>("llm_runtime_install", { prefer }),
+  llmRuntimeCancel: () => call<void>("llm_runtime_cancel"),
+  llmRuntimeRollback: () => call<LlmInstalled>("llm_runtime_rollback"),
+  llmRuntimeSettings: (autoCheck: boolean, prefer: string | null) => call<void>("llm_runtime_settings", { autoCheck, prefer }),
+  llmRepoSearch: (source: string, query: string) => call<LlmModelSummary[]>("llm_repo_search", { source, query }),
+  llmRepoDetails: (source: string, id: string) => call<LlmModelDetail>("llm_repo_details", { source, id }),
+  llmRepoToken: (source: string, token: string | null) => call<boolean>("llm_repo_token", { source, token }),
+  llmRepoTokenStatus: () => call<Record<string, boolean>>("llm_repo_token_status"),
+  llmDownloadAdd: (source: string, repo: string, files: LlmTaskFile[]) => call<string>("llm_download_add", { source, repo, files }),
+  llmDownloadDefault: () => call<string>("llm_download_default"),
+  llmDownloads: () => call<LlmTask[]>("llm_downloads"),
+  llmDownloadOp: (id: string, op: "pause" | "resume" | "cancel" | "remove") => call<void>("llm_download_op", { id, op }),
+  llmDownloadSettings: (maxConcurrent: number) => call<void>("llm_download_settings", { maxConcurrent }),
+  llmLibrary: () => call<{ data: { models_dir: string; default: string | null; models: LlmModelEntry[] }; in_use: string | null }>("llm_library"),
+  llmLibraryAdd: (path: string, mmproj: string | null) => call<LlmModelEntry>("llm_library_add", { path, mmproj }),
+  llmLibraryRemove: (id: string, deleteFiles: boolean) => call<string[]>("llm_library_remove", { id, deleteFiles }),
+  llmLibraryDefault: (id: string) => call<void>("llm_library_default", { id }),
+  llmLibraryMmproj: (id: string, path: string | null) => call<void>("llm_library_mmproj", { id, path }),
+  llmLibraryInfo: (id: string) => call<[Record<string, unknown>, { state: string; [k: string]: unknown }]>("llm_library_info", { id }),
+  llmLibraryMove: (dir: string) => call<number>("llm_library_move", { dir }),
+  llmTune: (modelId: string, overrides: LlmOverrides | null) => call<LlmTuned>("llm_tune", { modelId, overrides }),
+  llmServeStart: (modelId: string, overrides: LlmOverrides | null) => call<LlmTuned>("llm_serve_start", { modelId, overrides }),
+  llmServeStop: () => call<void>("llm_serve_stop"),
+  llmServeStatus: () => call<LlmServeView>("llm_serve_status"),
+
+  // ===== 联机（2.0）=====
+  /** 本机当房主：内嵌启动联机服务端并开房；给了模型服务就同时启动 GM Agent。 */
+  mpHostStart: (input: { worldId: string | null; lan: boolean; port: number; roomName: string; hostName: string; maxPlayers: number; providerId: string | null }) =>
+    call<{ port: number; addresses: string[]; room_id: string; join_code: string; host_token: string; agent_key: string }>("mp_host_start", { input }),
+  mpHostStop: () => call<void>("mp_host_stop"),
+  mpStatus: () => call<{ hosting: boolean; port: number | null; agent_room: string | null; agent_status: string }>("mp_status"),
+  /** 在云服务器上开房（需要管理员令牌）。 */
+  mpCloudCreateRoom: (input: { url: string; adminToken: string; roomName: string; hostName: string; maxPlayers: number; gmMode: string }) =>
+    call<{ room_id: string; join_code: string; host_player: string; host_token: string; agent_key: string }>("mp_cloud_create_room", { input }),
+  /** 启动 GM Agent：用本机模型替联机服务端主持（主动连出，模型端口不暴露）。 */
+  mpAgentStart: (input: { server: string; room: string; agentKey: string; providerId: string }) => call<void>("mp_agent_start", { input }),
+  mpAgentStop: () => call<void>("mp_agent_stop"),
 };
 
 export function formatTime(ms: number | null | undefined): string {

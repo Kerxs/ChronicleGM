@@ -2,7 +2,7 @@
 
 export type CombatAction = { 
 /**
- * attack / move / defend / use_item / custom / flee / end_turn
+ * attack / move / defend / dodge / skill / use_item / interact / custom / flee / end_turn（interact 的 target 填物件 ID 或名字；skill 的 custom 填技能名）
  */
 kind: string, 
 /**

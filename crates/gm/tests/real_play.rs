@@ -45,6 +45,7 @@ fn real_play_session() {
         context_budget: 8000,
         stream: false,
         web_search: None,
+        dice: None,
     };
 
     // 小剧本：村长委托调查遗迹。

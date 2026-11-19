@@ -1,0 +1,67 @@
+/* =====================================================================
+   全局动画：平移进场、错开出现、线性进度、面板滑入。
+   统一用两条曲线：--ease-out-soft（减速平移，不回弹）和 linear（进度、循环）。
+   系统设置「减少动态效果」或打开低性能模式时全部关掉。
+   ===================================================================== */
+:root { --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1); --dur-in: 0.42s; }
+
+@keyframes a-up { from { opacity: 0; transform: translateY(14px); } }
+@keyframes a-left { from { opacity: 0; transform: translateX(-18px); } }
+@keyframes a-right { from { opacity: 0; transform: translateX(18px); } }
+@keyframes a-scale { from { opacity: 0; transform: scale(0.97); } }
+@keyframes a-shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+@keyframes a-line { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+/* 低性能模式下不加这些动画（只包住新加的进场动画，不影响骰子、玻璃球等靠动画结束事件推进的组件） */
+:root:not(.low-power) {
+  /* 大厅：左栏从左、右栏从右、中间的玻璃球放大进场 */
+  .lobby-left { animation: a-left var(--dur-in) var(--ease-out-soft) both; }
+  .lobby-right { animation: a-right var(--dur-in) var(--ease-out-soft) 0.06s both; }
+  .lobby-center { animation: a-scale 0.6s var(--ease-out-soft) 0.04s both; }
+  .lobby-script { animation: a-left 0.38s var(--ease-out-soft) both; }
+  .lobby-scripts > :nth-child(2) { animation-delay: 0.04s; }
+  .lobby-scripts > :nth-child(3) { animation-delay: 0.08s; }
+  .lobby-scripts > :nth-child(4) { animation-delay: 0.12s; }
+  .lobby-scripts > :nth-child(n + 5) { animation-delay: 0.16s; }
+  .lobby-card { animation: a-up 0.38s var(--ease-out-soft) both; }
+  .lobby-tabs button { transition: background 0.25s var(--ease-out-soft), color 0.2s, box-shadow 0.25s; }
+  .lobby-nav-btn { animation: a-up 0.4s var(--ease-out-soft) 0.12s both; }
+  .lobby-nav-btn + .lobby-nav-btn { animation-delay: 0.17s; }
+
+  /* 游戏空间：剧情框从左、GM 框从右滑入；新行平移出现 */
+  .play-layout > .transcript { animation: a-left 0.45s var(--ease-out-soft) both; }
+  .table-body > .gm-col { animation: a-right 0.5s var(--ease-out-soft) 0.05s both; }
+  .bubble-row.enter.from-player { animation: a-right 0.36s var(--ease-out-soft) both; }
+  .bubble-row.enter.from-npc { animation: a-left 0.36s var(--ease-out-soft) both; }
+  .gm-log .story-card.enter { animation: a-up 0.42s var(--ease-out-soft) both; }
+  .choices .choice { animation: a-up 0.34s var(--ease-out-soft) both; }
+  .panel-fab { animation: a-up 0.4s var(--ease-out-soft) 0.2s both; }
+  .detail.side-pop.open > * { animation: a-up 0.32s var(--ease-out-soft) both; }
+  .play-drawer .card { animation: a-right 0.34s var(--ease-out-soft) both; }
+
+  /* 设置、本地模型、联机：卡片错开平移进场 */
+  .gs-card, .lm-card, .settings > .card, .mp-setup .lobby-card { animation: a-up var(--dur-in) var(--ease-out-soft) both; }
+  .gs-page > :nth-child(2), .lm-grid > :nth-child(2), .settings > .card:nth-of-type(2) { animation-delay: 0.05s; }
+  .gs-page > :nth-child(3), .settings > .card:nth-of-type(3) { animation-delay: 0.1s; }
+  .gs-page > :nth-child(4), .settings > .card:nth-of-type(4) { animation-delay: 0.15s; }
+  .gs-page > :nth-child(n + 5), .settings > .card:nth-of-type(n + 5) { animation-delay: 0.2s; }
+  .lm-task, .lm-result, .lm-table tbody tr { animation: a-up 0.32s var(--ease-out-soft) both; }
+  .mp-line { animation: a-up 0.3s var(--ease-out-soft) both; }
+
+  /* 线性动画：进度条匀速推进、等待时的流光、分段控件滑块 */
+  .lm-bar i { transition: width 0.5s linear; }
+  .lm-task.st-running .lm-bar i, .lm-task.st-retrying .lm-bar i {
+    background-image: linear-gradient(90deg, var(--accent) 0%, #7ab8ff 50%, var(--accent) 100%); background-size: 200% 100%; animation: a-shimmer 1.6s linear infinite;
+  }
+  .line.who-system:last-of-type { background-image: linear-gradient(90deg, transparent, rgba(0, 122, 255, 0.08), transparent); background-size: 200% 100%; animation: a-shimmer 2.2s linear infinite; }
+  .tour-progress .now { transform-origin: left; animation: a-line 0.5s linear both; }
+  .segmented .seg-thumb { transition: transform 0.35s var(--ease-out-soft), width 0.35s var(--ease-out-soft); }
+
+  /* 按钮与可点击卡片：悬停轻微上浮，按下轻微缩小 */
+  button:not(:disabled) { transition: transform 0.2s var(--ease-out-soft), background-color 0.2s, box-shadow 0.2s, color 0.2s, border-color 0.2s; }
+  button.primary:not(:disabled):active, .lobby-script:active, .lm-result:active { transform: scale(0.97); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001s !important; animation-iteration-count: 1 !important; transition-duration: 0.001s !important; }
+}

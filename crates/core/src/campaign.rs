@@ -408,21 +408,151 @@ fn next_stream(conn: &Connection, campaign_id: &str) -> Result<(i64, i64)> {
     Ok((seed, counter))
 }
 
+/// 一次掷骰的完整记录（界面用 3D 骰子逐个演出，日志里也能查）。所有掷骰都经过 [`roll_with`]，
+/// 由它生成基础记录；检定、攻击再用 [`annotate_last_roll`] 补上加值明细、目标和结果。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct DiceRecord {
+    /// 用途（掷骰原因），例如"老秦 攻击 野狗""察觉 检定：搜查"。
+    pub purpose: String,
+    /// attack / damage / initiative / check / dodge / morale / effect / other
+    pub category: String,
+    pub expr: String,
+    /// 每颗骰子的点数（按骰子组展开）。
+    pub dice: Vec<i64>,
+    /// 每颗骰子的面数（与 dice 一一对应）。
+    pub sides: Vec<u32>,
+    /// 计入总和的骰子下标（取高 / 取低时不是全部）。
+    pub kept: Vec<usize>,
+    /// 骰面合计（含表达式里的常数）。
+    pub natural: i64,
+    /// 加值明细：（来源，数值），例如（"属性 敏捷"，2）、（"掩体"，-2）。
+    #[serde(default)]
+    pub parts: Vec<(String, i64)>,
+    pub total: i64,
+    /// 要达到的数值（难度、防御）；没有时为空。
+    #[serde(default)]
+    pub target: Option<i64>,
+    /// 结果说明，例如"命中""没有命中""成功"。
+    #[serde(default)]
+    pub outcome: String,
+    /// 战役种子的流号（同一流号可复现）。
+    pub stream: i64,
+    /// 玩家亲手掷的。
+    #[serde(default)]
+    pub manual: bool,
+}
+
+thread_local! {
+    /// 正在收集的掷骰记录（只有在 [`capture_rolls`] 里才收集）。
+    static ROLLS: std::cell::RefCell<Option<Vec<DiceRecord>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 执行 `f`，返回它期间所有掷骰的记录（可嵌套：内层收集完会并入外层）。
+pub fn capture_rolls<R>(f: impl FnOnce() -> R) -> (R, Vec<DiceRecord>) {
+    let outer = ROLLS.with(|r| r.borrow_mut().replace(vec![]));
+    let res = f();
+    let got = ROLLS.with(|r| {
+        let mut b = r.borrow_mut();
+        let got = b.take().unwrap_or_default();
+        if let Some(mut o) = outer {
+            o.extend(got.iter().cloned());
+            *b = Some(o);
+        }
+        got
+    });
+    (res, got)
+}
+
+/// 给最近一次掷骰补上分类、加值明细、目标与结果（不在收集中时什么都不做）。
+pub fn annotate_last_roll(category: &str, parts: Vec<(String, i64)>, total: i64, target: Option<i64>, outcome: &str) {
+    ROLLS.with(|r| {
+        if let Some(v) = r.borrow_mut().as_mut()
+            && let Some(last) = v.last_mut()
+        {
+            last.category = category.into();
+            last.parts = parts;
+            last.total = total;
+            last.target = target;
+            last.outcome = outcome.into();
+        }
+    });
+}
+
+fn guess_category(reason: &str) -> &'static str {
+    if reason.contains("伤害") {
+        "damage"
+    } else if reason.contains("先攻") {
+        "initiative"
+    } else if reason.contains("攻击") {
+        "attack"
+    } else if reason.contains("检定") {
+        "check"
+    } else if reason.contains("闪避") {
+        "dodge"
+    } else if reason.contains("士气") {
+        "morale"
+    } else {
+        "other"
+    }
+}
+
 /// 程序掷骰：使用战役种子与递增流号，结果写入事件日志，可复现。
 pub fn roll(world: &mut World, campaign_id: &str, expr: &str, reason: &str) -> Result<RollResult> {
+    roll_with(world, campaign_id, expr, reason, None)
+}
+
+/// 同 [`roll`]；`manual` 给出玩家亲手掷出的点数（实体骰子或界面上掷的），按顺序填进每颗骰子，
+/// 超出骰面的点数会被夹到 1..=面数。仍然消耗一个流号（事件计数不变），日志里记 `manual: true`。
+pub fn roll_with(world: &mut World, campaign_id: &str, expr: &str, reason: &str, manual: Option<&[u32]>) -> Result<RollResult> {
     let e = DiceExpr::parse(expr)?;
     let tx = world.conn.transaction()?;
     ensure_active(&tx, campaign_id)?;
     let c = get_campaign(&tx, campaign_id)?;
     let (seed, stream) = next_stream(&tx, campaign_id)?;
-    let r = e.roll(&mut SeededDice::new(seed as u64, stream as u64));
+    let r = match manual {
+        Some(faces) => e.roll(&mut chronicle_rules::dice::FixedDice::new(faces.to_vec())),
+        None => e.roll(&mut SeededDice::new(seed as u64, stream as u64)),
+    };
     append_event(
         &tx,
         campaign_id,
         c.turn,
         "roll",
-        &serde_json::json!({"reason": reason, "stream": stream, "result": r}),
+        &serde_json::json!({"reason": reason, "stream": stream, "result": r, "manual": manual.is_some()}),
     )?;
+    ROLLS.with(|cell| {
+        if let Some(v) = cell.borrow_mut().as_mut() {
+            let mut dice = vec![];
+            let mut sides = vec![];
+            let mut kept = vec![];
+            for g in &r.groups {
+                let base = dice.len();
+                for (i, x) in g.rolls.iter().enumerate() {
+                    dice.push(*x as i64);
+                    sides.push(g.sides);
+                    if g.kept.contains(&i) {
+                        kept.push(base + i);
+                    }
+                }
+            }
+            v.push(DiceRecord {
+                purpose: reason.chars().take(60).collect(),
+                category: guess_category(reason).into(),
+                expr: expr.to_string(),
+                dice,
+                sides,
+                kept,
+                natural: r.total,
+                parts: vec![],
+                total: r.total,
+                target: None,
+                outcome: String::new(),
+                stream,
+                manual: manual.is_some(),
+            });
+        }
+    });
     tx.commit()?;
     Ok(r)
 }
@@ -770,6 +900,11 @@ pub fn campaign_state(conn: &Connection, campaign_id: &str) -> Result<CampaignSt
 pub fn record(conn: &Connection, campaign_id: &str, kind: &str, payload: &Value) -> Result<i64> {
     let c = get_campaign(conn, campaign_id)?;
     append_event(conn, campaign_id, c.turn, kind, payload)
+}
+
+/// 战役最后一个事件的序号（没有事件时为 0）。
+pub fn last_seq(conn: &Connection, campaign_id: &str) -> Result<i64> {
+    Ok(conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM event_log WHERE campaign_id = ?1", params![campaign_id], |r| r.get(0))?)
 }
 
 /// 没有剧情跳转的回合结束时调用：回合数 +1。

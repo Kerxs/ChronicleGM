@@ -4,8 +4,10 @@
 //! NPC 只知道自己应该知道的事。
 
 pub mod ask;
+pub mod combat_narrate;
 pub mod compress;
 pub mod context;
+pub mod init;
 pub mod director;
 pub mod leak;
 pub mod npcday;
@@ -17,7 +19,7 @@ pub mod speech;
 pub mod turn;
 pub mod validate;
 
-pub use ask::{GmOptions, WebSearch};
+pub use ask::{GmOptions, ManualDice, WebSearch};
 pub use turn::{Engine, OPENING, TurnResult, ensure_welcome, opening_prompt, run_turn, run_turn_with_stages, summarize};
 
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +32,9 @@ pub enum GmError {
     Llm(#[from] chronicle_llm::LlmError),
     #[error("输入有误：{0}")]
     Input(String),
+    /// 规则不允许这个行动（例如倒地时只能休息）：只显示原因，不记录回合。
+    #[error("{0}")]
+    Blocked(String),
     #[error("模型输出无法使用：{0}")]
     Output(String),
     #[error("已取消")]

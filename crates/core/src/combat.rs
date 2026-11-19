@@ -58,6 +58,15 @@ pub struct Combatant {
     /// 首领：首领还在战斗时无法逃跑。
     #[serde(default)]
     pub boss: bool,
+    /// 武器用的弹药名（空 = 不用弹药）；每次攻击从背包扣 1 发，没有弹药就打不响。
+    #[serde(default)]
+    pub ammo: String,
+    /// 速度：决定行动顺序（先攻 = 1d20 + 速度）与闪避检定。= 敏捷修正（敌人按等级）。
+    #[serde(default)]
+    pub speed: i64,
+    /// 正在闪避（到自己下一次行动前）：被攻击时掷闪避检定（1d20 + 速度）对抗攻击总值。
+    #[serde(default)]
+    pub dodging: bool,
 }
 
 impl Combatant {
@@ -98,6 +107,51 @@ pub struct Combat {
     /// 场地封锁等原因导致无法逃跑（空 = 可以尝试逃跑）。
     #[serde(default)]
     pub no_escape: String,
+    /// 战场上可以互动的物件（场景交互）。
+    #[serde(default)]
+    pub props: Vec<Prop>,
+}
+
+/// 战场物件：走到旁边（距离 ≤ 1）就能互动，效果由程序结算。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct Prop {
+    pub id: String,
+    pub name: String,
+    /// cover（躲到后面：防御 +2，两轮）/ fire（点燃：周围 2 格内的一个敌人受 1d6 伤害并灼烧）/ drop（推倒重物：旁边的敌人敏捷检定，失败倒地一轮）
+    pub kind: String,
+    pub x: i64,
+    pub y: i64,
+    /// 一次性的物件用掉了。
+    #[serde(default)]
+    pub used: bool,
+    pub desc: String,
+}
+
+/// 物件模板（按战役种子挑 1–3 个放到战场上）。
+const PROP_KINDS: [(&str, &str, &str); 3] = [
+    ("cover", "货箱", "躲到后面：防御 +2，持续两轮"),
+    ("fire", "油灯", "打翻点燃：周围 2 格内的一个敌人受到 1d6 伤害并灼烧"),
+    ("drop", "悬挂的重物", "割断绳子：旁边的敌人要过敏捷检定（难度 12），失败就倒地一轮"),
+];
+
+/// 所有人都会的技能（剧本规则里的自定义行动之外）。
+pub fn builtin_skills(r: &RuleSet) -> Vec<rpg::CustomAction> {
+    vec![
+        rpg::CustomAction { name: "瞄准".into(), ap: 1, kind: "status".into(), dice: String::new(), attr: String::new(), range: 0, status: Some(Status { name: "瞄准".into(), rounds: Some(2), modifier: 3, ..Default::default() }) },
+        rpg::CustomAction { name: "包扎".into(), ap: 2, kind: "heal".into(), dice: "1d4".into(), attr: rpg::role_attr(r, "insight"), range: 1, status: None },
+    ]
+}
+
+/// 战斗中可以用的技能：剧本规则里的自定义行动 + 通用技能（同名时以剧本为准）。
+pub fn skills(r: &RuleSet) -> Vec<rpg::CustomAction> {
+    let mut out = r.custom_actions.clone();
+    for s in builtin_skills(r) {
+        if !out.iter().any(|x| x.name == s.name) {
+            out.push(s);
+        }
+    }
+    out
 }
 
 impl Combat {
@@ -110,11 +164,21 @@ impl Combat {
     fn cur_idx(&self) -> usize {
         self.idx(&self.order[self.turn])
     }
+    /// 当前行动玩家（[`rpg::actor`]）的参战单位。
     fn player_idx(&self) -> Option<usize> {
-        self.units.iter().position(|u| u.actor.as_deref() == Some(PARTY))
+        let me = rpg::actor();
+        self.units.iter().position(|u| u.actor.as_deref() == Some(me.as_str()))
     }
+    /// 轮到某个玩家角色（单人就是玩家自己；联机时是任意一名玩家）。
     pub fn players_turn(&self) -> bool {
-        self.status == "active" && self.current().is_some_and(|u| u.actor.as_deref() == Some(PARTY))
+        self.status == "active" && self.current().is_some_and(|u| u.actor.as_deref().is_some_and(rpg::is_player_actor))
+    }
+    /// 现在轮到的玩家角色（联机时用来判断"是不是轮到你"）。
+    pub fn current_player(&self) -> Option<String> {
+        if self.status != "active" {
+            return None;
+        }
+        self.current().and_then(|u| u.actor.clone()).filter(|a| rpg::is_player_actor(a))
     }
     fn occupied(&self, x: i64, y: i64, except: usize) -> bool {
         self.obstacles.contains(&(x, y)) || self.units.iter().enumerate().any(|(i, u)| i != except && u.active() && u.x == x && u.y == y)
@@ -168,7 +232,7 @@ fn one() -> i64 {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct CombatAction {
-    /// attack / move / defend / use_item / custom / flee / end_turn
+    /// attack / move / defend / dodge / skill / use_item / interact / custom / flee / end_turn（interact 的 target 填物件 ID 或名字；skill 的 custom 填技能名）
     pub kind: String,
     /// 目标参战者（ID 或名字）。移动时可以填要靠近的目标。
     #[serde(default)]
@@ -189,6 +253,9 @@ pub struct CombatAction {
 pub struct CombatReport {
     pub lines: Vec<String>,
     pub combat: Combat,
+    /// 这一步里所有的掷骰（先攻、攻击、伤害、士气……），界面逐个演出。
+    #[serde(default)]
+    pub dice: Vec<campaign::DiceRecord>,
 }
 
 pub fn active(conn: &Connection, campaign_id: &str) -> Option<Combat> {
@@ -214,6 +281,9 @@ fn roll(world: &mut World, campaign_id: &str, expr: &str, reason: &str) -> Resul
 
 fn unit_from_sheet(conn: &Connection, campaign_id: &str, s: &Sheet, side: &str, id: &str) -> Combatant {
     let (weapon, damage, range, on_hit) = rpg::weapon(conn, campaign_id, s);
+    let ammo = rpg::equipped_items(conn, campaign_id, &s.actor).into_iter().find(|i| i.slot == "weapon" && !i.damage.is_empty()).map(|i| i.ammo).unwrap_or_default();
+    // 只认世界或本战役里确实存在的弹药物品（旧存档里可能有模型乱写的弹药名）。
+    let ammo = if ammo.is_empty() || ammo_exists(conn, campaign_id, &ammo) { ammo } else { String::new() };
     let r = rpg::rules(conn, campaign_id);
     let attr = if range > 1 { rpg::role_attr(&r, "agility") } else { rpg::role_attr(&r, "might") };
     let attr = attr.as_str();
@@ -243,7 +313,15 @@ fn unit_from_sheet(conn: &Connection, campaign_id: &str, s: &Sheet, side: &str, 
         new_wounds: vec![],
         morale_checked: false,
         boss: false,
+        ammo,
+        speed: 0,
+        dodging: false,
     }
+}
+
+fn ammo_exists(conn: &Connection, campaign_id: &str, name: &str) -> bool {
+    conn.query_row("SELECT COUNT(*) FROM campaign_records WHERE campaign_id = ?1 AND kind = 'item_def' AND json_extract(data, '$.title') = ?2", rusqlite::params![campaign_id, name], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
+        || conn.query_row("SELECT COUNT(*) FROM nodes WHERE deleted_at IS NULL AND kind = 'item' AND title = ?1", [name], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
 }
 
 fn format_damage(d: &str, m: i64) -> String {
@@ -261,6 +339,19 @@ pub fn start(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies
 
 /// 开始战斗；`no_escape` 非空时这场战斗无法逃跑（场地封锁、退路被切断……），写明原因。
 pub fn start_locked(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies: &[String], reason: &str, no_escape: &str) -> Result<CombatReport> {
+    with_dice(|| start_inner(world, campaign_id, enemies, allies, reason, no_escape))
+}
+
+/// 执行一步战斗并把期间的掷骰记录放进报告。
+fn with_dice(f: impl FnOnce() -> Result<CombatReport>) -> Result<CombatReport> {
+    let (res, dice) = campaign::capture_rolls(f);
+    res.map(|mut r| {
+        r.dice = dice;
+        r
+    })
+}
+
+fn start_inner(world: &mut World, campaign_id: &str, enemies: &[EnemySpec], allies: &[String], reason: &str, no_escape: &str) -> Result<CombatReport> {
     campaign::ensure_active(world.conn(), campaign_id)?;
     if active(world.conn(), campaign_id).is_some() {
         return Err(CoreError::Invalid("已经在战斗中".into()));
@@ -270,11 +361,18 @@ pub fn start_locked(world: &mut World, campaign_id: &str, enemies: &[EnemySpec],
     }
     let conn = world.conn();
     let mut units = vec![];
-    let ps = rpg::sheet(conn, campaign_id, PARTY)?;
-    if ps.hp <= 0 {
-        return Err(CoreError::Invalid(format!("{}已经倒下，不能参加战斗（先休息恢复）", ps.name)));
+    // 玩家方：当前行动的玩家，加上联机房间里其他没倒下的玩家（每人控制自己的单位）。
+    for (k, member) in rpg::party_members(conn, campaign_id).iter().enumerate() {
+        let ps = rpg::sheet(conn, campaign_id, member)?;
+        if ps.hp <= 0 {
+            if k == 0 {
+                return Err(CoreError::Invalid(format!("{}已经倒下，不能参加战斗（先休息恢复）", ps.name)));
+            }
+            continue;
+        }
+        let id = if k == 0 { "p".to_string() } else { format!("p{}", k + 1) };
+        units.push(unit_from_sheet(conn, campaign_id, &ps, "party", &id));
     }
-    units.push(unit_from_sheet(conn, campaign_id, &ps, "party", "p"));
     for (i, a) in allies.iter().take(4).enumerate() {
         let s = rpg::sheet(conn, campaign_id, a)?;
         if s.hp > 0 {
@@ -335,12 +433,15 @@ pub fn start_locked(world: &mut World, campaign_id: &str, enemies: &[EnemySpec],
     let mut lines = vec![];
     let agi = rpg::role_attr(&rpg::rules(world.conn(), campaign_id), "agility");
     for u in units.iter_mut() {
+        // 速度 = 敏捷修正（临时敌人按等级）；先攻 = 1d20 + 速度，同分时速度高的先。
         let dex = u.actor.as_ref().and_then(|a| rpg::sheet(world.conn(), campaign_id, a).ok()).map(|s| s.modv(&agi)).unwrap_or(u.level / 3);
+        u.speed = dex;
         let rv = roll(world, campaign_id, "1d20", &format!("{} 先攻", u.name))?;
         u.init = rv + dex;
+        campaign::annotate_last_roll("initiative", vec![("速度".into(), dex)], u.init, None, &format!("先攻 {}", u.init));
     }
     let mut order: Vec<&Combatant> = units.iter().collect();
-    order.sort_by_key(|u| (std::cmp::Reverse(u.init), u.side != "party", u.id.clone()));
+    order.sort_by_key(|u| (std::cmp::Reverse(u.init), std::cmp::Reverse(u.speed), u.side != "party", u.id.clone()));
     let order: Vec<String> = order.into_iter().map(|u| u.id.clone()).collect();
     let id = format!("c{:06}", history(world.conn(), campaign_id, 10_000)?.len() + 1);
     // 障碍物：3–5 个，放在战场中间几列，由战役种子和战斗编号决定（可复现），不压在任何人身上。
@@ -356,13 +457,27 @@ pub fn start_locked(world: &mut World, campaign_id: &str, enemies: &[EnemySpec],
             obstacles.push((x, y));
         }
     }
-    let mut c = Combat { id, round: 1, turn: 0, order, units, log: vec![], status: "active".into(), width, height, reason: reason.into(), rewards: vec![], obstacles, no_escape: no_escape.trim().chars().take(60).collect() };
+    // 场景物件：1–3 个，同样由种子决定，放在空格子上。
+    let mut props: Vec<Prop> = vec![];
+    let want_props = 1 + (crate::worldsim::hash64(seed ^ 0x5eed ^ id.bytes().map(|b| b as u64).sum::<u64>()) % 3) as usize;
+    let mut k = 0u64;
+    while props.len() < want_props && k < 300 {
+        k += 1;
+        let h = crate::worldsim::hash64(seed.wrapping_add(k * 7919) ^ 0xC0FFEE ^ (id.len() as u64));
+        let (x, y) = (2 + (h % (width as u64 - 4)) as i64, ((h >> 20) % height as u64) as i64);
+        let kind = PROP_KINDS[((h >> 40) % PROP_KINDS.len() as u64) as usize];
+        if obstacles.contains(&(x, y)) || units.iter().any(|u| u.x == x && u.y == y) || props.iter().any(|p| (p.x, p.y) == (x, y) || p.kind == kind.0) {
+            continue;
+        }
+        props.push(Prop { id: format!("o{}", props.len() + 1), name: kind.1.into(), kind: kind.0.into(), x, y, used: false, desc: kind.2.into() });
+    }
+    let mut c = Combat { id, round: 1, turn: 0, order, units, log: vec![], status: "active".into(), width, height, reason: reason.into(), rewards: vec![], obstacles, no_escape: no_escape.trim().chars().take(60).collect(), props };
     let order_text = c.order.iter().map(|o| { let u = &c.units[c.idx(o)]; format!("{}({})", u.name, u.init) }).collect::<Vec<_>>().join(" → ");
     c.push(&mut lines, format!("战斗开始（{reason}）。先攻顺序：{order_text}"));
     begin_turn(world, campaign_id, &mut c, &r, &mut lines)?;
     run_ai(world, campaign_id, &mut c, &r, &mut lines)?;
     save(world, campaign_id, &mut c, &mut lines)?;
-    Ok(CombatReport { lines, combat: c })
+    Ok(CombatReport { lines, combat: c, dice: vec![] })
 }
 
 /// 回合开始：恢复行动点，处理持续伤害与状态到期；眩晕时跳过。返回是否可以行动。
@@ -372,6 +487,7 @@ fn begin_turn(world: &mut World, campaign_id: &str, c: &mut Combat, r: &RuleSet,
         return Ok(false);
     }
     c.units[i].ap = r.ap_per_turn;
+    c.units[i].dodging = false;
     let mut skip = false;
     let statuses = c.units[i].statuses.clone();
     for s in &statuses {
@@ -414,7 +530,7 @@ fn knock_out(c: &mut Combat, i: usize, lines: &mut Vec<String>, minutes: i64) {
     if c.units[i].hp > 0 || !c.units[i].active() {
         return;
     }
-    let dead = c.units[i].actor.is_some() && c.units[i].hp <= -(c.units[i].max_hp / 2).max(1) && c.units[i].actor.as_deref() != Some(PARTY);
+    let dead = c.units[i].actor.is_some() && c.units[i].hp <= -(c.units[i].max_hp / 2).max(1) && !c.units[i].actor.as_deref().is_some_and(rpg::is_player_actor);
     c.units[i].out = if dead { "dead".into() } else { "down".into() };
     if c.units[i].actor.is_some() && !dead {
         c.units[i].new_wounds.push(Wound { name: "重伤".into(), penalty: 2, attr: String::new(), heal_at: minutes + 3 * 1440, source: c.reason.clone() });
@@ -462,6 +578,21 @@ fn check_end(c: &mut Combat, lines: &mut Vec<String>) -> bool {
 /// 攻击：命中检定、伤害、暴击、命中附带状态。
 fn attack(world: &mut World, campaign_id: &str, c: &mut Combat, r: &RuleSet, ai: usize, ti: usize, lines: &mut Vec<String>) -> Result<()> {
     let (an, tn) = (c.units[ai].name.clone(), c.units[ti].name.clone());
+    // 用弹药的武器：先扣一发；没有弹药就打不响（这一击作废）。
+    if let (false, Some(actor)) = (c.units[ai].ammo.is_empty(), c.units[ai].actor.clone()) {
+        let ammo = c.units[ai].ammo.clone();
+        match rpg::ammo_stack(world.conn(), campaign_id, &actor, &ammo) {
+            Some((stack, n)) => {
+                campaign::apply_effects(world, campaign_id, &[Effect::TakeItem { holder: actor.clone(), item: stack, qty: 1 }], &format!("{an}射击，消耗 1 发{ammo}"))?;
+                c.push(lines, format!("{an}消耗 1 发{ammo}（剩 {}）", n - 1));
+            }
+            None => {
+                let weapon = c.units[ai].weapon.clone();
+                c.push(lines, format!("{an}扣下{weapon}的扳机——没有{ammo}了，打不响"));
+                return Ok(());
+            }
+        }
+    }
     let n = roll(world, campaign_id, "1d20", &format!("{an} 攻击 {tn}"))?;
     let bonus = c.units[ai].attack + c.units[ai].mods();
     let cover = c.cover(ai, ti);
@@ -469,15 +600,38 @@ fn attack(world: &mut World, campaign_id: &str, c: &mut Combat, r: &RuleSet, ai:
     let ac_note = if cover { "（掩体 +2）" } else { "" };
     let crit = n >= r.crit_on;
     let hit = n != 1 && (crit || n + bonus >= ac);
+    {
+        let mut parts = vec![("攻击加值".to_string(), c.units[ai].attack)];
+        if c.units[ai].mods() != 0 {
+            parts.push(("状态".into(), c.units[ai].mods()));
+        }
+        let outcome = if n == 1 { "大失手" } else if crit { "暴击" } else if hit { "命中" } else { "没有命中" };
+        campaign::annotate_last_roll("attack", parts, n + bonus, Some(ac), outcome);
+    }
     let weapon = c.units[ai].weapon.clone();
     if !hit {
         c.push(lines, format!("{an}用{weapon}攻击{tn}：掷出 {n}{bonus:+}={}，防御 {ac}{ac_note}，{}", n + bonus, if n == 1 { "大失手" } else { "没有命中" }));
         return Ok(());
     }
+    // 目标在闪避：闪避检定（1d20 + 速度）不低于攻击总值就躲开（暴击躲不开）。
+    if c.units[ti].dodging && !crit {
+        let sp = c.units[ti].speed;
+        let dn = roll(world, campaign_id, "1d20", &format!("{tn} 闪避 {an}"))?;
+        let ok = dn + sp >= n + bonus;
+        campaign::annotate_last_roll("dodge", vec![("速度".into(), sp)], dn + sp, Some(n + bonus), if ok { "闪开" } else { "没闪开" });
+        if ok {
+            c.push(lines, format!("{an}用{weapon}攻击{tn}：掷出 {n}{bonus:+}={}，命中——但{tn}闪避（{dn}{sp:+}={}）躲开了", n + bonus, dn + sp));
+            return Ok(());
+        }
+        c.push(lines, format!("{tn}想闪避（{dn}{sp:+}={}），没能躲开", dn + sp));
+    }
     let dmg_expr = c.units[ai].damage.clone();
     let mut dmg = roll(world, campaign_id, &dmg_expr, &format!("{an} 对 {tn} 的伤害"))?;
+    campaign::annotate_last_roll("damage", vec![], dmg, None, &format!("{dmg} 点伤害"));
     if crit {
-        dmg += roll(world, campaign_id, &dmg_expr, &format!("{an} 暴击追加伤害"))?;
+        let extra = roll(world, campaign_id, &dmg_expr, &format!("{an} 暴击追加伤害"))?;
+        campaign::annotate_last_roll("damage", vec![], extra, None, &format!("暴击追加 {extra} 点"));
+        dmg += extra;
     }
     let dmg = dmg.max(1);
     c.units[ti].hp -= dmg;
@@ -632,7 +786,7 @@ fn run_ai(world: &mut World, campaign_id: &str, c: &mut Combat, r: &RuleSet, lin
             break;
         }
         let i = c.cur_idx();
-        if c.units[i].active() && c.units[i].actor.as_deref() != Some(PARTY) {
+        if c.units[i].active() && !c.units[i].actor.as_deref().is_some_and(rpg::is_player_actor) {
             ai_turn(world, campaign_id, c, r, lines)?;
             if check_end(c, lines) {
                 break;
@@ -653,9 +807,19 @@ fn find_unit(c: &Combat, key: &str) -> Option<usize> {
 
 /// 玩家在自己的回合行动。行动点用完或结束回合后，其他参战者由程序行动，直到再次轮到玩家或战斗结束。
 pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<CombatReport> {
+    with_dice(|| act_inner(world, campaign_id, a))
+}
+
+fn act_inner(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<CombatReport> {
     let mut c = active(world.conn(), campaign_id).ok_or_else(|| CoreError::Invalid("现在没有在战斗".into()))?;
     if !c.players_turn() {
         return Err(CoreError::Invalid("还没轮到玩家行动".into()));
+    }
+    if let Some(who) = c.current_player()
+        && who != rpg::actor()
+    {
+        let name = c.current().map(|u| u.name.clone()).unwrap_or_default();
+        return Err(CoreError::Invalid(format!("现在轮到{name}行动")));
     }
     let r = rpg::rules(world.conn(), campaign_id);
     let pi = c.player_idx().unwrap_or(0);
@@ -712,6 +876,73 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
             let (n, x, y) = (c.units[pi].name.clone(), c.units[pi].x, c.units[pi].y);
             c.push(&mut lines, format!("{n}移动了 {moved} 格（到 {x},{y}）"));
         }
+        "dodge" => {
+            need(1, &c)?;
+            c.units[pi].ap -= 1;
+            c.units[pi].dodging = true;
+            let (n, sp) = (c.units[pi].name.clone(), c.units[pi].speed);
+            c.push(&mut lines, format!("{n}准备闪避（到下次行动前，被攻击时掷 1d20{sp:+} 对抗攻击）"));
+            end = true;
+        }
+        "interact" => {
+            need(1, &c)?;
+            let pidx = c.props.iter().position(|p| p.id == a.target || p.name == a.target.trim()).ok_or_else(|| CoreError::Invalid(format!("战场上没有这个物件：{}", a.target)))?;
+            let prop = c.props[pidx].clone();
+            if prop.used {
+                return Err(CoreError::Invalid(format!("「{}」已经用过了", prop.name)));
+            }
+            let d = (prop.x - c.units[pi].x).abs().max((prop.y - c.units[pi].y).abs());
+            if d > 1 {
+                return Err(CoreError::Invalid(format!("「{}」太远（距离 {d} 格），先走到旁边", prop.name)));
+            }
+            c.units[pi].ap -= 1;
+            let pn = c.units[pi].name.clone();
+            match prop.kind.as_str() {
+                "cover" => {
+                    apply_status(&mut c, pi, Status { name: "掩护".into(), rounds: Some(2), ac: 2, ..Default::default() }, &prop.name, &mut lines);
+                    c.push(&mut lines, format!("{pn}躲到{}后面", prop.name));
+                }
+                "fire" => {
+                    c.props[pidx].used = true;
+                    let t = c.units.iter().enumerate().filter(|(_, u)| !u.friendly() && u.active() && (u.x - prop.x).abs().max((u.y - prop.y).abs()) <= 2).min_by_key(|(_, u)| (u.x - prop.x).abs().max((u.y - prop.y).abs())).map(|(i, _)| i);
+                    match t {
+                        Some(t) => {
+                            let tn = c.units[t].name.clone();
+                            let dmg = roll(world, campaign_id, "1d6", &format!("{pn} 打翻{}，{tn}受到的火焰伤害", prop.name))?.max(1);
+                            campaign::annotate_last_roll("damage", vec![], dmg, None, &format!("{dmg} 点火焰伤害"));
+                            c.units[t].hp -= dmg;
+                            c.push(&mut lines, format!("{pn}打翻{}，火焰扑向{tn}，造成 {dmg} 点伤害（{tn} 生命 {}/{}）", prop.name, c.units[t].hp.max(0), c.units[t].max_hp));
+                            if c.units[t].hp > 0 {
+                                apply_status(&mut c, t, Status { name: "灼烧".into(), rounds: Some(2), dot: "1d2".into(), ..Default::default() }, &pn, &mut lines);
+                            }
+                            let m = now(world.conn(), campaign_id);
+                            knock_out(&mut c, t, &mut lines, m);
+                        }
+                        None => c.push(&mut lines, format!("{pn}打翻{}，但周围没有敌人，火很快熄了", prop.name)),
+                    }
+                }
+                "drop" => {
+                    c.props[pidx].used = true;
+                    let near: Vec<usize> = c.units.iter().enumerate().filter(|(_, u)| !u.friendly() && u.active() && (u.x - prop.x).abs().max((u.y - prop.y).abs()) <= 1).map(|(i, _)| i).collect();
+                    if near.is_empty() {
+                        c.push(&mut lines, format!("{pn}割断绳子，{}砸在地上，但旁边没有敌人", prop.name));
+                    }
+                    for t in near {
+                        let (tn, sp) = (c.units[t].name.clone(), c.units[t].speed);
+                        let n = roll(world, campaign_id, "1d20", &format!("{tn} 躲开砸下的{}（敏捷检定）", prop.name))?;
+                        let ok = n + sp >= 12;
+                        campaign::annotate_last_roll("check", vec![("速度".into(), sp)], n + sp, Some(12), if ok { "躲开" } else { "被砸中" });
+                        if ok {
+                            c.push(&mut lines, format!("{}砸下来，{tn}躲开了（{n}{sp:+}，难度 12）", prop.name));
+                        } else {
+                            c.push(&mut lines, format!("{}砸下来，{tn}没躲开（{n}{sp:+}，难度 12），倒在地上", prop.name));
+                            apply_status(&mut c, t, Status { name: "倒地".into(), rounds: Some(1), skip: true, ac: -2, ..Default::default() }, &pn, &mut lines);
+                        }
+                    }
+                }
+                other => return Err(CoreError::Invalid(format!("不认识的物件类型：{other}"))),
+            }
+        }
         "defend" => {
             need(1, &c)?;
             c.units[pi].ap -= 1;
@@ -725,7 +956,7 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
             if it.heal.is_empty() && it.cures.is_empty() {
                 return Err(CoreError::Invalid(format!("「{}」不能在战斗中使用", it.title)));
             }
-            if (CampaignView { conn: world.conn(), campaign_id }).item_qty(PARTY, &it.id) < 1 {
+            if (CampaignView { conn: world.conn(), campaign_id }).item_qty(&rpg::actor(), &it.id) < 1 {
                 return Err(CoreError::Invalid(format!("没有「{}」", it.title)));
             }
             let mut text = format!("{}使用了「{}」", c.units[pi].name, it.title);
@@ -738,11 +969,12 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
             }
             c.units[pi].statuses.retain(|s| !it.cures.contains(&s.name));
             c.units[pi].ap -= 1;
-            campaign::apply_effects(world, campaign_id, &[Effect::TakeItem { holder: PARTY.into(), item: it.id.clone(), qty: 1 }], &text)?;
+            campaign::apply_effects(world, campaign_id, &[Effect::TakeItem { holder: rpg::actor(), item: it.id.clone(), qty: 1 }], &text)?;
             c.push(&mut lines, text);
         }
-        "custom" => {
-            let ca = r.custom_actions.iter().find(|x| x.name == a.custom.trim()).cloned().ok_or_else(|| CoreError::Invalid(format!("没有这个自定义行动：{}", a.custom)))?;
+        "custom" | "skill" => {
+            let name = if a.custom.trim().is_empty() { a.item.trim() } else { a.custom.trim() };
+            let ca = skills(&r).into_iter().find(|x| x.name == name).ok_or_else(|| CoreError::Invalid(format!("没有这个技能：{name}")))?;
             need(ca.ap, &c)?;
             let t = if ca.range == 0 { pi } else { find_unit(&c, &a.target).filter(|t| c.units[*t].active()).ok_or_else(|| CoreError::Invalid("需要一个目标".into()))? };
             let d = dist(&c.units[pi], &c.units[t]);
@@ -794,7 +1026,7 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
         "flee" => {
             let adj = c.units.iter().filter(|u| !u.friendly() && u.active() && dist(u, &c.units[pi]) <= 1).count() as i64;
             let dc = 10 + adj * 2;
-            let dex = rpg::sheet(world.conn(), campaign_id, PARTY)?.modv(&rpg::role_attr(&rpg::rules(world.conn(), campaign_id), "agility"));
+            let dex = rpg::sheet(world.conn(), campaign_id, &rpg::actor())?.modv(&rpg::role_attr(&rpg::rules(world.conn(), campaign_id), "agility"));
             let n = roll(world, campaign_id, "1d20", "逃跑")?;
             c.units[pi].ap = 0;
             let name = c.units[pi].name.clone();
@@ -809,7 +1041,7 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
             end = true;
         }
         "end_turn" => end = true,
-        other => return Err(CoreError::Invalid(format!("未知的战斗行动：{other}（可用 attack/move/defend/use_item/custom/flee/end_turn）"))),
+        other => return Err(CoreError::Invalid(format!("未知的战斗行动：{other}（可用 attack/move/defend/dodge/skill/use_item/interact/flee/end_turn）"))),
     }
     if !check_end(&mut c, &mut lines) && (end || c.units[pi].ap <= 0 || !c.units[pi].active()) {
         next_turn(world, campaign_id, &mut c, &r, &mut lines)?;
@@ -824,7 +1056,7 @@ pub fn act(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<Com
         lines.push(format!("逃到了「{}」（{}）", plan.to_title, crate::worldsim::format_duration(plan.minutes)));
         lines.extend(more);
     }
-    Ok(CombatReport { lines, combat: c })
+    Ok(CombatReport { lines, combat: c, dice: vec![] })
 }
 
 /// 战斗中更换装备后，按角色卡重新计算这个人的武器、伤害、射程、防御（生命、位置、状态不变）。
@@ -851,7 +1083,7 @@ pub fn abort(world: &mut World, campaign_id: &str, reason: &str) -> Result<Comba
     c.status = "ended".into();
     c.push(&mut lines, format!("战斗中止：{reason}"));
     save(world, campaign_id, &mut c, &mut lines)?;
-    Ok(CombatReport { lines, combat: c })
+    Ok(CombatReport { lines, combat: c, dice: vec![] })
 }
 
 /// 保存战斗状态；战斗结束时把生命值、伤势写回角色卡，并发放经验与战利品。
@@ -906,11 +1138,15 @@ fn save(world: &mut World, campaign_id: &str, c: &mut Combat, lines: &mut Vec<St
     if ended && c.status == "victory" {
         let mut rewards = vec![];
         if xp_total > 0 {
-            rewards.extend(rpg::award_xp(world, campaign_id, PARTY, xp_total, "战斗胜利")?);
+            // 经验：参战的每名玩家都拿到（联机时人人有份；单人就是玩家自己）。
+            let players: Vec<String> = c.units.iter().filter_map(|u| u.actor.clone()).filter(|a| rpg::is_player_actor(a)).collect();
+            for p in if players.is_empty() { vec![rpg::actor()] } else { players } {
+                rewards.extend(rpg::award_xp(world, campaign_id, &p, xp_total, "战斗胜利")?);
+            }
         }
         for (item, qty, from) in loot {
             if let Some(it) = rpg::item_info(world.conn(), &item)? {
-                rpg::give_item(world, campaign_id, PARTY, &item, qty, &format!("战利品：{from}"))?;
+                rpg::give_item(world, campaign_id, &rpg::actor(), &item, qty, &format!("战利品：{from}"))?;
                 rewards.push(format!("从{from}身上得到「{}」×{qty}", it.title));
             }
         }

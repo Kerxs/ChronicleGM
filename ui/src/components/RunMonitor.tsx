@@ -1,5 +1,5 @@
 // 运行监控：最近一次请求的首字时间、生成速度、提示词处理速度、上下文占用；历史统计（平均 / 最快 / 最慢）。
-// 拿不到的数据显示「不可用」（例如非流式请求没有首字时间，云端服务通常不返回速度）。
+// 拿不到的数据显示「不可用」（例如非流式请求没有首字时间）。云端服务不返回计时，速度按 token 数和耗时估算。
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { MetricStat } from "../bindings/MetricStat";

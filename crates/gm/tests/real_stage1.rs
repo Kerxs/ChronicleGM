@@ -34,7 +34,7 @@ fn client() -> (OpenAiClient, GmOptions) {
     let c = OpenAiClient::new(cfg, None);
     let caps = test_capabilities(&c, svc.models.first().and_then(|m| m.context_length), 0);
     println!("能力：{caps:?}");
-    let opts = GmOptions { json_schema: caps.json_schema, thinking: Some(false), temperature: 0.8, max_tokens: 12000, context_budget: 8000, stream: caps.streaming, web_search: None };
+    let opts = GmOptions { json_schema: caps.json_schema, thinking: Some(false), temperature: 0.8, max_tokens: 12000, context_budget: 8000, stream: caps.streaming, web_search: None, dice: None };
     (c, opts)
 }
 

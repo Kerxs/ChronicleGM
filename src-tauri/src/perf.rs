@@ -84,7 +84,13 @@ pub fn report_render(state: State<AppState>, view: String, nodes: usize, edges: 
 // ===================== 托管模式 =====================
 
 fn load_profiles(state: &AppState) -> Res<Vec<ModelProfile>> {
-    state.lib()?.managed_models().map_err(err)?.into_iter().map(|v| serde_json::from_value(v).map_err(err)).collect()
+    let mut v: Vec<ModelProfile> = state.lib()?.managed_models().map_err(err)?.into_iter().map(|v| serde_json::from_value(v).map_err(err)).collect::<Res<_>>()?;
+    // 内置模型（llama.cpp 运行环境 + 模型库）的托管配置由模型管理生成，不存在资料库里。
+    if let Some(b) = crate::models::builtin_profile() {
+        v.retain(|p| p.id != b.id && p.port != b.port);
+        v.push(b);
+    }
+    Ok(v)
 }
 
 /// 启动时与配置变更后：把资料库里的托管配置交给管理器。
@@ -200,6 +206,10 @@ pub fn db_probe(state: State<AppState>, world_id: String) -> Res<DbProbe> {
 pub fn on_exit(app: &AppHandle) {
     if let Some(st) = app.try_state::<AppState>() {
         st.models.stop_all();
+    }
+    // 下载任务：停下并保持排队，下次启动自动继续。
+    if let Some(ms) = app.try_state::<crate::models::ModelsState>() {
+        ms.dl.shutdown();
     }
 }
 

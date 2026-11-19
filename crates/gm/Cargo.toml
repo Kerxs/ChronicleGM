@@ -6,9 +6,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
-chronicle-core = { version = "0.0.5", path = "../core" }
-chronicle-gen = { version = "0.0.5", path = "../gen" }
-chronicle-llm = { version = "0.0.5", path = "../llm" }
+chronicle-core = { version = "0.0.6", path = "../core" }
+chronicle-gen = { version = "0.0.6", path = "../gen" }
+chronicle-llm = { version = "0.0.6", path = "../llm" }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
@@ -16,6 +16,6 @@ thiserror = "2.0.21"
 ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
 
 [dev-dependencies]
-chronicle-runtime = { version = "0.0.5", path = "../runtime" }
+chronicle-runtime = { version = "0.0.6", path = "../runtime" }
 tempfile = "3.27.0"
 

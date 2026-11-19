@@ -1,0 +1,25 @@
+[package]
+name = "chronicle-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Chronicle GM 自研安装 / 卸载程序"
+
+# 自研安装器：一个程序两种模式——安装（chronicle-setup.exe）和卸载（安装目录里的 uninstall.exe）。
+# 构建时把编译好的 chronicle-gm-app.exe 压缩后嵌进来（环境变量 CHRONICLE_PAYLOAD 指定路径）。
+
+[[bin]]
+name = "chronicle-setup"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2.12.5", features = [] }
+tauri-plugin-dialog = "2.8.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = "3.5.2"
+lzma-rs = "0.3"
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }

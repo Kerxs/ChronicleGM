@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/rules", "crates/core", "crates/llm", "crates/gen", "crates/gm", "crates/runtime", "src-tauri"]
+members = ["crates/rules", "crates/core", "crates/llm", "crates/gen", "crates/gm", "crates/runtime", "crates/protocol", "crates/server", "crates/models", "crates/installer", "src-tauri"]
 
 [workspace.package]
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 license = "MIT"
 publish = false

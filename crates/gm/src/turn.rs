@@ -105,9 +105,15 @@ pub struct TurnResult {
     /// GM 在叙述里替这些 NPC 说了话：程序删掉了那些台词，改由 NPC 亲自回答。
     #[serde(default)]
     pub redirected_speakers: Vec<String>,
+    /// 在叙述之前就发现的问题（例如检定技能被纠正），回合结束时并入 conflicts。
+    #[serde(skip)]
+    pub conflicts_pre: Vec<String>,
     /// 叙述与程序结算可能不符的地方（启发式检查，只给主持人看）。
     #[serde(default)]
     pub conflicts: Vec<String>,
+    /// 这一回合战斗里的掷骰（开战先攻、攻击、伤害……），界面用骰子托盘演出。
+    #[serde(default)]
+    pub dice: Vec<chronicle_core::campaign::DiceRecord>,
     /// GM 说明这一回合的决定依据的事实（已换成文字）。
     #[serde(default)]
     pub based_on: Vec<String>,
@@ -228,7 +234,7 @@ pub fn run_turn_with_stages(world: &Mutex<World>, engine: &Engine, campaign_id: 
         let has_player = campaign::recent_events(w.conn(), campaign_id, &["player"], 1).map(|v| !v.is_empty()).unwrap_or(false);
         let entry = match &res {
             Ok(r) => Some(("turn_end", json!({ "turn": r.turn }))),
-            Err(e) if has_player && !matches!(e, GmError::Input(_)) => Some(("turn_aborted", json!({ "error": e.to_string() }))),
+            Err(e) if has_player && !matches!(e, GmError::Input(_) | GmError::Blocked(_)) => Some(("turn_aborted", json!({ "error": e.to_string() }))),
             Err(_) => None,
         };
         if let Some((kind, payload)) = entry {
@@ -252,6 +258,68 @@ fn script_item_kind(w: &World, script_id: Option<&str>, item: &str) -> bool {
     })
 }
 
+/// GM 叙述和之前的讲述有这么多字相同就算重复。
+const NARRATION_REPEAT: usize = 24;
+/// NPC 台词和自己说过的话有这么多字相同就算重复（实测"把石头给我"这类短句在换着说）。
+const NPC_REPEAT: usize = 6;
+
+/// 表示玩家对人有敌意的词（和 OPENING_ATTACK 一起用）：没有这些词时不和在场的人物开战。
+const HOSTILE_WORDS: &[&str] = &["打他", "打她", "杀", "抓住", "制服", "动手", "袭击", "偷袭", "伏击", "教训", "拔刀", "拔剑", "拔枪", "开打", "打起来", "拼了"];
+
+/// 玩家在查看自己身上带了什么的词。
+const SELF_CHECK_WORDS: &[&str] = &["身上", "口袋", "背包", "行囊", "带了什么", "带着什么", "还剩", "几发", "多少钱", "多少子弹", "装备了什么"];
+
+/// 玩家开战时表示"这就动手打"的词：开战回合里直接结算玩家的第一击。
+const OPENING_ATTACK: &[&str] = &["开枪", "开一枪", "开火", "射击", "放箭", "射向", "砍", "刺向", "劈", "砸", "攻击", "扑向", "冲向", "揍", "打向", "挥刀", "挥剑", "一拳", "一脚"];
+
+/// `a` 和 `b` 共有的、至少 `min` 个字的一段话（去掉标点后比较）；没有返回 None。
+fn repeated_phrase(a: &str, b: &str, min: usize) -> Option<String> {
+    let clean = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<Vec<char>>();
+    let (x, y) = (clean(a), clean(b));
+    if x.len() < min || y.len() < min {
+        return None;
+    }
+    let ys: String = y.iter().collect();
+    (0..=x.len() - min).find_map(|i| {
+        let piece: String = x[i..i + min].iter().collect();
+        ys.contains(&piece).then_some(piece)
+    })
+}
+
+/// 倒地时还能做的事：休息、呼救求助、用药治疗。
+const DOWNED_OK: &[&str] = &["休息", "睡", "养伤", "躺", "昏", "缓一缓", "缓过", "等", "求救", "呼救", "求助", "喊人", "叫人", "喝", "吃", "包扎", "治疗", "药"];
+/// 其中算"休息"的词（程序推进时间）。
+const REST_WORDS: &[&str] = &["休息", "睡", "养伤", "躺", "缓一缓", "缓过", "等"];
+
+/// 玩家倒地时的回合门槛：不能行动时返回 Input 错误（界面提示，不记录回合）；休息时推进时间并返回说明。
+pub fn downed_gate(w: &mut World, campaign_id: &str, input: &str) -> Result<Option<String>> {
+    let r = chronicle_core::rpg::rules(w.conn(), campaign_id);
+    if r.party_death != "downed" || chronicle_core::combat::active(w.conn(), campaign_id).is_some() {
+        return Ok(None);
+    }
+    let Ok(s) = chronicle_core::rpg::sheet(w.conn(), campaign_id, &chronicle_core::rpg::actor()) else { return Ok(None) };
+    if s.hp > 0 {
+        return Ok(None);
+    }
+    if !DOWNED_OK.iter().any(|k| input.contains(k)) {
+        return Err(GmError::Blocked(format!("{}伤得太重，倒在地上站不起来（生命 0）。先休息恢复，或者向附近的人求助、用药治疗。", s.name)));
+    }
+    if !REST_WORDS.iter().any(|k| input.contains(k)) {
+        return Ok(None);
+    }
+    // 休息：按规则每小时恢复，至少休息到能站起来（生命 1），最少 1 小时。
+    let per = r.heal_per_hour.max(1);
+    let hours = ((1 - s.hp) + per - 1) / per;
+    let hours = hours.max(1);
+    let mut notes = chronicle_core::schedule::advance(w, campaign_id, hours * 60, "倒地后休息")?;
+    let after = chronicle_core::rpg::sheet(w.conn(), campaign_id, &chronicle_core::rpg::actor()).map(|x| x.hp).unwrap_or(0);
+    notes.insert(0, format!("{}休息了 {hours} 小时，生命恢复到 {after}/{}", s.name, s.max_hp));
+    Ok(Some(notes.join("；")))
+}
+
+/// 表示"对某人说话"的词。
+const TALK_WORDS: &[&str] = &["问", "说", "告诉", "请教", "打听", "喊", "叫住", "回答", "答道", "聊", "谈", "求", "拜托"];
+
 /// 开场回合的输入标记（界面在新战役开始后发送）。
 pub const OPENING: &str = "__opening__";
 
@@ -260,7 +328,8 @@ pub fn opening_prompt(script: Option<&chronicle_core::model::Script>, pc: Option
     let mut facts: Vec<String> = vec![];
     if let Some(s) = script {
         facts.push(format!("剧本名：《{}》", s.title));
-        for (k, v) in [("题材", &s.genre), ("基调", &s.tone), ("故事前提", &s.premise), ("背景", &s.background), ("核心设定", &s.core_setting)] {
+        // 不放「核心设定与真相」：那是主持人信息（实测开场白据此说出了"寻找失落的灯芯石、潮洞深处的谜团"）。
+        for (k, v) in [("题材", &s.genre), ("基调", &s.tone), ("故事前提", &s.premise), ("背景", &s.background)] {
             let v = v.trim();
             if !v.is_empty() {
                 facts.push(format!("{k}：{}", v.chars().take(300).collect::<String>()));
@@ -361,7 +430,27 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
     };
     let input = if opening { opening_text.as_str() } else { input };
     let mut out = TurnResult::default();
+    // 倒地（生命 0，规则是"倒地"而不是"死亡"）：只能休息、求助、用药，别的行动由程序拦下（用户决定：倒地后要先休息才能行动）。
+    // 休息由程序推进故事时间，按每小时恢复量至少恢复到能站起来，再交给 GM 讲述醒来。
+    if !opening {
+        let mut w = lock(world)?;
+        if let Some(note) = downed_gate(&mut w, campaign_id, input)? {
+            out.rpg_updates.push(note);
+        }
+    }
     let dsl = chronicle_gen::plot_tasks::DSL_DOC;
+
+    // 开场前：角色没有写初始装备（旧剧本、手动添加的角色）时，按设定推断随身装备并放进背包，GM 才知道玩家带着什么。
+    let mut kit_note: Option<String> = None;
+    if opening {
+        stage("opening");
+        match crate::pcgen::infer_start_kit(world, gm, templates, opts, campaign_id, cancel, &mut out.requests) {
+            Ok(n) if !n.is_empty() => kit_note = Some(format!("初始装备：{}", n.join("、"))),
+            Ok(_) => {}
+            Err(GmError::Cancelled) => return Err(GmError::Cancelled),
+            Err(e) => kit_note = Some(format!("没能推断初始装备（{e}），可以在角色页手动添加")),
+        }
+    }
 
     stage("context");
     // 1. 组装上下文（短暂持有世界锁）。
@@ -392,15 +481,44 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
         let w = lock(world)?;
         chronicle_core::rpg::missing_items(w.conn(), campaign_id, ctx.script.as_ref().map(|s| s.id.as_str()), input).unwrap_or_default()
     };
+    // 停滞：太久没有推进时，程序明确要求这一回合让事情动起来（以前只有导演的软建议，实测 48 回合还在第一个场景）。
+    let stall_note = if opening {
+        String::new()
+    } else {
+        let w = lock(world)?;
+        match chronicle_core::director::stall_status(w.conn(), campaign_id) {
+            Ok((since, limit)) if since >= limit * 2 => format!("\n\n## 程序提示：节奏\n已经 {since} 回合没有推进（没有换地点，没有新的任务、剧情或冲突）。这一回合回应完玩家的行动后，必须让一件事发生：有人找上门、出现新的威胁或机会、时间推进到下一个时段、传来改变局面的消息。在 choices 里至少给一个推进主线或离开这里的选项。不要替玩家做决定。"),
+            Ok((since, limit)) if since >= limit => format!("\n\n## 程序提示：节奏\n已经 {since} 回合没有推进。回应玩家行动的同时，给出一个推动局面的新情况（新的人物、消息、线索或去处），并在 choices 里给一个推进的选项。不要替玩家做决定。"),
+            _ => String::new(),
+        }
+    };
     let context_text = if missing.is_empty() {
-        ctx.text.clone()
+        format!("{}{stall_note}", ctx.text)
     } else {
         format!("{}
 
 ## 程序事实：玩家没有的物品
-玩家的背包里没有：{}。如果玩家要使用、出示、交出、装备它们，要说明玩家没有（翻遍行囊也找不到），不能让它凭空出现；玩家想买、寻找、打听它们则照常处理。", ctx.text, missing.join("、"))
+玩家的背包里没有：{}。如果玩家要使用、出示、交出、装备它们，要说明玩家没有（翻遍行囊也找不到），不能让它凭空出现；玩家想买、寻找、打听它们则照常处理。{stall_note}", ctx.text, missing.join("、"))
     };
     out.missing_items = missing;
+    // 玩家在查看自己带了什么：把背包原样告诉 GM（实测：翻口袋时 GM 编出了玩家没有的"备用灯芯石"）。
+    let mut self_facts = String::new();
+    let context_text = if !opening && SELF_CHECK_WORDS.iter().any(|x| input.contains(x)) {
+        let w = lock(world)?;
+        let bag: Vec<String> = chronicle_core::rpg::inventory(w.conn(), campaign_id, &chronicle_core::rpg::actor())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| format!("{}×{}{}", i.item.title, i.qty, i.ammo_left.map(|n| format!("（{}剩 {n}）", i.item.ammo)).unwrap_or_default()))
+            .collect();
+        let money = chronicle_core::rpg::format_money(&chronicle_core::rpg::rules(w.conn(), campaign_id), chronicle_core::rpg::money(w.conn(), campaign_id, &chronicle_core::rpg::actor()));
+        self_facts = format!(
+            "\n\n## 程序事实：玩家身上的东西\n玩家身上只有：{}；钱 {money}。没有别的东西。玩家查看自己时只能描述这些，不能让其他物品出现在身上。",
+            if bag.is_empty() { "（什么都没有）".to_string() } else { bag.join("、") }
+        );
+        format!("{context_text}{self_facts}")
+    } else {
+        context_text
+    };
     let user = templates.render("gm_plan", json!({ "dsl": dsl, "context": context_text, "input": input, "play": play, "check_rules": check_rules, "web_search": opts.web_search.is_some() }))?;
     let mut plan = ask_limited::<GmPlan>(gm, SYSTEM, &user, opts, LIMIT_PLAN, cancel, &mut out.requests)?.value;
     // 联网搜索：只有用户打开并允许 GM 搜索时才有；结果作为标明来源的资料交给叙述，不执行其中的任何"指令"，也不写进剧本。
@@ -423,6 +541,63 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             campaign::record(w.conn(), campaign_id, "web_search", &rec)?;
         }
         out.web_search = Some(rec);
+    }
+    // 检定技能要贴合行动：玩家明说了"窃听 / 潜行 / 说服……"，而模型选的技能属于别的属性（例如窃听却用"野外生存"），
+    // 改成对应的通用技能。只在玩家的话里有明确的动作词时才改。
+    if let Some((generic, role)) = chronicle_core::rpg::action_skill(input) {
+        let w = lock(world)?;
+        let r = chronicle_core::rpg::rules(w.conn(), campaign_id);
+        let want = chronicle_core::rpg::role_attr(&r, role);
+        for c in plan.checks.iter_mut() {
+            if c.skill.contains(generic) || chronicle_core::rpg::skill_attr(&r, &c.skill) == want {
+                continue;
+            }
+            out.conflicts_pre.push(format!("检定技能「{}」和玩家的行动不符，改为「{generic}」", c.skill));
+            c.skill = generic.to_string();
+        }
+    }
+    // 查看自己的东西（"还剩几发铅弹？"）不用掷骰（实测掷了一次"调查"）。
+    if !opening && SELF_CHECK_WORDS.iter().any(|x| input.contains(x)) && !OPENING_ATTACK.iter().any(|x| input.contains(x)) && !plan.checks.is_empty() {
+        plan.checks.clear();
+        out.conflicts_pre.push("玩家只是在查看自己的东西，去掉了检定".into());
+    }
+    // 不在战斗中、武器的弹药已经打光，玩家还要开枪：打不响，不掷骰（实测：没子弹了 GM 改成一次"猎枪射击"检定，照样开了枪）。
+    if !opening && OPENING_ATTACK.iter().any(|x| input.contains(x)) {
+        let w = lock(world)?;
+        if chronicle_core::combat::active(w.conn(), campaign_id).is_none()
+            && let Some(gun) = chronicle_core::rpg::inventory(w.conn(), campaign_id, &chronicle_core::rpg::actor()).unwrap_or_default().into_iter().find(|i| i.equipped && i.item.slot == "weapon" && i.ammo_left == Some(0))
+        {
+            plan.checks.clear();
+            plan.combat_start.clear();
+            out.rpg_updates.push(format!("{}没有{}了，扣下扳机打不响", gun.item.title, gun.item.ammo));
+        }
+    }
+    // 只是问在场人物一句话（"阿澜，你觉得灯塔为什么会熄？"），不需要察觉 / 聆听检定（实测模型照样掷了聆听）。
+    if !opening && chronicle_core::rpg::action_skill(input).is_none() && input.trim_end().ends_with(['？', '?']) && ctx.npcs.iter().any(|n| input.contains(n.node.title.as_str())) {
+        let before = plan.checks.len();
+        plan.checks.retain(|c| !["察觉", "聆听", "感知", "侦查", "观察"].iter().any(|k| c.skill.contains(k)));
+        if plan.checks.len() < before {
+            out.conflicts_pre.push("玩家只是在问在场人物，去掉了察觉 / 聆听检定".into());
+        }
+    }
+    // 玩家做了明确有风险的动作（攀爬、潜行、偷听、撬锁、说服……），模型却没提检定：程序补一次（实测 9B 模型 4 个回合一次检定都不提，
+    // "趁人不注意顺着生锈的铁梯往上爬"也直接成功）。难度取中等，之后照样按难度设置调整；成败由叙述步骤按骰子重写。
+    // 模型把检定写成了效果（之后由程序搬回 checks）、玩家是在动手攻击（战斗另算）、枪已经打不响时都不补。
+    let check_in_effects = [&plan.effects, &plan.effects_on_success, &plan.effects_on_failure]
+        .iter()
+        .any(|l| l.iter().any(|m| m.get("type").and_then(|t| t.as_str()).is_some_and(|t| matches!(t, "check" | "skill_check" | "roll"))));
+    if !opening && plan.checks.is_empty() && !check_in_effects && !SELF_CHECK_WORDS.iter().any(|x| input.contains(x)) && plan.combat_start.is_empty()
+        && !OPENING_ATTACK.iter().any(|x| input.contains(x)) && !out.rpg_updates.iter().any(|u| u.contains("打不响"))
+        && let Some((generic, _)) = chronicle_core::rpg::action_skill(input)
+    {
+        let fighting = {
+            let w = lock(world)?;
+            chronicle_core::combat::active(w.conn(), campaign_id).is_some()
+        };
+        if !fighting {
+            plan.checks.push(crate::outputs::CheckRequest { skill: generic.to_string(), dc: 12, reason: format!("{}（程序补上：这个动作可能失败）", input.chars().take(20).collect::<String>()), advantage: String::new() });
+            out.conflicts_pre.push(format!("模型没有提出检定，程序按动作补了一次「{generic}」检定"));
+        }
     }
     if opening {
         // 开场只讲述，不掷骰、不推进剧情、不改状态。
@@ -491,7 +666,22 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
                 "disadvantage" | "劣势" => -1,
                 _ => 0,
             };
-            let mut roll = chronicle_core::checks::perform(&mut w, campaign_id, &rules.check, modifier, dc, adv, &format!("{skill} 检定：{}", chk.reason))?;
+            // 玩家选了亲手掷骰：先请界面掷。等待期间放开世界锁（界面这时还会读状态）。
+            let reason = format!("{skill} 检定：{}", chk.reason);
+            let hand = match opts.dice.as_ref() {
+                Some(d) => {
+                    let ask = chronicle_core::checks::ask_for(&rules.check, modifier, dc, adv, &reason);
+                    drop(w);
+                    let got = (d.0)(&ask);
+                    w = lock(world)?;
+                    got
+                }
+                None => None,
+            };
+            let mut roll = chronicle_core::checks::perform_with(&mut w, campaign_id, &rules.check, modifier, dc, adv, &reason, hand)?;
+            if cancel.is_cancelled() {
+                return Err(GmError::Cancelled);
+            }
             if !diff_note.is_empty() {
                 roll.explain = format!("{}（{diff_note}）", roll.explain);
             }
@@ -541,7 +731,7 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             .into_iter()
             .filter(|e| {
                 let chronicle_core::rules::Effect::GiveItem { holder, item, .. } = e else { return true };
-                if holder != chronicle_core::rpg::PARTY || found_by_check || script_item_kind(&w, script_id.as_deref(), item) {
+                if *holder != chronicle_core::rpg::actor() || found_by_check || script_item_kind(&w, script_id.as_deref(), item) {
                     return true;
                 }
                 rejected.push(RejectedEffect {
@@ -575,6 +765,8 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
 
         // 人物成长、物品经济与战斗：GM 只提出意图，数值全部由程序结算。
         let rpg_lines = apply_rpg(&mut w, campaign_id, &ctx, &plan, input, &mut out);
+        // 回合前就定下的结算（例如"没有铅弹了，打不响"）也交给叙述。
+        outcome_lines.extend(out.rpg_updates.iter().map(|l| format!("- {l}")));
         outcome_lines.extend(rpg_lines.iter().map(|l| format!("- {l}")));
         out.rpg_updates.extend(rpg_lines);
 
@@ -616,8 +808,14 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             if chronicle_core::quests::looks_like_spoiler(&format!("{title}{detail}")) || !find_leaks(&format!("{title}{detail}"), &ctx.hidden).is_empty() {
                 continue;
             }
-            chronicle_core::investigation::add_clue(&mut w, campaign_id, &title, &detail, "gm")?;
-            out.discoveries.push(title.trim().to_string());
+            // 无效的发现（实测：换成名字后标题变空，整个回合因"线索标题不能为空"失败）只跳过，不让回合失败。
+            if title.trim().is_empty() {
+                continue;
+            }
+            match chronicle_core::investigation::add_clue(&mut w, campaign_id, &title, &detail, "gm") {
+                Ok(_) => out.discoveries.push(title.trim().to_string()),
+                Err(e) => out.conflicts_pre.push(format!("新发现「{}」没有记入调查板：{e}", title.trim())),
+            }
         }
         // 因果与伏笔（开场回合不记）。
         if !opening {
@@ -693,9 +891,48 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
     } else {
         plan.narration.clone()
     };
+    // 和最近两段讲述大段重复（实测：闲逛的三个回合叙述几乎逐字相同）：带着重复的那句重写一次，仍重复就记下来。
+    if !opening {
+        let prev: Vec<String> = {
+            let w = lock(world)?;
+            let mut v: Vec<String> = campaign::recent_events(w.conn(), campaign_id, &["narration"], 2)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|e| e.payload["text"].as_str().map(str::to_string))
+                .collect();
+            v.truncate(2);
+            v
+        };
+        if let Some(dup) = prev.iter().find_map(|p| repeated_phrase(&out.narration, p, NARRATION_REPEAT)) {
+            stage("narrate");
+            let ctx2 = {
+                let w = lock(world)?;
+                build_gm_context(&w, campaign_id, input, opts.context_budget)?
+            };
+            let plan_text = format!("意图：{}；原叙述：{}", plan.intent, out.narration);
+            let outcome = if outcome_lines.is_empty() { "（这一回合没有程序判定）".to_string() } else { outcome_lines.join("\n") };
+            let user = format!(
+                "{}\n\n# 注意\n原叙述里「{dup}」和你上一回合写的一模一样。重写这一回合的叙述：只写玩家这次的行动带来的新内容和新变化，不要重复之前的描写和句子。",
+                templates.render("gm_narrate", json!({ "context": ctx2.text, "input": input, "plan": plan_text, "outcome": outcome }))?
+            );
+            if let Ok(n) = ask_limited::<Narration>(gm, SYSTEM, &user, opts, LIMIT_NARRATION, cancel, &mut out.requests) {
+                let n = n.value;
+                if !n.narration.trim().is_empty() {
+                    out.narration = n.narration;
+                    if n.choices.len() >= 2 {
+                        plan.choices = n.choices;
+                    }
+                }
+            }
+            if let Some(d) = prev.iter().find_map(|p| repeated_phrase(&out.narration, p, NARRATION_REPEAT)) {
+                out.conflicts_pre.push(format!("叙述和上一回合重复：「{d}」"));
+            }
+        }
+    }
     // GM 替在场 NPC 说的台词：从叙述中删掉，改由 NPC 代理亲自回答（NPC 代理有知识隔离）。
     let names: Vec<&str> = ctx.npcs.iter().map(|n| n.node.title.as_str()).collect();
     let mut redirected: Vec<&NpcCard> = vec![];
+    let narration_before_extract = out.narration.clone();
     // 重复几次：相邻的两段台词偶尔只有第一段被识别。
     for _ in 0..3 {
         let extracted = crate::speech::extract_ventriloquism(&out.narration, &names);
@@ -709,6 +946,29 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
                 out.redirected_speakers.push(n.node.title.clone());
                 redirected.push(n);
             }
+        }
+    }
+    // 叙述全是 NPC 的台词、摘掉后什么都不剩（实测："我还剩几发子弹？"叙述为空）：要一段不含台词的叙述。
+    // 摘完只剩残片（实测：剩下 `啪"地一声熄了。"`）也算没有叙述。
+    let meaningful = |s: &str| s.trim().chars().filter(|c| c.is_alphanumeric()).count();
+    if !opening && (out.narration.trim().is_empty() || (out.narration != narration_before_extract && meaningful(&out.narration) < 12)) {
+        let ctx2 = {
+            let w = lock(world)?;
+            build_gm_context(&w, campaign_id, input, opts.context_budget)?
+        };
+        let outcome = if outcome_lines.is_empty() { "（这一回合没有程序判定）".to_string() } else { outcome_lines.join("\n") };
+        let user = format!(
+            "{}\n\n# 注意\n只写玩家角色看到、做到的事，不要写任何人物的台词（人物会自己说话）。玩家问自己的东西时，按「玩家身上的东西」如实回答。",
+            templates.render("gm_narrate", json!({ "context": format!("{}{}", ctx2.text, self_facts), "input": input, "plan": format!("意图：{}", plan.intent), "outcome": outcome }))?
+        );
+        if let Ok(n) = ask_limited::<Narration>(gm, SYSTEM, &user, opts, LIMIT_NARRATION, cancel, &mut out.requests) {
+            let e = crate::speech::extract_ventriloquism(&n.value.narration, &names);
+            if !e.narration.trim().is_empty() {
+                out.narration = e.narration;
+            }
+        }
+        if out.narration.trim().is_empty() {
+            out.conflicts_pre.push("GM 这回合没有给出叙述（只有人物台词）".into());
         }
     }
     if opening && !out.narration.trim().is_empty() {
@@ -738,7 +998,32 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
         }
     }
     // 叙述与程序结算不符（实测：结算是击倒，叙述却写"没能触到"）：记下来给主持人看。
+    if let Some(k) = kit_note.take() {
+        out.rpg_updates.insert(0, k);
+    }
     out.conflicts = chronicle_core::director::narration_mismatches(&out.narration, &out.rpg_updates);
+    // 叙述和程序结算对不上（实测：没打中写成"击中要害，当场倒地不起"；野狗还剩 5/11 写成"不再挣扎"）：按结算重写一次。
+    if !opening && !out.conflicts.is_empty() {
+        let ctx2 = {
+            let w = lock(world)?;
+            build_gm_context(&w, campaign_id, input, opts.context_budget)?
+        };
+        let outcome = format!("{}\n{}", outcome_lines.join("\n"), out.rpg_updates.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n"));
+        let user = format!(
+            "{}\n\n# 注意\n你上一次写的叙述和程序结算不符：{}。严格按程序判定结果重写：没有命中就不能写打中，目标还有生命值就不能写死了或倒下。不要写人物的台词。",
+            templates.render("gm_narrate", json!({ "context": ctx2.text, "input": input, "plan": format!("意图：{}；原叙述：{}", plan.intent, out.narration), "outcome": outcome }))?,
+            out.conflicts.join("；")
+        );
+        if let Ok(n) = ask_limited::<Narration>(gm, SYSTEM, &user, opts, LIMIT_NARRATION, cancel, &mut out.requests) {
+            let e = crate::speech::extract_ventriloquism(&n.value.narration, &names);
+            let again = chronicle_core::director::narration_mismatches(&e.narration, &out.rpg_updates);
+            if !e.narration.trim().is_empty() && again.len() < out.conflicts.len() {
+                out.narration = e.narration;
+                out.conflicts = again;
+            }
+        }
+    }
+    out.conflicts.splice(0..0, std::mem::take(&mut out.conflicts_pre));
     {
         let w = lock(world)?;
         let revealed: Vec<String> = out.applied.iter().filter_map(|e| if let Effect::RevealClue { clue } = e { Some(clue.clone()) } else { None }).collect();
@@ -790,8 +1075,47 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
 
     // 5. NPC 回应：每个 NPC 只拿到自己的资料与玩家可见的信息。
     let mut speakers: Vec<&NpcCard> = vec![];
+    // 玩家点名对某个在场的人说话（"问苏桦……""对小九说……"），模型却没让他回答：补上（实测 GM 写成了在看别人）。
+    if !opening && TALK_WORDS.iter().any(|w| input.contains(w)) {
+        for n in &ctx.npcs {
+            if input.contains(n.node.title.as_str()) && !plan.npc_speakers.iter().any(|r| ctx.resolve_npc(r).is_some_and(|x| x.node.id == n.node.id)) {
+                plan.npc_speakers.insert(0, n.node.id.clone());
+            }
+        }
+    }
+    // 玩家没叫他、他却已经连着两个回合插话：这回合让他歇一歇（实测：莫伦连续 9 回合催"把石头给我"）。
+    let chatty: Vec<String> = if opening {
+        vec![]
+    } else {
+        let w = lock(world)?;
+        let ev = campaign::recent_events(w.conn(), campaign_id, &["player", "npc"], 80).unwrap_or_default();
+        let mut turns: Vec<i64> = ev.iter().filter(|e| e.kind == "player").map(|e| e.turn).collect();
+        turns.dedup();
+        // 最后一个是这一回合，往前两个是上两回合。
+        let prev: Vec<i64> = turns.iter().rev().skip(1).take(2).copied().collect();
+        if prev.len() < 2 {
+            vec![]
+        } else {
+            ctx.npcs
+                .iter()
+                .filter(|n| prev.iter().all(|t| ev.iter().any(|e| e.kind == "npc" && e.turn == *t && e.payload["npc_id"].as_str() == Some(n.node.id.as_str()))))
+                .map(|n| n.node.id.clone())
+                .collect()
+        }
+    };
+    // 潜行、躲藏、顺手牵羊这类检定成功了：没人察觉，这回合在场的人不对玩家做出反应（实测：潜行成功撬箱子，莫伦马上喝问"谁让你撬箱子的"）。
+    // 玩家主动对人说话时照常。
+    let unnoticed = out.checks.iter().any(|c| c.success && ["潜行", "躲藏", "巧手", "隐藏", "偷窃"].iter().any(|k| c.skill.contains(k)));
+    if unnoticed && !TALK_WORDS.iter().any(|w| input.contains(w)) && !plan.npc_speakers.is_empty() {
+        plan.npc_speakers.clear();
+        redirected.clear();
+        out.conflicts.push("潜行成功：没人察觉，这回合在场人物不做反应".into());
+    }
     let requested = plan.npc_speakers.iter().filter_map(|r| ctx.resolve_npc(r));
     for n in requested.chain(redirected) {
+        if chatty.contains(&n.node.id) && !input.contains(n.node.title.as_str()) {
+            continue;
+        }
         if !speakers.iter().any(|s| s.node.id == n.node.id) && speakers.len() < 2 {
             speakers.push(n);
         }
@@ -808,10 +1132,24 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
                 .unwrap_or_else(|| "玩家的角色".to_string());
             (build_npc_context(&w, campaign_id, me, &ctx.npcs, ctx.script.as_ref(), ctx.current.as_ref())?, player)
         };
+        // 这个人物最近说过的话（实测：每回合都重复"雾还没散，船队还得等天亮"）。
+        let said: Vec<String> = {
+            let w = lock(world)?;
+            let mut v: Vec<String> = campaign::recent_events(w.conn(), campaign_id, &["npc"], 40)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| e.payload["npc_id"].as_str() == Some(me.node.id.as_str()))
+                .filter_map(|e| e.payload["text"].as_str().map(str::to_string))
+                .collect();
+            let keep = v.len().saturating_sub(4);
+            v.drain(..keep);
+            v
+        };
         let user = templates.render(
             "npc_reply",
             json!({ "name": nctx.name, "card": nctx.card, "knowledge": nctx.knowledge, "attitude": nctx.attitude,
-                    "memories": nctx.memories, "mood": nctx.mood, "scene": nctx.scene, "recent": nctx.recent, "input": input, "player": player }),
+                    "memories": nctx.memories, "mood": nctx.mood, "scene": nctx.scene, "recent": nctx.recent, "input": input, "player": player,
+                    "said": if said.is_empty() { "（还没说过话）".to_string() } else { said.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n") } }),
         )?;
         // 实测：本地模型偶尔给出无法解析的 NPC 回应。叙述已经写入，不能因为一句台词让整个回合失败：跳过这个人物的台词并记下原因。
         let mut reply = match ask_limited::<NpcReplyOut>(npc, NPC_SYSTEM, &user, opts, LIMIT_NPC, cancel, &mut out.requests) {
@@ -822,6 +1160,20 @@ fn run_turn_inner(world: &Mutex<World>, engine: &Engine, campaign_id: &str, inpu
             }
             Err(e) => return Err(e),
         };
+        // 和自己说过的话、或这回合别人刚说的话大段重复（实测：阿澜和莫伦同一回合说了一字不差的同一句）：
+        // 重新说一次；还重复就不用这句台词。
+        let others: Vec<String> = out.npc_lines.iter().map(|l| l.text.clone()).collect();
+        let dup_of = |t: &str| said.iter().chain(others.iter()).find_map(|s| repeated_phrase(t, s, NPC_REPEAT));
+        if let Some(dup) = dup_of(&reply.reply) {
+            let again = format!("{user}\n\n# 注意\n你刚才的回答里「{dup}」是之前已经说过的话。这次换个说法，回应玩家刚才这句话里新的内容。");
+            if let Ok(r) = ask_limited::<NpcReplyOut>(npc, NPC_SYSTEM, &again, opts, LIMIT_NPC, cancel, &mut out.requests) {
+                reply = r.value;
+            }
+            if let Some(d) = dup_of(&reply.reply) {
+                out.conflicts.push(format!("{}的台词和之前说过的重复（「{d}」），这回合略过", me.node.title));
+                continue;
+            }
+        }
         reply.salvage_leaked_fields();
         let delta = reply.attitude_change.clamp(-2, 2);
         // 情绪变化：每项每回合最多 ±10，原因写明是对哪句话的反应。
@@ -1016,7 +1368,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
     let actor = |code: &str| -> Option<String> {
         let c = code.trim();
         if c.is_empty() || c.eq_ignore_ascii_case("party") || c == "玩家" {
-            Some(rpg::PARTY.to_string())
+            Some(rpg::actor())
         } else {
             ctx.resolve_npc(c).map(|n| n.node.id.clone())
         }
@@ -1072,7 +1424,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
         match resolve(code) {
             Some(id) => {
                 let slot = rpg::item_info(w.conn(), &id).ok().flatten().map(|i| i.slot).unwrap_or_default();
-                let res = if slot.is_empty() { rpg::use_item(w, campaign_id, rpg::PARTY, &id) } else { rpg::equip(w, campaign_id, rpg::PARTY, &id) };
+                let res = if slot.is_empty() { rpg::use_item(w, campaign_id, &rpg::actor(), &id) } else { rpg::equip(w, campaign_id, &rpg::actor(), &id) };
                 match res {
                     Ok(s) => lines.push(s),
                     // 制作时模型常把材料也写进 item_use：不提示。
@@ -1086,14 +1438,14 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
     // 战斗中不制作（实测：模型在战斗回合里把武器编号也写进了 craft）。
     if let Some(code) = plan.craft.as_deref().filter(|c| !c.trim().is_empty()).filter(|_| !in_combat) {
         match resolve(code) {
-            Some(id) => match rpg::craft(w, campaign_id, rpg::PARTY, &id) {
+            Some(id) => match rpg::craft(w, campaign_id, &rpg::actor(), &id) {
                 Ok(c) => lines.push(if c.dc > 0 { format!("{}（检定 {}{:+} 对难度 {}）", c.text, c.roll, c.modifier, c.dc) } else { c.text }),
                 Err(e) => lines.push(format!("没能制作：{e}")),
             },
             None => lines.push(format!("没能制作：不认识「{code}」")),
         }
     }
-    let active = combat::active(w.conn(), campaign_id);
+    let mut active = combat::active(w.conn(), campaign_id);
     let mut plan_action = plan.combat_action.clone();
     if active.is_some()
         && plan_action.is_none()
@@ -1106,8 +1458,8 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
         && let Some(id) = plan.item_use.as_deref().and_then(resolve)
         && rpg::item_info(w.conn(), &id).ok().flatten().is_some_and(|i| !i.slot.is_empty())
     {
-        if !rpg::equipment(w.conn(), campaign_id, rpg::PARTY).values().any(|v| *v == id)
-            && let Ok(t) = rpg::equip(w, campaign_id, rpg::PARTY, &id)
+        if !rpg::equipment(w.conn(), campaign_id, &rpg::actor()).values().any(|v| *v == id)
+            && let Ok(t) = rpg::equip(w, campaign_id, &rpg::actor(), &id)
         {
             lines.push(t);
         }
@@ -1115,11 +1467,19 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
             plan_action = None;
         }
     }
-    if active.is_none() && !plan.combat_start.is_empty() {
+    // 玩家角色不能当自己的敌人（实测："我翻翻自己的口袋"开了战，敌人就是玩家角色）。
+    let pc_name = chronicle_core::pc::get(w.conn(), campaign_id).map(|p| p.name).unwrap_or_default();
+    let is_pc = |n: &str| !pc_name.trim().is_empty() && (n.trim() == pc_name.trim() || n.trim() == "玩家" || n.trim() == "你");
+    // 在场的人物只有玩家动手时才会成为敌人（实测："我还是在码头上闲逛"开了战，敌人是阿澜和莫伦）。新冒出来的怪物照常可以突袭。
+    let hostile = OPENING_ATTACK.iter().chain(HOSTILE_WORDS).any(|x| input.contains(x));
+    // 按名字判断（模型常给"野狼"填错人物编号，编号不可信）。
+    let present_npc = |e: &crate::outputs::EnemyOut| ctx.npcs.iter().any(|n| e.name.contains(n.node.title.as_str()) || (e.name.trim().chars().count() >= 2 && n.node.title.contains(e.name.trim())));
+    let allowed = |e: &&crate::outputs::EnemyOut| !e.name.trim().is_empty() && !is_pc(&e.name) && (hostile || !present_npc(e));
+    if active.is_none() && plan.combat_start.iter().any(|e| allowed(&e)) {
         let enemies: Vec<combat::EnemySpec> = plan
             .combat_start
             .iter()
-            .filter(|e| !e.name.trim().is_empty())
+            .filter(allowed)
             .map(|e| {
                 // 只有敌人的名字确实指这个人物时才让他参战（实测：模型给"野狼"填了铁匠的编号，结果两个铁匠来打玩家）。
                 let npc = ctx.resolve_npc(&e.npc).filter(|n| e.name.contains(n.node.title.as_str()) || n.node.title.contains(e.name.trim())).map(|n| n.node.id.clone());
@@ -1134,18 +1494,33 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
         match combat::start_locked(w, campaign_id, &enemies, &allies, &reason, &plan.combat_no_escape) {
             Ok(rep) => {
                 lines.extend(rep.lines);
+                out.dice.extend(rep.dice);
                 out.combat = Some(rep.combat);
+                // 玩家是动手开战的（"我端起猎枪朝它开枪"）：轮到玩家时这一击在本回合结算
+                //（实测：只开了战，叙述却写一枪打死了野狗，弹药也没扣）。
+                active = combat::active(w.conn(), campaign_id).filter(|c| c.players_turn());
+                if active.is_some() && plan_action.is_none() && OPENING_ATTACK.iter().any(|x| input.contains(x)) {
+                    plan_action = Some(crate::outputs::CombatActionOut { kind: "attack".into(), target: String::new(), item: String::new() });
+                }
+                if plan_action.is_none() {
+                    active = None;
+                }
             }
             Err(e) => lines.push(format!("战斗没有开始：{e}")),
         }
-    } else if let (Some(_), Some(a)) = (&active, &plan_action) {
+    }
+    // 战斗进行中，玩家说"再开一枪"之类、模型却没给出战斗动作：按攻击结算（实测：弹药打空后 GM 自己写了一枪击倒，程序什么都没做）。
+    if active.as_ref().is_some_and(|c| c.players_turn()) && plan_action.is_none() && OPENING_ATTACK.iter().any(|x| input.contains(x)) {
+        plan_action = Some(crate::outputs::CombatActionOut { kind: "attack".into(), target: String::new(), item: String::new() });
+    }
+    if let (Some(_), Some(a)) = (&active, &plan_action) {
         let item = resolve(&a.item).unwrap_or_default();
         // 攻击时指明了背包里的武器（实测：模型会在 item 里写武器编号）：先装备上。
         if a.kind == "attack"
             && !item.is_empty()
             && rpg::item_info(w.conn(), &item).ok().flatten().is_some_and(|i| i.slot == "weapon")
-            && !rpg::equipment(w.conn(), campaign_id, rpg::PARTY).values().any(|v| *v == item)
-            && let Ok(t) = rpg::equip(w, campaign_id, rpg::PARTY, &item)
+            && !rpg::equipment(w.conn(), campaign_id, &rpg::actor()).values().any(|v| *v == item)
+            && let Ok(t) = rpg::equip(w, campaign_id, &rpg::actor(), &item)
         {
             lines.push(t);
         }
@@ -1154,7 +1529,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
         if let Some(c) = &active
             && matches!(a.kind.trim(), "attack" | "move")
             && !c.units.iter().any(|u| u.out.is_empty() && (u.id == target || u.name == target))
-            && let Some(me) = c.units.iter().find(|u| u.actor.as_deref() == Some(rpg::PARTY))
+            && let Some(me) = c.units.iter().find(|u| u.actor.as_deref() == Some(rpg::actor().as_str()))
         {
             let foes: Vec<_> = c.units.iter().filter(|u| u.side == "enemy" && u.out.is_empty()).collect();
             let named: Vec<_> = foes.iter().filter(|u| target.contains(u.name.trim_end_matches(|ch: char| ch.is_ascii_digit()))).collect();
@@ -1163,7 +1538,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
                 target = t.id.clone();
             }
         }
-        let act = combat::CombatAction { kind: a.kind.trim().to_string(), target, item, x: None, y: None, custom: if a.kind == "custom" { a.item.clone() } else { String::new() } };
+        let act = combat::CombatAction { kind: a.kind.trim().to_string(), target, item, x: None, y: None, custom: if matches!(a.kind.trim(), "custom" | "skill") { a.item.clone() } else { String::new() } };
         // 一个 GM 回合 = 玩家完整的一个战斗回合：目标太远时先靠近再攻击，行动后自动结束回合。
         let mut res = combat::act(w, campaign_id, &act);
         // 目标太远：在行动点允许的范围内一直靠近，进入射程后攻击。
@@ -1175,22 +1550,24 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
             match combat::act(w, campaign_id, &mv) {
                 Ok(rep) => {
                     lines.extend(rep.lines);
+                    out.dice.extend(rep.dice);
                     out.combat = Some(rep.combat);
                     res = combat::act(w, campaign_id, &act);
                 }
                 Err(_) => {
-                    res = combat::active(w.conn(), campaign_id).map(|c| combat::CombatReport { lines: vec![], combat: c }).ok_or_else(|| chronicle_core::CoreError::Invalid("战斗已结束".into()));
+                    res = combat::active(w.conn(), campaign_id).map(|c| combat::CombatReport { lines: vec![], combat: c, dice: vec![] }).ok_or_else(|| chronicle_core::CoreError::Invalid("战斗已结束".into()));
                     break;
                 }
             }
         }
         if res.as_ref().is_err_and(|e| e.to_string().contains("太远") || e.to_string().contains("行动点不够")) {
             lines.push("这一回合没能接近到可以攻击的距离".into());
-            res = combat::active(w.conn(), campaign_id).map(|c| combat::CombatReport { lines: vec![], combat: c }).ok_or_else(|| chronicle_core::CoreError::Invalid("战斗已结束".into()));
+            res = combat::active(w.conn(), campaign_id).map(|c| combat::CombatReport { lines: vec![], combat: c, dice: vec![] }).ok_or_else(|| chronicle_core::CoreError::Invalid("战斗已结束".into()));
         }
         match res {
             Ok(rep) => {
                 lines.extend(rep.lines);
+                out.dice.extend(rep.dice);
                 out.combat = Some(rep.combat);
             }
             Err(e) => lines.push(format!("战斗行动没有执行：{e}")),
@@ -1199,6 +1576,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
             && let Ok(rep) = combat::act(w, campaign_id, &combat::CombatAction { kind: "end_turn".into(), ..Default::default() })
         {
             lines.extend(rep.lines);
+            out.dice.extend(rep.dice);
             out.combat = Some(rep.combat);
         }
     } else if let Some(c) = active {
@@ -1207,7 +1585,7 @@ fn apply_rpg(w: &mut World, campaign_id: &str, ctx: &crate::context::GmContext, 
     // GM 用效果给的物品记下来源。
     for e in &out.applied {
         if let chronicle_core::rules::Effect::GiveItem { holder, item, .. } = e
-            && holder == rpg::PARTY
+            && *holder == rpg::actor()
         {
             let _ = campaign::apply_effects(
                 w,

@@ -158,12 +158,12 @@ export function CharacterPanel({ ctx, campaignId, gmView, ended, refreshKey, onC
             >
               保存
             </button>
-            {!gmView && <span className="hint">　打开主持人视角可以修改数值。</span>}
+            {!gmView && <span className="hint">　打开剧透模式可以修改数值。</span>}
           </div>
         )}
         {gmView && !ended && (
           <div className="row wrap">
-            <span className="hint">主持人：</span>
+            <span className="hint">GM 调整：</span>
             <input type="number" value={gm.money} onChange={(e) => setGm({ ...gm, money: Number(e.target.value) })} style={{ width: 80 }} title="铜币，可以为负" />
             <button onClick={() => act("money", "", "", gm.money, gm.reason)}>调整金钱（铜币）</button>
             <input type="number" value={gm.xp} onChange={(e) => setGm({ ...gm, xp: Number(e.target.value) })} style={{ width: 70 }} />

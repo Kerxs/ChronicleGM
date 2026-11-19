@@ -31,9 +31,22 @@ function bondColor(b: Bond | null | undefined): string {
 
 const bondText = (b: Bond | null | undefined) => (b ? `强度 ${b.strength} · 信任 ${b.trust} · 好感 ${b.affection} · 敌意 ${b.hostility}` : "（没有看法记录）");
 
-export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { ctx: Ctx; focus?: string; onOpenTree: (id: string) => void; onOpenGraph: (id: string) => void }) {
+export default function NetworkPage({
+  ctx,
+  focus,
+  onOpenTree,
+  onOpenGraph,
+  lockedCampaign,
+}: {
+  ctx: Ctx;
+  focus?: string;
+  onOpenTree?: (id: string) => void;
+  onOpenGraph?: (id: string) => void;
+  /** 嵌在游戏空间里：固定显示这局游戏的关系，不显示战役选择和编辑器入口。 */
+  lockedCampaign?: string;
+}) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [campaign, setCampaign] = useState<string>("");
+  const [campaign, setCampaign] = useState<string>(lockedCampaign ?? "");
   const [search, setSearch] = useState("");
   const [applied, setApplied] = useState("");
   const [relTypes, setRelTypes] = useState<RelationType[]>([]);
@@ -60,7 +73,7 @@ export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { c
       setCampaigns(cs);
       // 默认选最近的进行中战役。
       const active = [...cs].reverse().find((c) => c.status === "active" && !c.archived);
-      setCampaign((cur) => cur || active?.id || "");
+      setCampaign((cur) => lockedCampaign || cur || active?.id || "");
     }).catch(() => {});
     api.relationTypes().then(setRelTypes).catch(() => {});
   }, [ctx.worldId]);
@@ -134,7 +147,7 @@ export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { c
       <h2>人物关系网络</h2>
       <SpoilerHint ctx={ctx} what="人物关系" />
       <div className="row wrap">
-        <select value={campaign} onChange={(e) => setCampaign(e.target.value)}>
+        <select value={campaign} onChange={(e) => setCampaign(e.target.value)} disabled={!!lockedCampaign} hidden={!!lockedCampaign}>
           <option value="">只看世界设定中的关系</option>
           {timelineTree(campaigns, false).map((r) => (
             <option key={r.campaign.id} value={r.campaign.id}>
@@ -199,7 +212,7 @@ export default function NetworkPage({ ctx, focus, onOpenTree, onOpenGraph }: { c
   );
 }
 
-function PersonPanel({ ctx, node, campaign, onOpenTree, onOpenGraph }: { ctx: Ctx; node: NetNode; campaign: string; onOpenTree: (id: string) => void; onOpenGraph: (id: string) => void }) {
+function PersonPanel({ ctx, node, campaign, onOpenTree, onOpenGraph }: { ctx: Ctx; node: NetNode; campaign: string; onOpenTree?: (id: string) => void; onOpenGraph?: (id: string) => void }) {
   const [bonds, setBonds] = useState<BondSummary[]>([]);
   useEffect(() => {
     if (campaign) api.personBonds(ctx.worldId, campaign, node.id).then(setBonds).catch(() => setBonds([]));
@@ -212,8 +225,8 @@ function PersonPanel({ ctx, node, campaign, onOpenTree, onOpenGraph }: { ctx: Ct
       {node.summary && <p>{node.summary}</p>}
       {node.kind !== "party" && (
         <div className="row wrap">
-          <button onClick={() => onOpenTree(node.id)}>在世界树中打开</button>
-          <button onClick={() => onOpenGraph(node.id)}>在世界图谱中查看</button>
+          {onOpenTree && <button onClick={() => onOpenTree(node.id)}>在世界树中打开</button>}
+          {onOpenGraph && <button onClick={() => onOpenGraph(node.id)}>在世界图谱中查看</button>}
         </div>
       )}
       {campaign && (

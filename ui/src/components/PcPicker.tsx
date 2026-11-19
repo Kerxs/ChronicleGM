@@ -104,7 +104,7 @@ export default function PcPicker({ ctx, scriptId, campaignId, onDone }: { ctx: C
       )}
       {scriptId && (
         <div className="row pc-gen">
-          <input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="想要什么样的新角色？（可选，例如：一个怕水的船医）" disabled={busy !== null} />
+          <input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="想要什么样的新角色？（可选）" title="例如：一个怕水的船医" disabled={busy !== null} />
           <button type="button" disabled={busy !== null} onClick={() => void generate()}>
             {busy === "gen" ? "AI 正在设计角色…" : "让 AI 生成新角色"}
           </button>

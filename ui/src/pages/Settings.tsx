@@ -28,7 +28,8 @@ function emptyConfig(): ProviderConfig {
   return blankProvider("chat");
 }
 
-export default function SettingsPage({ notify, info }: { notify: (m: string, k?: "info" | "error") => void; info?: AppInfo | null; onOpenPerf?: () => void }) {
+/** `view`：local = 本机服务（llama-server、Ollama 等已在运行的服务、语音、关于）；cloud = 云端模型（单独一页）。 */
+export default function SettingsPage({ notify, info, view = "local" }: { notify: (m: string, k?: "info" | "error") => void; info?: AppInfo | null; onOpenPerf?: () => void; view?: "local" | "cloud" }) {
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [routes, setRoutes] = useState<[string, string][]>([]);
   const [stats, setStats] = useState<ProviderStats[]>([]);
@@ -165,9 +166,48 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
   const chatProviders = providers.filter((p) => p.config.service === "chat" && p.config.server_kind !== "breeze_tts");
   const routeChoices = (task: string) => (task === "tts" ? providers.filter(isSpeech) : task === "image" ? providers.filter((p) => p.config.service === "image") : chatProviders);
 
+  const cloud = view === "cloud";
+  const shown = providers.filter((p) => (cloud ? !p.loopback : p.loopback));
+  const routesCard = (
+      <div className="card">
+        <h3>任务使用哪个服务</h3>
+        {ROUTE_TASKS.map(([task, label]) => (
+          <div key={task} className="row">
+            <span style={{ width: 220 }}>{label}</span>
+            <select
+              value={routeOf(task)}
+              onChange={(e) => void api.setRoute(task, e.target.value || null).then(load).catch((er: Error) => notify(er.message, "error"))}
+            >
+              <option value="">{task === "default" ? "（未设置）" : task === "tts" ? "自动（第一个语音服务）" : task === "image" ? "自动（第一个生图服务）" : "使用默认"}</option>
+              {routeChoices(task).map((p) => (
+                <option key={p.config.id} value={p.config.id}>
+                  {p.config.name}
+                  {p.loopback ? "" : "（云端）"}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+  );
   return (
     <section className="settings">
-      <p className="hint">模型由你自己准备；这里负责识别、测试与选择，不会下载或安装任何东西。默认也不启动程序，只有在下面的「模型启动参数」里配置了托管，才会按你填的参数启动和停止。</p>
+      {cloud ? (
+        <>
+          <p className="hint">用云端的大模型（OpenAI 兼容接口）当 GM、配音或生成图片。选一个服务商会自动填好地址，填上 API Key 和模型即可；Key 保存在系统凭据管理器里，不写进存档和日志。</p>
+          <div className="card cloud-card">
+            <h3>添加云端模型</h3>
+            <CloudProviderForm
+              notify={notify}
+              onSaved={(cfg) => {
+                void load().then(() => test(cfg.id));
+              }}
+            />
+          </div>
+        </>
+      ) : (
+      <>
+      <p className="hint">这里管理电脑上已经在运行的模型服务（llama-server、Ollama、LM Studio 等）：识别、测试、选择哪个任务用哪个服务。内置的 llama.cpp 在「本地模型」页；云端模型在「云端模型」页。</p>
 
       <SearchSettings notify={notify} />
       <div className="card">
@@ -211,10 +251,13 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
         ))}
       </div>
 
+      </>
+      )}
+
       <div className="card">
-        <h3>已配置的服务</h3>
-        {providers.length === 0 && <p className="hint">还没有配置。</p>}
-        {providers.map((p) => {
+        <h3>{cloud ? "已添加的云端模型" : "已配置的本机服务"}</h3>
+        {shown.length === 0 && <p className="hint">{cloud ? "还没有添加云端模型。" : "还没有配置。"}</p>}
+        {shown.map((p) => {
           const c = p.config.capabilities;
           const st = stats.find((s) => s.provider_id === p.config.id);
           return (
@@ -299,33 +342,16 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
         })}
       </div>
 
+      {routesCard}
+      {!cloud && (
+      <>
       <LaunchSettingsCard notify={notify} />
-
-      <div className="card">
-        <h3>任务使用哪个服务</h3>
-        {ROUTE_TASKS.map(([task, label]) => (
-          <div key={task} className="row">
-            <span style={{ width: 220 }}>{label}</span>
-            <select
-              value={routeOf(task)}
-              onChange={(e) => void api.setRoute(task, e.target.value || null).then(load).catch((er: Error) => notify(er.message, "error"))}
-            >
-              <option value="">{task === "default" ? "（未设置）" : task === "tts" ? "自动（第一个语音服务）" : task === "image" ? "自动（第一个生图服务）" : "使用默认"}</option>
-              {routeChoices(task).map((p) => (
-                <option key={p.config.id} value={p.config.id}>
-                  {p.config.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        ))}
-      </div>
 
       <VoiceCard notify={notify} />
 
       <div className="card cloud-card">
-        <h3>添加服务（云端或本机）</h3>
-        <p className="hint">语言模型、语音合成、生成图片都可以用云端服务（OpenAI 兼容接口）。选一个服务商会自动填好地址，填上 API Key 和模型即可；也可以填本机其他服务的地址。</p>
+        <h3>添加本机服务</h3>
+        <p className="hint">扫描找不到的本机服务（例如换了端口），在这里手动填地址。</p>
         <CloudProviderForm
           notify={notify}
           onSaved={(cfg) => {
@@ -427,6 +453,8 @@ export default function SettingsPage({ notify, info }: { notify: (m: string, k?:
             </dd>
           </dl>
         </div>
+      )}
+      </>
       )}
     </section>
   );

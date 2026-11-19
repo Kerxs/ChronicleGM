@@ -638,7 +638,7 @@ function PlayPanel({ ctx, scriptId, names, onHere }: { ctx: Ctx; scriptId: strin
             回合 {st.campaign.turn} · 当前：<strong>{st.current?.title ?? "（剧本没有唯一开场）"}</strong>
           </p>
           {st.current?.player_text && <p className="player">{st.current.player_text}</p>}
-          {st.current?.gm_text && <p className="gm">主持人：{st.current.gm_text}</p>}
+          {st.current?.gm_text && <p className="gm">GM 笔记：{st.current.gm_text}</p>}
           <OptionList options={st.options} names={names} onTake={(o) => void take(o)} />
           <StateSummary s={st.state} names={names} />
           <details>

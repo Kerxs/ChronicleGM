@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chronicle GM 安装程序</title>
+<link rel="stylesheet" href="app.css" />
+</head>
+<body>
+<div class="titlebar" data-tauri-drag-region>
+  <img src="icon.png" alt="" data-tauri-drag-region />
+  <strong id="wtitle" data-tauri-drag-region>Chronicle GM 安装程序</strong>
+  <button title="最小化" data-act="min">—</button>
+  <button class="x" title="关闭" id="closeBtn" data-act="quit">✕</button>
+</div>
+<main>
+  <div class="orb-wrap"><canvas id="orb" aria-label="Chronicle GM"></canvas><div class="orb-static" id="orb-static"></div></div>
+  <div class="card">
+    <!-- 安装：选项 -->
+    <section class="step" id="s-install">
+      <h1 id="ititle">安装 Chronicle GM</h1>
+      <div class="hint" id="isub"></div>
+      <div class="path">
+        <input id="dir" spellcheck="false" />
+        <button class="btn" data-act="pick">更改…</button>
+      </div>
+      <label class="row"><input type="checkbox" id="optStart" checked /> 在开始菜单创建快捷方式</label>
+      <label class="row"><input type="checkbox" id="optDesk" checked /> 在桌面创建快捷方式</label>
+      <div class="hint">你的世界、存档和模型保存在数据目录里，安装和更新都不会动它们。</div>
+      <div class="err" id="ierr"></div>
+      <div class="actions">
+        <button class="btn" data-act="quit">取消</button>
+        <button class="btn primary" id="goInstall" data-act="install">安装</button>
+      </div>
+    </section>
+    <!-- 卸载：确认 -->
+    <section class="step" id="s-uninstall">
+      <h1>卸载 Chronicle GM</h1>
+      <div class="hint">会删除程序文件、快捷方式和「应用和功能」里的这一项。</div>
+      <label class="row"><input type="checkbox" id="optData" /> 同时删除我的数据（世界、存档、下载的模型）</label>
+      <div class="hint" id="dataDir"></div>
+      <div class="err" id="uerr"></div>
+      <div class="actions">
+        <button class="btn" data-act="quit">取消</button>
+        <button class="btn danger" data-act="uninstall">卸载</button>
+      </div>
+    </section>
+    <!-- 进度 -->
+    <section class="step" id="s-progress">
+      <h1 id="ptitle">正在安装…</h1>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="hint" id="pstage">准备中</div>
+    </section>
+    <!-- 完成 -->
+    <section class="step" id="s-done">
+      <h1 id="dtitle" class="ok">安装完成</h1>
+      <div class="hint" id="dsub"></div>
+      <label class="row" id="launchRow"><input type="checkbox" id="optLaunch" checked /> 现在打开 Chronicle GM</label>
+      <div class="actions"><button class="btn primary" data-act="done">完成</button></div>
+    </section>
+  </div>
+</main>
+<script src="orb.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

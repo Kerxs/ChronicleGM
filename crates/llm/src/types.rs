@@ -111,6 +111,53 @@ impl Usage {
             self.completion_tokens = t.get("predicted_n").and_then(serde_json::Value::as_u64);
         }
     }
+
+    /// 服务没给计时（云端 API 通常只给 token 数）时，按 token 数和程序自己量的时间估算速度：
+    /// 生成速度 = 输出 token ÷（总耗时 − 首字时间）；没有首字时间（非流式）就除以总耗时（会偏低一些）；
+    /// 提示词速度 = 输入 token ÷ 首字时间（只有流式请求才有）。llama-server 自己给了计时就不动。
+    pub fn estimate_speeds(&mut self, latency_ms: u64) {
+        if self.predicted_per_second.is_none()
+            && let Some(c) = self.completion_tokens.filter(|c| *c > 0)
+        {
+            let gen_ms = match self.first_token_ms {
+                Some(f) if latency_ms > f => latency_ms - f,
+                _ => latency_ms,
+            };
+            if gen_ms > 0 {
+                self.predicted_per_second = Some(c as f64 / (gen_ms as f64 / 1000.0));
+                self.predicted_ms.get_or_insert(gen_ms as f64);
+            }
+        }
+        if self.prompt_per_second.is_none()
+            && let (Some(p), Some(f)) = (self.prompt_tokens.filter(|p| *p > 0), self.first_token_ms.filter(|f| *f > 0))
+        {
+            self.prompt_per_second = Some(p as f64 / (f as f64 / 1000.0));
+            self.prompt_ms.get_or_insert(f as f64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod speed_tests {
+    use super::Usage;
+
+    #[test]
+    fn cloud_speeds_are_estimated_from_tokens_and_time() {
+        // 流式：首字 0.8 秒，总共 4.8 秒，输出 200 token、输入 1600 token。
+        let mut u = Usage { prompt_tokens: Some(1600), completion_tokens: Some(200), first_token_ms: Some(800), ..Default::default() };
+        u.estimate_speeds(4800);
+        assert_eq!(u.predicted_per_second.map(|v| v.round()), Some(50.0));
+        assert_eq!(u.prompt_per_second.map(|v| v.round()), Some(2000.0));
+        // 非流式：只有总耗时，生成速度按总耗时算，提示词速度拿不到。
+        let mut u = Usage { prompt_tokens: Some(1600), completion_tokens: Some(200), ..Default::default() };
+        u.estimate_speeds(5000);
+        assert_eq!(u.predicted_per_second.map(|v| v.round()), Some(40.0));
+        assert_eq!(u.prompt_per_second, None);
+        // llama-server 自己给了计时：不覆盖。
+        let mut u = Usage { completion_tokens: Some(200), predicted_per_second: Some(77.0), ..Default::default() };
+        u.estimate_speeds(5000);
+        assert_eq!(u.predicted_per_second, Some(77.0));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]

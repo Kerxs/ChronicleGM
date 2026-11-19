@@ -20,6 +20,18 @@ impl std::fmt::Debug for WebSearch {
     }
 }
 
+/// 玩家亲手掷骰（程序提供；设置里选了"我来掷骰"时才有）：界面请玩家掷骰并返回点数，`None` 交给程序掷。
+pub type DiceFn = dyn Fn(&chronicle_core::checks::DiceAsk) -> Option<Vec<Vec<u32>>> + Send + Sync;
+
+#[derive(Clone)]
+pub struct ManualDice(pub std::sync::Arc<DiceFn>);
+
+impl std::fmt::Debug for ManualDice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ManualDice")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GmOptions {
     /// 服务支持 response_format json_schema。
@@ -34,11 +46,13 @@ pub struct GmOptions {
     pub stream: bool,
     /// 联网搜索（默认没有；用户在设置里打开并允许 GM 搜索时才有）。
     pub web_search: Option<WebSearch>,
+    /// 玩家亲手掷检定骰（默认没有：程序掷）。
+    pub dice: Option<ManualDice>,
 }
 
 impl Default for GmOptions {
     fn default() -> Self {
-        Self { json_schema: false, thinking: None, temperature: 0.8, max_tokens: 8192, context_budget: 6000, stream: false, web_search: None }
+        Self { json_schema: false, thinking: None, temperature: 0.8, max_tokens: 8192, context_budget: 6000, stream: false, web_search: None, dice: None }
     }
 }
 

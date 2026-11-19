@@ -78,14 +78,59 @@ fn faces(r: &chronicle_rules::dice::RollResult) -> Vec<i64> {
     r.groups.iter().flat_map(|g| g.rolls.iter().map(|x| *x as i64)).collect()
 }
 
+/// 请玩家亲手掷骰时给界面的说明：掷什么骰子、掷几次（优势 / 劣势掷两次）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct DiceAsk {
+    /// target / roll_under / pool
+    pub mode: String,
+    /// 骰子，例如 "1d20"、"5d6"。
+    pub expr: String,
+    pub count: u32,
+    pub sides: u32,
+    /// 要掷几次：优势 / 劣势是 2，其他是 1。
+    pub rolls: u32,
+    pub advantage: i8,
+    pub modifier: i64,
+    pub dc: i64,
+    /// 检定原因（含技能名）。
+    pub reason: String,
+}
+
+/// 这次检定要掷什么（不掷骰、不碰数据库）：先问玩家亲手掷，再把点数交给 [`perform_with`]。
+pub fn ask_for(rules: &CheckRules, modifier: i64, dc: i64, advantage: i8, reason: &str) -> DiceAsk {
+    let adv = if rules.advantage { advantage.signum() } else { 0 };
+    if rules.mode == "pool" {
+        let count = (rules.pool_base + modifier + adv as i64).clamp(1, 40);
+        let sides = rules.pool_sides.clamp(2, 1000);
+        return DiceAsk { mode: "pool".into(), expr: format!("{count}d{sides}"), count: count as u32, sides: sides as u32, rolls: 1, advantage: adv, modifier, dc, reason: reason.to_string() };
+    }
+    let (count, sides) = parse_dice(&rules.die);
+    DiceAsk { mode: rules.mode.clone(), expr: rules.die.clone(), count, sides, rolls: if adv != 0 { 2 } else { 1 }, advantage: adv, modifier, dc, reason: reason.to_string() }
+}
+
+/// 检查玩家给的点数：组数、颗数对得上，每颗在 1..=面数 之内，否则不用（交给程序掷）。
+pub fn valid_manual(ask: &DiceAsk, got: Option<Vec<Vec<u32>>>) -> Option<Vec<Vec<u32>>> {
+    let got = got?;
+    let ok = got.len() == ask.rolls as usize && got.iter().all(|g| g.len() == ask.count as usize && g.iter().all(|d| (1..=ask.sides).contains(d)));
+    ok.then_some(got)
+}
+
 /// 按规则掷骰并判定。`advantage`：1 优势 / -1 劣势 / 0 普通（规则关闭优势时忽略）。
 pub fn perform(world: &mut World, campaign_id: &str, rules: &CheckRules, modifier: i64, dc: i64, advantage: i8, reason: &str) -> Result<CheckRoll> {
+    perform_with(world, campaign_id, rules, modifier, dc, advantage, reason, None)
+}
+
+/// 同 [`perform`]；`manual` 是玩家亲手掷出的点数（见 [`ask_for`]），不合法时由程序掷。
+#[allow(clippy::too_many_arguments)]
+pub fn perform_with(world: &mut World, campaign_id: &str, rules: &CheckRules, modifier: i64, dc: i64, advantage: i8, reason: &str, manual: Option<Vec<Vec<u32>>>) -> Result<CheckRoll> {
+    let hand = valid_manual(&ask_for(rules, modifier, dc, advantage, reason), manual);
     let adv = if rules.advantage { advantage.signum() } else { 0 };
     match rules.mode.as_str() {
         "pool" => {
             let count = (rules.pool_base + modifier + adv as i64).clamp(1, 40);
             let expr = format!("{count}d{}", rules.pool_sides);
-            let r = campaign::roll(world, campaign_id, &expr, &format!("{reason}（骰池）"))?;
+            let r = campaign::roll_with(world, campaign_id, &expr, &format!("{reason}（骰池）"), hand.as_ref().map(|h| h[0].as_slice()))?;
             let dice = faces(&r);
             let hits = dice.iter().filter(|d| **d >= rules.pool_success_on).count() as i64;
             let need = dc.clamp(1, 20);
@@ -100,15 +145,16 @@ pub fn perform(world: &mut World, campaign_id: &str, rules: &CheckRules, modifie
             } else {
                 Degree::Failure
             };
-            let explain = format!("掷 {count} 个 d{}（≥{} 为成功）：{:?}，成功 {hits} 个，需要 {need} → {}", rules.pool_sides, rules.pool_success_on, dice, degree.label());
+            let explain = format!("{}掷 {count} 个 d{}（≥{} 为成功）：{:?}，成功 {hits} 个，需要 {need} → {}", if hand.is_some() { "亲手" } else { "" }, rules.pool_sides, rules.pool_success_on, dice, degree.label());
+            campaign::annotate_last_roll("check", vec![], hits, Some(need), degree.label());
             Ok(CheckRoll { mode: "pool".into(), expr, dice, other: vec![], advantage: adv, natural: hits, modifier, total: hits, dc: need, target: need, degree, explain })
         }
         mode => {
             let expr = rules.die.clone();
             let (n, sides) = parse_dice(&expr);
-            let a = campaign::roll(world, campaign_id, &expr, reason)?;
+            let a = campaign::roll_with(world, campaign_id, &expr, reason, hand.as_ref().map(|h| h[0].as_slice()))?;
             let (chosen, other) = if adv != 0 {
-                let b = campaign::roll(world, campaign_id, &expr, &format!("{reason}（{}）", if adv > 0 { "优势" } else { "劣势" }))?;
+                let b = campaign::roll_with(world, campaign_id, &expr, &format!("{reason}（{}）", if adv > 0 { "优势" } else { "劣势" }), hand.as_ref().map(|h| h[1].as_slice()))?;
                 let roll_under = mode == "roll_under";
                 // 优势：target 取大、roll_under 取小；劣势相反。
                 let a_better = if roll_under { a.total <= b.total } else { a.total >= b.total };
@@ -120,6 +166,7 @@ pub fn perform(world: &mut World, campaign_id: &str, rules: &CheckRules, modifie
             let dice = faces(&chosen);
             let max = n as i64 * sides as i64;
             let min = n as i64;
+            let by_hand = if hand.is_some() { "（亲手掷）" } else { "" };
             let adv_txt = if adv != 0 { format!("（{}：{} / {}）", if adv > 0 { "优势" } else { "劣势" }, natural, other.iter().sum::<i64>()) } else { String::new() };
             if mode == "roll_under" {
                 let target = (dc + modifier).clamp(1, max.max(1));
@@ -137,7 +184,8 @@ pub fn perform(world: &mut World, campaign_id: &str, rules: &CheckRules, modifie
                 } else {
                     Degree::Failure
                 };
-                let explain = format!("{expr} 掷出 {natural}{adv_txt}，目标 ≤ {target}（难度 {dc} + 修正 {modifier}）→ {}", degree.label());
+                campaign::annotate_last_roll("check", vec![], natural, Some(target), degree.label());
+                let explain = format!("{expr}{by_hand} 掷出 {natural}{adv_txt}，目标 ≤ {target}（难度 {dc} + 修正 {modifier}）→ {}", degree.label());
                 return Ok(CheckRoll { mode: "roll_under".into(), expr, dice, other, advantage: adv, natural, modifier, total: natural, dc, target, degree, explain });
             }
             let total = natural + modifier;
@@ -152,7 +200,8 @@ pub fn perform(world: &mut World, campaign_id: &str, rules: &CheckRules, modifie
             } else {
                 Degree::Failure
             };
-            let explain = format!("{expr} 掷出 {natural}{adv_txt} + 修正 {modifier} = {total}，难度 {dc} → {}", degree.label());
+            campaign::annotate_last_roll("check", if modifier != 0 { vec![("修正".into(), modifier)] } else { vec![] }, total, Some(dc), degree.label());
+            let explain = format!("{expr}{by_hand} 掷出 {natural}{adv_txt} + 修正 {modifier} = {total}，难度 {dc} → {}", degree.label());
             Ok(CheckRoll { mode: "target".into(), expr, dice, other, advantage: adv, natural, modifier, total, dc, target: dc, degree, explain })
         }
     }

@@ -10,15 +10,18 @@
       html, body { margin: 0; height: 100%; background: #f5f5f7; }
       #splash {
         position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
-        background: radial-gradient(1200px 700px at 50% 38%, #ffffff 0%, #eef3fb 55%, #e6ecf6 100%);
+        background-color: #f4f6fa;
+        background-image: radial-gradient(circle, rgba(70, 90, 130, 0.16) 1px, transparent 1.6px); background-size: 18px 18px;
         font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
         transition: opacity 0.55s ease, transform 0.55s ease, filter 0.55s ease;
         -webkit-app-region: drag;
       }
       #splash.done { opacity: 0; transform: scale(1.04); filter: blur(6px); pointer-events: none; }
       #splash .orb { position: relative; width: 112px; height: 112px; }
-      #splash .blob { position: absolute; inset: -40px; border-radius: 50%; filter: blur(26px); opacity: 0; animation: sp-blob 1.4s ease-out 0.1s forwards, sp-spin 9s linear infinite;
-        background: conic-gradient(from 0deg, #5ac8fa, #007aff, #af52de, #ff6fb1, #5ac8fa); }
+      /* 新款界面：点阵背景，图标后面是一圈越往外越淡的点阵光环（不用彩色光斑） */
+      #splash .blob { position: absolute; inset: -120px; border-radius: 50%; opacity: 0; animation: sp-blob 1.4s ease-out 0.1s forwards;
+        background-image: radial-gradient(circle, rgba(0, 122, 255, 0.45) 1.3px, transparent 1.9px); background-size: 12px 12px;
+        -webkit-mask-image: radial-gradient(circle, #000 0%, rgba(0,0,0,0.5) 35%, transparent 70%); mask-image: radial-gradient(circle, #000 0%, rgba(0,0,0,0.5) 35%, transparent 70%); }
       #splash .ball { position: absolute; inset: 0; width: 112px; height: 112px; border-radius: 28px; transform: scale(0.2); opacity: 0;
         box-shadow: 0 18px 44px rgba(40, 60, 160, 0.28); animation: sp-pop 0.9s cubic-bezier(.2,1.4,.4,1) 0.15s forwards; }
       #splash svg { position: absolute; inset: -22px; width: 156px; height: 156px; transform: rotate(-90deg); }
@@ -27,7 +30,7 @@
       #splash .name { font-size: 26px; font-weight: 700; letter-spacing: 0.5px; color: #1d1d1f; opacity: 0; transform: translateY(8px); animation: sp-up 0.7s ease 0.7s forwards; }
       #splash .sub { margin-top: -14px; font-size: 13px; letter-spacing: 6px; color: #86868b; opacity: 0; transform: translateY(8px); animation: sp-up 0.7s ease 0.9s forwards; }
       @keyframes sp-pop { to { transform: scale(1); opacity: 1; } }
-      @keyframes sp-blob { to { opacity: 0.55; } }
+      @keyframes sp-blob { to { opacity: 1; } }
       @keyframes sp-spin { to { rotate: 360deg; } }
       @keyframes sp-draw { 0% { stroke-dashoffset: 402; } 100% { stroke-dashoffset: 300; } }
       @keyframes sp-ring { to { transform: rotate(360deg); } }

@@ -11,7 +11,7 @@ function anchors(): Set<string> {
     for (const m of s.matchAll(/data-tour="([^"]+)"/g)) out.add(m[1]);
     for (const m of s.matchAll(/<NavButton icon="([^"]+)"/g)) out.add(`nav-${m[1]}`);
     // 游戏页的页签：data-tour={`tab-${k}`}，按页签列表展开。
-    if (s.includes("data-tour={`tab-${k}`}")) for (const m of s.matchAll(/\["([a-z]+)", "[^"]+"\]/g)) out.add(`tab-${m[1]}`);
+    if (s.includes("data-tour={`tab-${k}`}")) for (const m of s.matchAll(/\["([a-z]+)", (?:"[^"]+"|immersive \? "[^"]+" : "[^"]+")(?:, "[^"]+")?\]/g)) out.add(`tab-${m[1]}`);
   }
   return out;
 }

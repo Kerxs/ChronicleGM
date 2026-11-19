@@ -161,6 +161,7 @@ impl OpenAiClient {
             }
         };
         out.latency_ms = started.elapsed().as_millis() as u64;
+        out.usage.estimate_speeds(out.latency_ms);
         out.used_json_schema = used_json_schema;
         Ok(out)
     }

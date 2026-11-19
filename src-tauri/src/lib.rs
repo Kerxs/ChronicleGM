@@ -1,6 +1,10 @@
 //! Tauri 外壳：只把界面请求转发给 chronicle-core / chronicle-gen / chronicle-llm，不包含业务规则。
 
 mod applog;
+mod models;
+mod mp;
+mod prompts;
+mod system;
 mod perf;
 mod datadir;
 mod secrets;
@@ -35,14 +39,20 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+type DiceReply = Option<Vec<Vec<u32>>>;
+type DiceWaits = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<DiceReply>>>>;
+
 struct AppState {
     /// 资料库；启动时打不开则为 None，界面显示 `startup_error`。
     library: Mutex<Option<Library>>,
     startup_error: Option<String>,
     /// 已打开的世界（同一个世界只打开一个连接）。
     worlds: Mutex<HashMap<String, Arc<Mutex<World>>>>,
-    templates: Arc<Templates>,
+    /// 提示词模板（在线更新提示词后会整个换掉；用的时候拿一份快照）。
+    templates: Mutex<Arc<Templates>>,
     running: Mutex<HashMap<String, CancelToken>>,
+    /// 等玩家亲手掷骰的回合（战役 id → 把点数交回回合线程）。
+    dice_waits: DiceWaits,
     secrets: Arc<dyn SecretStore>,
     /// 统一 AI 任务调度中心（所有模型请求都经过它）。
     sched: Arc<Scheduler>,
@@ -56,6 +66,15 @@ struct AppState {
 }
 
 impl AppState {
+    /// 当前提示词模板的快照。
+    fn tpl(&self) -> Arc<Templates> {
+        self.templates.lock().map(|t| t.clone()).unwrap_or_else(|e| e.into_inner().clone())
+    }
+    fn set_templates(&self, t: Arc<Templates>) {
+        if let Ok(mut g) = self.templates.lock() {
+            *g = t;
+        }
+    }
     fn lib(&self) -> Res<LibGuard<'_>> {
         let g = self.library.lock().map_err(|_| "资料库被占用（上一次操作异常中断）".to_string())?;
         if g.is_none() {
@@ -248,8 +267,8 @@ fn app_info(state: State<AppState>) -> Res<AppInfo> {
     Ok(AppInfo {
         version: env!("CARGO_PKG_VERSION"),
         data_dir: lib.data_dir().display().to_string(),
-        template_version: state.templates.version.clone(),
-        templates_overridden: state.templates.overridden.clone(),
+        template_version: state.tpl().version.clone(),
+        templates_overridden: state.tpl().overridden.clone(),
     })
 }
 
@@ -362,6 +381,42 @@ fn set_spoiler_mode(state: State<AppState>, on: bool) -> Res<()> {
     state.lib()?.set_setting(SPOILER_KEY, if on { "1" } else { "0" }).map_err(err)?;
     applog::info(if on { "打开了剧透模式" } else { "关闭了剧透模式" });
     Ok(())
+}
+
+/// 掷骰方式（全局）：auto 程序掷；click 玩家在界面上点击掷骰；physical 玩家掷实体骰子后输入点数。
+const DICE_KEY: &str = "play.dice_mode";
+
+fn dice_mode_of(state: &AppState) -> String {
+    match state.lib().ok().and_then(|l| l.setting(DICE_KEY).ok().flatten()).as_deref() {
+        Some(m @ ("click" | "physical")) => m.to_string(),
+        _ => "auto".into(),
+    }
+}
+
+#[tauri::command]
+fn dice_mode(state: State<AppState>) -> String {
+    dice_mode_of(&state)
+}
+
+#[tauri::command]
+fn set_dice_mode(state: State<AppState>, mode: String) -> Res<()> {
+    let m = match mode.as_str() {
+        "click" | "physical" => mode.as_str(),
+        _ => "auto",
+    };
+    state.lib()?.set_setting(DICE_KEY, m).map_err(err)?;
+    applog::info(&format!("掷骰方式改为 {m}"));
+    Ok(())
+}
+
+/// 玩家掷完骰子（或点了"交给程序掷"，`faces` 为空）：把点数交回正在等待的回合。
+#[tauri::command]
+fn gm_dice_answer(state: State<AppState>, campaign_id: String, faces: Option<Vec<Vec<u32>>>) -> Res<bool> {
+    let tx = state.dice_waits.lock().map_err(err)?.remove(&campaign_id);
+    Ok(match tx {
+        Some(tx) => tx.send(faces).is_ok(),
+        None => false,
+    })
 }
 
 fn need_spoilers(state: &AppState) -> Res<()> {
@@ -541,7 +596,7 @@ async fn review_script(app: AppHandle, world_id: String, script_id: String) -> R
     let (cfg, client, opts) = task_provider(&state, "script_gen")?;
     let client = state.scheduled(client, &cfg, Priority::P1, "review");
     let world = state.world(&world_id)?;
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     tauri::async_runtime::spawn_blocking(move || chronicle_gm::review::review_script(&world, &client, &templates, &opts, &script_id, &CancelToken::new()))
         .await
         .map_err(err)?
@@ -632,7 +687,7 @@ async fn generate_pc(app: AppHandle, world_id: String, script_id: String, hint: 
     let (cfg, client, opts) = task_provider(&state, "script_gen")?;
     let client = state.scheduled(client, &cfg, Priority::P1, "pc");
     let world = state.world(&world_id)?;
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     tauri::async_runtime::spawn_blocking(move || chronicle_gm::pcgen::generate_pc(&world, &client, &templates, &opts, &script_id, &hint, &CancelToken::new()))
         .await
         .map_err(err)?
@@ -646,7 +701,7 @@ async fn generate_quest(app: AppHandle, world_id: String, campaign_id: String, m
     let (cfg, client, opts) = task_provider(&state, "narration")?;
     let client = state.scheduled(client, &cfg, Priority::P1, "quest");
     let world = state.world(&world_id)?;
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     tauri::async_runtime::spawn_blocking(move || chronicle_gm::questgen::generate_quest(&world, &client, &templates, &opts, &campaign_id, &mode, &hint, &CancelToken::new()))
         .await
         .map_err(err)?
@@ -1484,7 +1539,7 @@ async fn director_analyze(app: AppHandle, world_id: String, campaign_id: String)
     let state = app.state::<AppState>();
     let (_cfg, client, opts) = director_client(&state, false)?;
     let world = state.world(&world_id)?;
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     tauri::async_runtime::spawn_blocking(move || chronicle_gm::director::analyze(&world, &client, &templates, &opts, &campaign_id, "manual", &CancelToken::new()))
         .await
         .map_err(err)?
@@ -1506,7 +1561,7 @@ fn maybe_npc_day(app: &AppHandle, world_id: &str, campaign_id: &str) {
     let state = app.state::<AppState>();
     let Ok(world) = state.world(world_id) else { return };
     let Ok((_cfg, client, opts)) = director_client(&state, true) else { return };
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     let (app, world_id, campaign_id) = (app.clone(), world_id.to_string(), campaign_id.to_string());
     std::thread::spawn(move || match chronicle_gm::npcday::maybe_run(&world, &client, &templates, &opts, &campaign_id, &CancelToken::new()) {
         Ok(Some(notes)) if !notes.is_empty() => {
@@ -1537,7 +1592,7 @@ fn maybe_compress(app: &AppHandle, world_id: &str, campaign_id: &str) {
     let Ok(world) = state.world(world_id) else { return };
     let Ok((cfg, client, opts)) = task_provider(&state, "narration") else { return };
     let client = state.scheduled(client, &cfg, Priority::P3, "memory");
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     let (app, world_id, campaign_id) = (app.clone(), world_id.to_string(), campaign_id.to_string());
     std::thread::spawn(move || {
         let count = token_counter(&cfg);
@@ -1572,7 +1627,7 @@ async fn compress_memory(app: AppHandle, world_id: String, campaign_id: String, 
     let world = state.world(&world_id)?;
     let (cfg, client, opts) = task_provider(&state, "narration")?;
     let client = state.scheduled(client, &cfg, Priority::P1, "memory");
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     // 重新生成：先把要替换的自动摘要的内容记下来，失败时恢复（原始记录始终保留）。
     let backup = match &replace {
         Some(id) => {
@@ -1620,7 +1675,7 @@ fn maybe_run_director(app: &AppHandle, world_id: &str, campaign_id: &str) {
         None => return,
     };
     let Ok((_cfg, client, opts)) = director_client(&state, true) else { return };
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     let (app, world_id, campaign_id) = (app.clone(), world_id.to_string(), campaign_id.to_string());
     std::thread::spawn(move || match chronicle_gm::director::analyze(&world, &client, &templates, &opts, &campaign_id, &trigger, &CancelToken::new()) {
         Ok(note) => {
@@ -1779,24 +1834,149 @@ fn rpg_set_rules(state: State<AppState>, world_id: String, campaign_id: String, 
 }
 
 #[tauri::command]
-fn combat_start(state: State<AppState>, world_id: String, campaign_id: String, enemies: Vec<chronicle_core::combat::EnemySpec>, allies: Vec<String>, reason: String) -> Res<chronicle_core::combat::CombatReport> {
+fn combat_start(app: AppHandle, state: State<AppState>, world_id: String, campaign_id: String, enemies: Vec<chronicle_core::combat::EnemySpec>, allies: Vec<String>, reason: String) -> Res<chronicle_core::combat::CombatReport> {
     let w = state.world(&world_id)?;
     let mut w = lock(&w)?;
-    chronicle_core::combat::start(&mut w, &campaign_id, &enemies, &allies, if reason.is_empty() { "遭遇战" } else { &reason }).map_err(err)
+    let r = chronicle_core::combat::start(&mut w, &campaign_id, &enemies, &allies, if reason.is_empty() { "遭遇战" } else { &reason }).map_err(err)?;
+    sync_game_state(&app, &mut w, &campaign_id);
+    Ok(r)
 }
 
 #[tauri::command]
-fn combat_act(state: State<AppState>, world_id: String, campaign_id: String, action: chronicle_core::combat::CombatAction) -> Res<chronicle_core::combat::CombatReport> {
+fn combat_act(app: AppHandle, state: State<AppState>, world_id: String, campaign_id: String, action: chronicle_core::combat::CombatAction) -> Res<chronicle_core::combat::CombatReport> {
     let w = state.world(&world_id)?;
     let mut w = lock(&w)?;
-    chronicle_core::combat::act(&mut w, &campaign_id, &action).map_err(err)
+    let r = chronicle_core::combat::act(&mut w, &campaign_id, &action).map_err(err)?;
+    sync_game_state(&app, &mut w, &campaign_id);
+    Ok(r)
 }
 
 #[tauri::command]
-fn combat_abort(state: State<AppState>, world_id: String, campaign_id: String, reason: String) -> Res<chronicle_core::combat::CombatReport> {
+fn combat_abort(app: AppHandle, state: State<AppState>, world_id: String, campaign_id: String, reason: String) -> Res<chronicle_core::combat::CombatReport> {
     let w = state.world(&world_id)?;
     let mut w = lock(&w)?;
-    chronicle_core::combat::abort(&mut w, &campaign_id, if reason.is_empty() { "主持人中止" } else { &reason }).map_err(err)
+    let r = chronicle_core::combat::abort(&mut w, &campaign_id, if reason.is_empty() { "主持人中止" } else { &reason }).map_err(err)?;
+    sync_game_state(&app, &mut w, &campaign_id);
+    Ok(r)
+}
+
+// ===================== 游戏状态机 =====================
+
+/// 按事实同步游戏状态并推送 `game-state` 事件（界面据此切换大厅 / 游戏 / 战斗场景）。失败只记日志。
+fn sync_game_state(app: &AppHandle, w: &mut World, campaign_id: &str) {
+    match chronicle_core::gamestate::sync(w, campaign_id) {
+        Ok(s) => {
+            let _ = app.emit("game-state", serde_json::json!({ "campaign_id": campaign_id, "state": s }));
+        }
+        Err(e) => applog::error(&format!("同步游戏状态失败（战役 {campaign_id}）：{e}")),
+    }
+}
+
+fn emit_game_state(app: &AppHandle, campaign_id: &str, s: &chronicle_core::gamestate::GameState) {
+    let _ = app.emit("game-state", serde_json::json!({ "campaign_id": campaign_id, "state": s }));
+}
+
+#[tauri::command]
+fn game_state(state: State<AppState>, world_id: String, campaign_id: String) -> Res<chronicle_core::gamestate::GameState> {
+    let w = state.world(&world_id)?;
+    chronicle_core::gamestate::get(lock(&w)?.conn(), &campaign_id).map_err(err)
+}
+
+/// 战斗转场播放完：进入行动。
+#[tauri::command]
+fn game_combat_ready(app: AppHandle, state: State<AppState>, world_id: String, campaign_id: String) -> Res<chronicle_core::gamestate::GameState> {
+    let w = state.world(&world_id)?;
+    let s = chronicle_core::gamestate::combat_ready(&mut *lock(&w)?, &campaign_id).map_err(err)?;
+    emit_game_state(&app, &campaign_id, &s);
+    Ok(s)
+}
+
+/// 世界初始化（7 步真实任务，后台执行）：每一步状态变化推送 `game-state`。没有模型服务时照样能做（装备推断、预热跳过并说明）。
+#[tauri::command]
+async fn game_init(app: AppHandle, world_id: String, campaign_id: String) -> Res<chronicle_core::gamestate::GameState> {
+    let state = app.state::<AppState>();
+    let world = state.world(&world_id)?;
+    let templates = state.tpl();
+    // 模型服务可选：没有配置时初始化仍然能完成。
+    let provider = task_provider(&state, "narration").ok();
+    let opts = provider.as_ref().map(|p| p.2.clone()).unwrap_or_default();
+    let client = provider.map(|(cfg, c, _)| state.scheduled(c, &cfg, Priority::P1, "init"));
+    let cancel = CancelToken::new();
+    let key = format!("init:{campaign_id}");
+    {
+        let mut running = state.running.lock().map_err(err)?;
+        if running.contains_key(&key) {
+            return Err("这个战役正在初始化".into());
+        }
+        running.insert(key.clone(), cancel.clone());
+    }
+    let (app2, cid) = (app.clone(), campaign_id.clone());
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let on_change = |s: &chronicle_core::gamestate::GameState| emit_game_state(&app2, &cid, s);
+        chronicle_gm::init::run_init(&world, client.as_ref().map(|c| c as &dyn chronicle_llm::LlmClient), &templates, &opts, &cid, &cancel, &on_change)
+    })
+    .await
+    .map_err(err)?;
+    if let Ok(mut r) = state.running.lock() {
+        r.remove(&key);
+    }
+    match res {
+        Ok(s) => {
+            applog::info(&format!("战役 {campaign_id} 初始化：{}", chronicle_core::gamestate::label(s.phase)));
+            Ok(s)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 战斗描述：规则引擎结算完一步后，请模型按结算行写 2–3 句描述（异步；界面不等它）。
+#[tauri::command]
+async fn gm_combat_narrate(app: AppHandle, world_id: String, campaign_id: String, lines: Vec<String>) -> Res<String> {
+    let state = app.state::<AppState>();
+    let (cfg, client, opts) = task_provider(&state, "narration")?;
+    let client = state.scheduled(client, &cfg, Priority::P1, "combat");
+    let world = state.world(&world_id)?;
+    let templates = state.tpl();
+    let cancel = CancelToken::new();
+    tauri::async_runtime::spawn_blocking(move || chronicle_gm::combat_narrate::narrate_combat(&world, &client, &templates, &opts, &campaign_id, &lines, &cancel))
+        .await
+        .map_err(err)?
+        .map_err(|e| e.to_string())
+}
+
+/// 最近一场战斗（进行中或刚结束的；战后结算页重新打开时用）。
+#[tauri::command]
+fn combat_last(state: State<AppState>, world_id: String, campaign_id: String) -> Res<Option<chronicle_core::combat::Combat>> {
+    let w = state.world(&world_id)?;
+    Ok(chronicle_core::combat::history(lock(&w)?.conn(), &campaign_id, 1).map_err(err)?.into_iter().next())
+}
+
+/// 战斗中可用的技能（剧本规则里的自定义行动 + 通用技能）。
+#[tauri::command]
+fn combat_skills(state: State<AppState>, world_id: String, campaign_id: String) -> Res<Vec<chronicle_core::rpg::CustomAction>> {
+    let w = state.world(&world_id)?;
+    let r = chronicle_core::rpg::rules(lock(&w)?.conn(), &campaign_id);
+    Ok(chronicle_core::combat::skills(&r))
+}
+
+#[tauri::command]
+fn game_init_cancel(state: State<AppState>, campaign_id: String) -> Res<bool> {
+    Ok(match state.running.lock().map_err(err)?.get(&format!("init:{campaign_id}")) {
+        Some(c) => {
+            c.cancel();
+            true
+        }
+        None => false,
+    })
+}
+
+/// 战后结算看完：回到探索。
+#[tauri::command]
+fn game_resume_exploring(app: AppHandle, state: State<AppState>, world_id: String, campaign_id: String) -> Res<chronicle_core::gamestate::GameState> {
+    let w = state.world(&world_id)?;
+    let s = chronicle_core::gamestate::transition(&mut *lock(&w)?, &campaign_id, chronicle_core::gamestate::Phase::Exploring, "看完战斗结算").map_err(err)?;
+    emit_game_state(&app, &campaign_id, &s);
+    Ok(s)
 }
 
 // ===================== 世界模拟（Phase 5） =====================
@@ -2246,6 +2426,7 @@ fn task_provider(state: &AppState, task: &str) -> Res<(ProviderConfig, OpenAiCli
         stream: caps.streaming,
         // GM 回合可以联网搜索：只有用户打开搜索、并允许 GM 搜索时才有。
         web_search: if task == "narration" { gm_web_search(state) } else { None },
+        dice: None,
     };
     Ok((cfg, client, opts))
 }
@@ -2283,11 +2464,46 @@ async fn gm_turn(app: AppHandle, world_id: String, campaign_id: String, input: S
     let gm = state.scheduled(gm, &gcfg, Priority::P0, "gm");
     let npc = state.scheduled(npc, &npc_cfg, Priority::P1, "npc");
     let world = state.world(&world_id)?;
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     let cancel = CancelToken::new();
     state.running.lock().map_err(err)?.insert(format!("gm:{campaign_id}"), cancel.clone());
     let cid = campaign_id.clone();
     let app2 = app.clone();
+    // 亲手掷骰：回合停在检定处，推送 gm-dice-ask 给界面，等玩家掷完（gm_dice_answer）再继续；取消回合时交给程序掷并结束等待。
+    let mut opts = opts;
+    if dice_mode_of(&state) != "auto" {
+        let waits = state.dice_waits.clone();
+        let (app3, cid3, cancel3, world3) = (app.clone(), campaign_id.clone(), cancel.clone(), world.clone());
+        opts.dice = Some(chronicle_gm::ManualDice(Arc::new(move |ask: &chronicle_core::checks::DiceAsk| {
+            // 状态机：等玩家掷骰（等待期间世界锁是放开的）。
+            let set_phase = |p: chronicle_core::gamestate::Phase, why: &str| {
+                if let Ok(mut w) = world3.lock()
+                    && let Ok(s) = chronicle_core::gamestate::transition(&mut w, &cid3, p, why)
+                {
+                    emit_game_state(&app3, &cid3, &s);
+                }
+            };
+            set_phase(chronicle_core::gamestate::Phase::AwaitingDice, "等玩家掷骰");
+            let (tx, rx) = std::sync::mpsc::channel::<DiceReply>();
+            waits.lock().ok()?.insert(cid3.clone(), tx);
+            let _ = app3.emit("gm-dice-ask", serde_json::json!({ "campaign_id": cid3, "ask": ask }));
+            let got = loop {
+                if cancel3.is_cancelled() {
+                    break None;
+                }
+                match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    Ok(v) => break v,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(_) => break None,
+                }
+            };
+            if let Ok(mut m) = waits.lock() {
+                m.remove(&cid3);
+            }
+            set_phase(chronicle_core::gamestate::Phase::Exploring, if got.is_some() { "玩家掷完骰子" } else { "交给程序掷骰" });
+            got
+        })));
+    }
     let res = tauri::async_runtime::spawn_blocking(move || {
         let engine = chronicle_gm::Engine { gm: &gm, npc: &npc, templates: &templates, opts: &opts };
         // 回合阶段推送给界面（GM 玻璃球下方显示"理解你的行动 / 程序判定 / 组织叙述 / NPC 回应"）。
@@ -2307,6 +2523,12 @@ async fn gm_turn(app: AppHandle, world_id: String, campaign_id: String, input: S
     if let Ok(mut r) = state.running.lock() {
         r.remove(&format!("gm:{campaign_id}"));
     }
+    // 回合结束（成功或失败）都按事实同步游戏状态：开战、战斗结束、开场讲完……
+    if let Ok(w) = state.world(&world_id)
+        && let Ok(mut w) = w.lock()
+    {
+        sync_game_state(&app, &mut w, &campaign_id);
+    }
     match res {
         Ok(r) => {
             // GM 与 NPC 的请求一起记在 GM 叙述的服务名下。
@@ -2318,7 +2540,7 @@ async fn gm_turn(app: AppHandle, world_id: String, campaign_id: String, input: S
             Ok(r)
         }
         Err(e) => {
-            if !matches!(e, chronicle_gm::GmError::Cancelled | chronicle_gm::GmError::Input(_)) {
+            if !matches!(e, chronicle_gm::GmError::Cancelled | chronicle_gm::GmError::Input(_) | chronicle_gm::GmError::Blocked(_)) {
                 applog::error(&format!("GM 回合失败（战役 {campaign_id}）：{e}"));
             }
             Err(e.to_string())
@@ -2373,7 +2595,7 @@ async fn gm_summarize(app: AppHandle, world_id: String, campaign_id: String) -> 
     let (cfg, client, opts) = task_provider(&state, "summary")?;
     let client = state.scheduled(client, &cfg, Priority::P4, "summary");
     let world = state.world(&world_id)?;
-    let templates = state.templates.clone();
+    let templates = state.tpl();
     tauri::async_runtime::spawn_blocking(move || chronicle_gm::summarize(&world, &client, &templates, &opts, &campaign_id, &CancelToken::new()))
         .await
         .map_err(err)?
@@ -2546,7 +2768,7 @@ fn start_generation(app: AppHandle, state: State<AppState>, world_id: String, ta
     let w = state.world(&world_id)?;
     let key = gen_key(&world_id, &task);
     claim_gen(&state, &key)?;
-    let prepared = match chronicle_gen::prepare_with_images(&mut *lock(&w)?, task, &state.templates, cfg.capabilities.as_ref(), &opts, (&cfg.name, &cfg.model), images.unwrap_or_default()) {
+    let prepared = match chronicle_gen::prepare_with_images(&mut *lock(&w)?, task, &state.tpl(), cfg.capabilities.as_ref(), &opts, (&cfg.name, &cfg.model), images.unwrap_or_default()) {
         Ok(p) => p,
         Err(e) => {
             release_gen(&state.gen_keys, &key);
@@ -2575,7 +2797,7 @@ fn fill_dead_ends(app: AppHandle, state: State<AppState>, world_id: String, scri
         if claim_gen(&state, &key).is_err() {
             continue; // 这个节点已经在生成中
         }
-        let prepared = match runner::prepare(&mut *lock(&w)?, task, &state.templates, cfg.capabilities.as_ref(), &opts, (&cfg.name, &cfg.model)) {
+        let prepared = match runner::prepare(&mut *lock(&w)?, task, &state.tpl(), cfg.capabilities.as_ref(), &opts, (&cfg.name, &cfg.model)) {
             Ok(p) => p,
             Err(e) => {
                 release_gen(&state.gen_keys, &key);
@@ -2594,7 +2816,7 @@ fn retry_job(app: AppHandle, state: State<AppState>, world_id: String, job_id: S
     opts.thinking = (cfg.thinking == chronicle_llm::ThinkingMode::Off).then_some(false);
     let w = state.world(&world_id)?;
     let prepared =
-        runner::prepare_retry(&mut *lock(&w)?, &job_id, &state.templates, cfg.capabilities.as_ref(), &opts, (&cfg.name, &cfg.model))
+        runner::prepare_retry(&mut *lock(&w)?, &job_id, &state.tpl(), cfg.capabilities.as_ref(), &opts, (&cfg.name, &cfg.model))
             .map_err(err)?;
     spawn_job(app, &state, world_id, prepared, cfg, client, opts, None)
 }
@@ -3091,14 +3313,8 @@ pub fn run() {
             (None, Some(msg))
         }
     };
-    // 用户可在数据目录的 prompts 文件夹中放同名模板覆盖内置模板。
-    let templates = match Templates::load(Some(&dir.join("prompts"))) {
-        Ok(t) => t,
-        Err(e) => {
-            applog::warn(&format!("自定义模板有误，改用内置模板: {e}"));
-            Templates::builtin()
-        }
-    };
+    // 提示词：软件自带 → 在线更新的提示词包 → 数据目录 prompts 文件夹里用户自己的同名模板。
+    let templates = prompts::load_templates();
     // 调度中心、托管模型、资源监控。性能模式从设置读取（默认平衡）。
     let mode = library.as_ref().and_then(|l| l.setting("perf_mode").ok().flatten()).and_then(|m| PerfMode::parse(&m)).unwrap_or(PerfMode::Balanced);
     let sched = Scheduler::new(mode);
@@ -3108,12 +3324,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(update::Pending::default())
+        .manage(mp::MpState::default())
+        .manage(models::ModelsState::new(Arc::new(secrets::KeyringSecrets)))
         .manage(AppState {
             library: Mutex::new(library),
             startup_error: open_error,
             worlds: Mutex::default(),
-            templates: Arc::new(templates),
+            templates: Mutex::new(Arc::new(templates)),
             running: Mutex::default(),
+            dice_waits: Arc::default(),
             secrets: Arc::new(secrets::KeyringSecrets),
             sched,
             models,
@@ -3121,8 +3340,13 @@ pub fn run() {
             gen_keys: Arc::default(),
             render_stats: Mutex::default(),
         })
+        .on_window_event(system::on_window_event)
         .setup(|app| {
+            system::init(app);
+            app.state::<models::ModelsState>().restore();
             perf::sync_profiles(&app.state::<AppState>());
+            models::auto_check(app.handle());
+            prompts::auto_check(app.handle());
             #[cfg(windows)]
             for (_, w) in app.webview_windows() {
                 allow_own_microphone(&w);
@@ -3130,6 +3354,48 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            prompts::prompt_info,
+            prompts::prompt_update_check,
+            prompts::prompt_set_auto,
+            prompts::prompt_reset,
+            system::sys_settings,
+            system::sys_set_close_to_tray,
+            system::sys_set_autostart,
+            system::sys_open_folder,
+            system::sys_quit,
+            models::llm_hw,
+            models::llm_runtime_status,
+            models::llm_runtime_check,
+            models::llm_runtime_install,
+            models::llm_runtime_cancel,
+            models::llm_runtime_rollback,
+            models::llm_runtime_settings,
+            models::llm_repo_search,
+            models::llm_repo_details,
+            models::llm_repo_token,
+            models::llm_repo_token_status,
+            models::llm_download_add,
+            models::llm_download_default,
+            models::llm_downloads,
+            models::llm_download_op,
+            models::llm_download_settings,
+            models::llm_library,
+            models::llm_library_add,
+            models::llm_library_remove,
+            models::llm_library_default,
+            models::llm_library_mmproj,
+            models::llm_library_info,
+            models::llm_library_move,
+            models::llm_tune,
+            models::llm_serve_start,
+            models::llm_serve_stop,
+            models::llm_serve_status,
+            mp::mp_host_start,
+            mp::mp_host_stop,
+            mp::mp_status,
+            mp::mp_cloud_create_room,
+            mp::mp_agent_start,
+            mp::mp_agent_stop,
             voice_speak,
             voice_status,
             voice_set_narrator,
@@ -3218,6 +3484,17 @@ pub fn run() {
             web_search,
             spoiler_mode,
             set_spoiler_mode,
+            dice_mode,
+            set_dice_mode,
+            gm_dice_answer,
+            game_state,
+            game_init,
+            game_init_cancel,
+            gm_combat_narrate,
+            combat_skills,
+            combat_last,
+            game_combat_ready,
+            game_resume_exploring,
             memory_settings,
             set_memory_settings,
             compress_memory,

@@ -165,7 +165,7 @@ pub fn tension_now(conn: &Connection, campaign_id: &str) -> (i64, Vec<String>) {
         t += 40;
         why.push(format!("战斗中（第 {} 轮）", c.round));
     }
-    if let Ok(s) = crate::rpg::sheet(conn, campaign_id, crate::rpg::PARTY) {
+    if let Ok(s) = crate::rpg::sheet(conn, campaign_id, &crate::rpg::actor()) {
         if s.hp <= 0 {
             t += 25;
             why.push("玩家已倒下".into());
@@ -300,6 +300,25 @@ pub fn hooks(conn: &Connection, campaign_id: &str) -> Result<Vec<Hook>> {
     }
     out.extend(clue_hooks);
     Ok(out)
+}
+
+/// 已经多少回合没有推进（换地点、任务、剧情、战斗……都算推进），以及按节奏设置算出的"该推一把"的回合数。
+pub fn stall_status(conn: &Connection, campaign_id: &str) -> Result<(i64, i64)> {
+    let st = settings(conn, campaign_id);
+    let turn = campaign::get_campaign(conn, campaign_id)?.turn;
+    let curve = beats(conn, campaign_id)?;
+    let last_progress = curve.iter().rev().find(|b| !b.progress.is_empty()).map(|b| b.turn).unwrap_or(0);
+    let first_turn = curve.first().map(|b| b.turn).unwrap_or(turn);
+    let since = (turn - last_progress.max(first_turn.saturating_sub(1))).max(0);
+    // 节奏越紧凑，越早推一把：松弛 10 回合，适中 6 回合，紧凑 3 回合。
+    let limit = match st.pacing_level {
+        0..=20 => 10,
+        21..=40 => 8,
+        41..=60 => 6,
+        61..=80 => 4,
+        _ => 3,
+    };
+    Ok((since, limit))
 }
 
 pub fn pacing(conn: &Connection, campaign_id: &str) -> Result<Pacing> {
@@ -484,11 +503,31 @@ pub fn narration_mismatches(narration: &str, settlement: &[String]) -> Vec<Strin
         }
     }
     let attacks: Vec<&String> = settlement.iter().filter(|l| l.contains("攻击") && l.contains("掷出")).collect();
-    if !attacks.is_empty() && attacks.iter().all(|l| l.contains("没有命中") || l.contains("大失手")) && hit_words.iter().any(|w| narration.contains(w)) {
+    // "没有命中""没能击中"不算写了命中（实测误报：叙述写"擦着耳朵飞了过去——没有命中"）。
+    let affirmed = |w: &str| {
+        narration.match_indices(w).any(|(i, _)| {
+            let before: String = narration[..i].chars().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect();
+            !["没有", "没能", "未能", "无法"].iter().any(|n| before.ends_with(n)) && !before.ends_with('未') && !before.ends_with('没') && !before.ends_with('不')
+        })
+    };
+    if !attacks.is_empty() && attacks.iter().all(|l| l.contains("没有命中") || l.contains("大失手")) && hit_words.iter().any(|w| affirmed(w)) {
         out.push("结算里所有攻击都没有命中，叙述却写了命中".into());
     }
     if attacks.iter().any(|l| l.contains("倒下") || settlement.iter().any(|s| s.ends_with("倒下了"))) && narration.contains("没能") && narration.contains("触到") {
         out.push("结算里有人被击倒，叙述却写没有击中".into());
+    }
+    // 目标被打中但还活着（"生命 5/11"），叙述却写死了（实测："轰然倒地，彻底没了声息"）。
+    let still_alive = settlement.iter().any(|l| {
+        l.contains("命中") && !l.contains("没有命中") && l.split("生命 ").nth(1).and_then(|r| r.split('/').next()).and_then(|n| n.trim().parse::<i64>().ok()).is_some_and(|hp| hp > 0)
+    });
+    let downed = settlement.iter().any(|l| l.contains("倒下") || l.contains("死了") || l.contains("战斗结束"));
+    let death_words = ["没了声息", "死了", "断气", "倒地不起", "一动不动", "毙命", "气绝", "不再挣扎", "瘫软在地", "再也没有起来", "击毙", "咽了气"];
+    if still_alive && !downed && death_words.iter().any(|w| affirmed(w)) {
+        out.push("结算里目标还活着，叙述却写它死了或倒下了".into());
+    }
+    // 没打中，叙述却写打倒了（实测："击中要害，当场倒地不起"）。
+    if !attacks.is_empty() && attacks.iter().all(|l| l.contains("没有命中") || l.contains("大失手")) && !downed && death_words.iter().any(|w| affirmed(w)) && !out.iter().any(|c| c.contains("没有命中")) {
+        out.push("结算里所有攻击都没有命中，叙述却写目标倒下了".into());
     }
     // 结算全部命中，叙述却写落空。
     let miss_words = ["落空", "扑了个空", "没能砍中", "没有砍中", "没能击中", "擦着", "没能触到"];
@@ -566,7 +605,7 @@ pub fn conflicts(conn: &Connection, campaign_id: &str) -> Result<Vec<Conflict>> 
             out.push(Conflict { severity: "warn".into(), kind: "dead_end".into(), text: format!("剧情节点「{}」没有可走的分支（全部走过或条件不满足）", node.title), turn: None });
         }
     }
-    if crate::rpg::sheet(conn, campaign_id, crate::rpg::PARTY).is_ok_and(|s| s.hp <= 0) && crate::combat::active(conn, campaign_id).is_none() {
+    if crate::rpg::sheet(conn, campaign_id, &crate::rpg::actor()).is_ok_and(|s| s.hp <= 0) && crate::combat::active(conn, campaign_id).is_none() {
         out.push(Conflict { severity: "warn".into(), kind: "party_down".into(), text: "玩家已经倒下：需要休息、救治或剧情处理".into(), turn: None });
     }
     // 最近的叙述问题。

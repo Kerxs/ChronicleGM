@@ -1,0 +1,49 @@
+/* 本地模型（内置 llama.cpp） */
+.lm-page { display: flex; flex-direction: column; gap: 12px; }
+.lm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+.lm-card { display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); min-width: 0; }
+.lm-card h3 { margin: 0; font-size: 15px; }
+.lm-card label { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
+.lm-card label.check { justify-content: flex-start; }
+.lm-card label input:not([type="checkbox"]), .lm-card label select { flex: 0 1 55%; min-width: 0; }
+.lm-empty { align-items: flex-start; }
+.lm-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.lm-between { justify-content: space-between; }
+.lm-grow { flex: 1; min-width: 160px; }
+.lm-kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 13px; }
+.lm-kv dt { color: var(--muted); }
+.lm-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.lm-kv dd.ok, .lm-card .ok { color: var(--ok); }
+.lm-kv dd.err, .lm-card .err { color: var(--danger); }
+.lm-path { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.lm-tag { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; background: var(--panel-2); color: var(--text-2); vertical-align: 1px; }
+.lm-tag.ok { background: rgba(36, 138, 61, 0.12); color: var(--ok); }
+.lm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.lm-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.lm-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.lm-table tr.on td { background: var(--accent-soft); }
+.lm-table tbody tr { cursor: default; }
+.lm-repo .lm-table tbody tr { cursor: pointer; }
+.lm-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.lm-actions button { font-size: 12px; padding: 3px 8px; }
+button.danger { color: var(--danger); }
+.lm-tune { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--panel-2); font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+.lm-tune.bad { background: rgba(255, 59, 48, 0.08); }
+.lm-adv summary { cursor: pointer; font-size: 13px; color: var(--text-2); }
+.lm-adv[open] { display: flex; flex-direction: column; gap: 8px; }
+.lm-recommend { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px; border-radius: var(--radius-sm); background: var(--accent-soft); }
+.lm-results { display: flex; flex-direction: column; gap: 6px; }
+.lm-result { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--panel); }
+.lm-result:hover { border-color: var(--accent); }
+.lm-result small { color: var(--muted); }
+.lm-card-text { white-space: pre-wrap; font-size: 12px; max-height: 280px; overflow: auto; background: var(--panel-2); padding: 10px; border-radius: var(--radius-sm); }
+.lm-task { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.lm-task:last-child { border-bottom: 0; }
+.lm-task button { font-size: 12px; padding: 3px 9px; }
+.lm-bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.lm-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.4s ease; }
+.lm-task.st-failed .lm-bar i { background: var(--danger); }
+.lm-task.st-done .lm-bar i { background: var(--ok); }
+.lm-detail { padding: 12px; border-radius: var(--radius-sm); background: var(--panel-2); display: flex; flex-direction: column; gap: 8px; }
+@media (max-width: 700px) { .lm-table th:nth-child(4), .lm-table td:nth-child(4) { display: none; } }
+@media (prefers-reduced-motion: reduce) { .lm-bar i { transition: none; } }

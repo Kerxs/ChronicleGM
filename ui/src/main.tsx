@@ -6,6 +6,10 @@ import "./shell.css";
 import "./onboarding.css";
 import "./cloud.css";
 import "./motion.css";
+import "./reform.css";
+import "./anim.css";
+import "./sizing.css";
+import "./theme.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

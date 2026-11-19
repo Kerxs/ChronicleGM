@@ -24,6 +24,7 @@ export default function TitleBar({
   onOpenJobs,
   onOpenReview,
   onOpenGuide,
+  onDeleteWorld,
   onOpenSearch,
   updateVersion,
   onOpenUpdate,
@@ -38,6 +39,8 @@ export default function TitleBar({
   onOpenJobs: () => void;
   onOpenReview: () => void;
   onOpenGuide?: () => void;
+  /** 删除世界（移到回收站）。 */
+  onDeleteWorld?: (id: string) => void;
   onOpenSearch?: () => void;
   updateVersion?: string | null;
   onOpenUpdate?: () => void;
@@ -91,7 +94,7 @@ export default function TitleBar({
             <ul className="worlds">
               {worlds.length === 0 && <li className="empty">还没有世界</li>}
               {worlds.map((w) => (
-                <li key={w.id}>
+                <li key={w.id} className="tb-world-row">
                   <button
                     className={worldId === w.id ? "active" : ""}
                     onClick={() => {
@@ -102,6 +105,19 @@ export default function TitleBar({
                     <span>{w.name}</span>
                     <small>{formatTime(w.last_opened_at ?? w.created_at)}</small>
                   </button>
+                  {onDeleteWorld && (
+                    <button
+                      className="row-del"
+                      title="删除这个世界（移到回收站）"
+                      aria-label={`删除世界「${w.name}」`}
+                      onClick={() => {
+                        setOpen(false);
+                        onDeleteWorld(w.id);
+                      }}
+                    >
+                      🗑
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>

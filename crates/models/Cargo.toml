@@ -1,0 +1,23 @@
+[package]
+name = "chronicle-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# 内置 llama.cpp 与模型管理：运行环境、硬件检测、模型仓库适配器、下载管理、模型库、自动参数。
+# 不依赖 Tauri，可单独测试；所有网络和磁盘操作都是阻塞的，由调用方放到后台线程。
+
+[dependencies]
+chronicle-llm = { path = "../llm" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = "3.5.2"
+sha2 = "0.10.9"
+hex = "0.4.3"
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
+flate2 = "1.1.11"
+tar = "0.4.46"
+
+[dev-dependencies]
+tempfile = "3.27.0"

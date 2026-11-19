@@ -5,6 +5,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Glass } from "@samasante/liquid-glass";
 import DiceShow, { type ShownCheck } from "./DiceShow";
+import DiceAskPanel, { type DiceMode } from "./DiceAsk";
+import OrbCanvas, { type OrbTheme } from "./OrbCanvas";
+import type { DiceAsk } from "../bindings/DiceAsk";
 
 export type OrbState = "idle" | "thinking" | "speaking" | "rolling" | "reading";
 
@@ -49,11 +52,17 @@ export default function GmOrb({
   onFinished,
   check,
   onCheckDone,
+  diceAsk = null,
+  onDiceAnswer,
+  shader = false,
+  theme,
   history = [],
   readIndex = null,
   onRead,
   unread = false,
   footer,
+  compact = false,
+  onTyped,
 }: {
   state: OrbState;
   /** 构思时的阶段（后端 gm-stage 事件）。 */
@@ -71,6 +80,13 @@ export default function GmOrb({
   /** 正在展示的检定（玻璃球展开显示骰子与判定）。 */
   check?: ShownCheck | null;
   onCheckDone?: () => void;
+  /** 轮到玩家亲手掷骰（回合停在检定处，等 onDiceAnswer）。 */
+  diceAsk?: { ask: DiceAsk; mode: DiceMode } | null;
+  onDiceAnswer?: (faces: number[][] | null) => void;
+  /** 游戏空间：球心用 GPU 着色器玻璃球（和大厅同一个），面板用 CSS 玻璃，不挂液态玻璃滤镜。 */
+  shader?: boolean;
+  /** 着色器球的主题色（跟剧本走）。 */
+  theme?: OrbTheme;
   /** 之前 GM 说过的话（旧的在前）。 */
   history?: GmSaid[];
   /** 正在查看第几段（null = 收起）。 */
@@ -81,10 +97,14 @@ export default function GmOrb({
   unread?: boolean;
   /** 查看时显示在文字下面的内容（配图、朗读按钮）。 */
   footer?: React.ReactNode;
+  /** 紧凑模式（游戏空间右边的 GM 框）：球不展开成文字面板，讲述直接在下面的记录里逐字出现。 */
+  compact?: boolean;
+  /** 讲述时已经输出了多少个字（紧凑模式下由外面显示文字）。 */
+  onTyped?: (n: number) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [panelW, setPanelW] = useState(720);
-  const geom = useMemo(() => ({ idle: [64, 64, 32], thinking: [76, 76, 38], speaking: [panelW, 0, 30], reading: [panelW, 0, 30], rolling: [Math.min(420, panelW), 176, 30] }) as Record<OrbState, number[]>, [panelW]);
+  const geom = useMemo(() => ({ idle: shader ? [92, 92, 46] : [64, 64, 32], thinking: shader ? [104, 104, 52] : [76, 76, 38], speaking: compact ? (shader ? [104, 104, 52] : [76, 76, 38]) : [panelW, 0, 30], reading: compact ? (shader ? [92, 92, 46] : [64, 64, 32]) : [panelW, 0, 30], rolling: [Math.min(440, panelW), diceAsk ? (diceAsk.mode === "physical" ? 214 + 40 * (diceAsk.ask.rolls - 1) : 196) : 176, 30] }) as Record<OrbState, number[]>, [panelW, diceAsk, shader, compact]);
   const [readH, setReadH] = useState(100);
   const boxEl = useRef<HTMLDivElement | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
@@ -93,12 +113,14 @@ export default function GmOrb({
   const [amp, setAmp] = useState(0);
   const [bars, setBars] = useState<number[]>(() => Array(14).fill(4));
   const finished = useRef(false);
+  const onTypedRef = useRef(onTyped);
+  onTypedRef.current = onTyped;
 
   // 面板宽度跟着剧情区宽度走（最宽 720）。
   useEffect(() => {
     const el = hostRef.current?.parentElement;
     if (!el) return;
-    const ro = new ResizeObserver(() => setPanelW(Math.max(320, Math.min(720, el.clientWidth - 24))));
+    const ro = new ResizeObserver(() => setPanelW(Math.max(260, Math.min(720, el.clientWidth - 24))));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -106,7 +128,7 @@ export default function GmOrb({
   // 尺寸用 CSS 过渡（按时间推进，窗口被遮挡、逐帧回调变慢时也能按时到位）；
   // 玻璃组件内部用 ResizeObserver 跟随元素尺寸。组件外层带尺寸隔离，在居中布局里会被压成 0 宽，所以外层也一起设。
   const [tw, th0, tr] = geom[state];
-  const th = state === "speaking" ? talkH : state === "reading" ? readH : th0;
+  const th = compact ? th0 : state === "speaking" ? talkH : state === "reading" ? readH : th0;
   const applySize = useCallback(() => {
     const el = boxEl.current;
     if (!el) return;
@@ -190,6 +212,7 @@ export default function GmOrb({
       shown = Math.max(shown, Math.min(text.length, target));
       const n = shown;
       setTyped(n);
+      onTypedRef.current?.(n);
       const lv = level();
       const a = lv ?? (n < text.length ? Math.min(1, Math.max(0, 0.45 * Math.sin(x * 9.3) * Math.sin(x * 2.1) + 0.3 * Math.sin(x * 15.7 + 1) + 0.3)) : 0);
       setAmp(a);
@@ -233,16 +256,22 @@ export default function GmOrb({
   const box = (
         <div className="gm-box" ref={boxRef} style={{ width: 64, height: 64, borderRadius: 32 }}>
           <div className="core">
-            <div className="blob b1" />
-            <div className="blob b2" />
-            <div className="blob b3" />
-            <div className="gloss" />
+            {shader ? (
+              <OrbCanvas size={104} theme={theme} active={state === "thinking"} title="GM" />
+            ) : (
+              <>
+                <div className="blob b1" />
+                <div className="blob b2" />
+                <div className="blob b3" />
+                <div className="gloss" />
+              </>
+            )}
           </div>
           <svg className="spin" viewBox="0 0 100 100" aria-hidden="true">
             <circle className="track" cx="50" cy="50" r="42" />
             <circle className="arc" cx="50" cy="50" r="42" pathLength={100} strokeDasharray="22 78" />
           </svg>
-          <div className="dice-wrap">{check && <DiceShow key={`${check.skill}-${check.detail.explain}`} check={check} onDone={() => onCheckDone?.()} />}</div>
+          <div className={`dice-wrap${diceAsk && !check ? " asking" : ""}`}>{diceAsk && !check ? <DiceAskPanel key={diceAsk.ask.reason} ask={diceAsk.ask} mode={diceAsk.mode} onAnswer={(f) => onDiceAnswer?.(f)} /> : check && <DiceShow key={`${check.skill}-${check.detail.explain}`} check={check} onDone={() => onCheckDone?.()} />}</div>
           <div className="talk" ref={talkRef}>
             <div className="who">
               GM · 讲述 <span className="wave">{bars.map((v, i) => <i key={i} style={{ height: v }} />)}</span>
@@ -281,13 +310,13 @@ export default function GmOrb({
         </div>
   );
 
-  const label =
-    state === "thinking" ? STAGE_LABEL[stage ?? ""] ?? "GM 正在构思" : state === "idle" ? (history.length ? (unread ? "GM · 有新讲述" : "GM · 点我看讲述") : "GM") : state === "rolling" ? "程序掷骰 · 结果已确定" : "";
-  const canOpen = state === "idle" && history.length > 0;
+  const label = compact && state === "speaking" ? "GM 正在讲述…" : compact && (state === "idle" || state === "reading") ? "GM" :
+    state === "thinking" ? STAGE_LABEL[stage ?? ""] ?? "GM 正在构思" : state === "idle" ? (history.length ? (unread ? "GM · 有新讲述" : "GM · 点我看讲述") : "GM") : state === "rolling" ? (diceAsk && !check ? "轮到你掷骰" : "掷骰 · 结果已确定") : "";
+  const canOpen = state === "idle" && history.length > 0 && !compact;
   return (
     <div
       ref={hostRef}
-      className={`gm ${state}${unread ? " unread" : ""}${canOpen ? " clickable" : ""}`}
+      className={`gm ${state}${unread ? " unread" : ""}${canOpen ? " clickable" : ""}${shader ? " shader" : ""}${compact ? " compact" : ""}`}
       style={{ "--amp": amp, "--talk-w": `${panelW}px` } as React.CSSProperties}
       aria-live="polite"
       onClick={canOpen ? () => onRead?.(history.length - 1) : undefined}
@@ -297,7 +326,7 @@ export default function GmOrb({
       <div className="halo" />
       {/* 待命时用 CSS 画的玻璃球（静止、几乎不耗资源）；构思与讲述时才挂上真正的液态玻璃。
           实测：液态玻璃的折射滤镜让页面每秒重新排版约 60 次，游戏页因此只有约 60 帧。 */}
-      {glassOn ? (
+      {glassOn && !shader ? (
         <Glass optics={OPTICS} className="gm-glass">
           {box}
         </Glass>

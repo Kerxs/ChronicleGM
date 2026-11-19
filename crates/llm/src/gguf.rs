@@ -331,7 +331,8 @@ pub fn scan_folder(dir: &Path, max_depth: usize) -> Result<ScanResult> {
     Ok(res)
 }
 
-#[cfg(test)]
+/// 测试夹具（其他 crate 的测试也用它生成最小 GGUF 文件）。
+#[doc(hidden)]
 pub mod tests {
     use super::*;
 

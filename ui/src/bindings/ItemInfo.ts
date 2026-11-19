@@ -36,6 +36,10 @@ cures: Array<string>,
  */
 on_hit: Status | null, recipe: Recipe | null, 
 /**
- * 来自世界树（world）还是剧本（script）。
+ * 来自世界树（world）、剧本（script）还是本战役（campaign，例如角色的初始装备）。
  */
-origin: string, };
+origin: string, 
+/**
+ * 这件武器用的弹药（弹药物品的名字）；空 = 不用弹药。
+ */
+ammo: string, };

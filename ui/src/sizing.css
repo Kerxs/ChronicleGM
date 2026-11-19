@@ -1,0 +1,94 @@
+/* =====================================================================
+   尺寸统一放大（之前整体偏小：正文 14px、说明 12px、侧栏标签 10px，右栏只有 300px 宽）。
+   放在最后加载，覆盖前面各处的尺寸；想整体再大一点可以在「设置 → 通用 → 界面大小」里调。
+   ===================================================================== */
+body { font-size: 15px; }
+.hint, .worlds small, .empty, footer { font-size: 13px; }
+h3 { font-size: 15px; }
+main h2 { font-size: 24px; }
+button { font-size: 14px; }
+button.small { font-size: 13px; padding: 4px 10px; }
+input, select, textarea { font-size: 14.5px; }
+
+/* 大厅：三栏都放宽，文字放大 */
+.lobby { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr) minmax(340px, 420px); gap: 22px; padding: 22px 28px; }
+.lobby h3 { font-size: 14px; }
+.lobby-script strong, .lobby-recent-item strong { font-size: 15.5px; }
+.lobby-script small, .lobby-recent-item small { font-size: 13px; }
+.lobby-script, .lobby-recent-item { padding: 12px 14px; }
+.lobby-tabs button { font-size: 14.5px; padding: 9px 0; }
+.lobby-card { padding: 18px; gap: 12px; }
+.lobby-card label { font-size: 15px; }
+.lobby-nav-btn strong { font-size: 15px; }
+.lobby-nav-btn small { font-size: 12.5px; }
+.lobby-card .pc-cards { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+.pc-card strong { font-size: 15.5px; }
+.pc-detail { font-size: 14.5px; }
+@media (max-width: 1280px) {
+  .lobby { grid-template-columns: minmax(230px, 280px) minmax(0, 1fr) minmax(310px, 360px); gap: 14px; padding: 16px; }
+}
+
+/* 游戏空间：图标栏标签、气泡、叙述放大 */
+.play-rail > button { font-size: 11.5px; padding: 9px 2px 7px; }
+.play-rail > button .ic { font-size: 20px; }
+.table-body.play-layout.rail-open { grid-template-columns: minmax(0, 1fr) var(--gm-w, 460px) 76px; }
+.play-layout.rail-open .panel-fab { width: 76px; }
+.bubble { font-size: 15.5px; }
+.bubble .who { font-size: 12px; }
+.gm-log .story-card { font-size: 15.5px; }
+.story-meta { font-size: 12.5px; }
+.transcript.immersive .input-row textarea { font-size: 16px; }
+.choice { font-size: 14.5px; }
+.transcript .line.who-system, .transcript .line.who-roll { font-size: 13px; }
+.play-settings-pop label, .game-settings > label, .more-set label { font-size: 14px; }
+.panel-fab, .panel-fab span { font-size: 14px; }
+
+/* 设置、本地模型：内容区放宽 */
+.app .gs-page { max-width: 980px; }
+.app .gs-label { font-size: 15px; }
+.app .gs-hint { font-size: 13px; }
+.app .gs-ctl select { min-width: 200px; }
+.app .lm-kv, .app .lm-table, .app .lm-tune { font-size: 14px; }
+.app .lm-card h3 { font-size: 16px; }
+.app .lm-grid { grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); }
+
+/* 联机：开房 / 加入放宽，房间三栏放宽 */
+.app .mp-setup { width: min(640px, 100%); }
+.app .mp-head h2 { font-size: 22px; }
+.app .mp-room { grid-template-columns: 280px minmax(0, 1fr) 320px; }
+.app .mp-line { font-size: 15px; }
+.app .mp-line.k-narration { font-size: 16px; }
+.app .mp-players { font-size: 15px; }
+.app .mp-setup .lobby-card label { font-size: 15px; }
+.app .mp-setup .lobby-card input, .app .mp-setup .lobby-card select { flex: 0 1 62%; }
+
+/* 教程气泡 */
+.tour-bubble { width: 380px; font-size: 15px; }
+
+/* 创作模式开始页 */
+.studio-start { max-width: 1040px; }
+
+/* 走查修正 */
+/* 没有世界时的大厅：单列居中（之前被三栏布局挤在左边一栏） */
+.lobby.lobby-noworld { grid-template-columns: minmax(0, 1fr); place-items: center; }
+.lobby.lobby-noworld .lobby-center { width: min(560px, 100%); }
+/* 角色详情：每一行间距一致 */
+.pc-detail { display: flex; flex-direction: column; gap: 6px; }
+.pc-detail p { margin: 0 0 4px; }
+.pc-detail .backstory { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.bs-row { line-height: 1.5; }
+/* 联机：表单往下一点，返回按钮 */
+.app .mp-setup { margin-top: 4vh; }
+.app .mp-head .link { padding: 6px 12px; border-radius: 10px; background: var(--panel); box-shadow: var(--shadow); text-decoration: none; }
+/* 创作模式开始页：上下居中，卡片更大 */
+.studio-start { min-height: calc(100% - 40px); margin: 0 auto; justify-content: center; padding-bottom: 6vh; }
+.ss-head .app-icon-hero { width: 84px; height: 84px; }
+.ss-head h2 { font-size: 28px; }
+.ss-card, .ss-world { padding: 20px; min-height: 132px; }
+.ss-world { min-height: 0; }
+.ss-world strong, .ss-card strong { font-size: 16.5px; }
+.ss-world small, .ss-card small { font-size: 13.5px; }
+/* 设置 → 通用：内容居中，不再挤在左边 */
+.app .gs-page { margin: 0 auto; }
+/* 开局设置：下拉框一样宽 */
+.lobby-card label select { flex: 0 0 58%; }

@@ -114,3 +114,36 @@ fn multi_die_crits_use_max_and_min_sum() {
         }
     }
 }
+
+#[test]
+fn manual_dice_are_used_when_valid_and_ignored_when_not() {
+    use chronicle_core::checks::{ask_for, perform_with};
+    let mut e = env();
+    let c = camp(&mut e);
+    let rules = CheckRules::default();
+    // 普通检定：问 1 次 1d20。
+    let ask = ask_for(&rules, 3, 15, 0, "聆听 检定：偷听");
+    assert_eq!((ask.count, ask.sides, ask.rolls), (1, 20, 1));
+    let r = perform_with(&mut e.world, &c, &rules, 3, 15, 0, "聆听 检定：偷听", Some(vec![vec![14]])).unwrap();
+    assert_eq!((r.natural, r.total, r.degree), (14, 17, Degree::Success));
+    assert!(r.explain.contains("亲手"), "{}", r.explain);
+    // 优势：掷两次取高。
+    assert_eq!(ask_for(&rules, 0, 10, 1, "x").rolls, 2);
+    let r = perform_with(&mut e.world, &c, &rules, 0, 10, 1, "潜行 检定", Some(vec![vec![4], vec![17]])).unwrap();
+    assert_eq!((r.natural, r.other.clone()), (17, vec![4]));
+    // 不合法的点数（超出骰面、颗数不对）：交给程序掷，不报错。
+    let r = perform_with(&mut e.world, &c, &rules, 0, 10, 0, "运动 检定", Some(vec![vec![25]])).unwrap();
+    assert!((1..=20).contains(&r.natural) && !r.explain.contains("亲手"));
+    let r = perform_with(&mut e.world, &c, &rules, 0, 10, 1, "运动 检定", Some(vec![vec![5]])).unwrap();
+    assert!(!r.explain.contains("亲手"));
+    // 骰池：颗数随修正变化。
+    let pool = CheckRules { mode: "pool".into(), ..CheckRules::default() };
+    let ask = ask_for(&pool, 1, 2, 0, "射击 检定");
+    assert_eq!(ask.count as i64, (pool.pool_base + 1).clamp(1, 40));
+    let faces: Vec<u32> = (0..ask.count).map(|_| ask.sides).collect();
+    let r = perform_with(&mut e.world, &c, &pool, 1, 2, 0, "射击 检定", Some(vec![faces])).unwrap();
+    assert_eq!(r.natural as u32, ask.count, "全部最大点数都算成功");
+    // 掷骰日志里标记了亲手掷。
+    let ev = campaign::recent_events(e.world.conn(), &c, &["roll"], 50).unwrap();
+    assert!(ev.iter().any(|x| x.payload["manual"] == true));
+}

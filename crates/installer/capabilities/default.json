@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "安装程序窗口：核心 IPC、选择文件夹对话框、自研标题栏的拖动和关闭。",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open", "core:window:allow-start-dragging", "core:window:allow-close", "core:window:allow-minimize"]
+}

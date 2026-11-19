@@ -118,3 +118,21 @@ input, textarea, select { transition: border-color 0.2s, box-shadow 0.2s; }
 .fatal-wrap { display: flex; flex-direction: column; height: 100vh; }
 .fatal-wrap .tb-world, .fatal-wrap .tb-sep { display: none; }
 .fatal-wrap .fatal { overflow: auto; }
+
+/* 创作模式：还没选世界时的开始页 */
+.studio-start { max-width: 880px; margin: 6vh auto 0; display: flex; flex-direction: column; gap: 12px; }
+.studio-start h3 { margin: 10px 0 0; font-size: 13px; color: var(--muted); font-weight: 600; letter-spacing: 1px; }
+.ss-head { display: flex; align-items: center; gap: 18px; animation: fade-up 0.45s var(--ease) both; }
+.ss-head .app-icon-hero { width: 72px; height: 72px; margin: 0; }
+.ss-head h2 { margin: 0 0 4px; }
+.ss-worlds { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.ss-world { display: flex; align-items: center; gap: 12px; padding: 14px 16px; text-align: left; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow); animation: fade-up 0.4s var(--ease) both; }
+.ss-world:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: var(--accent); }
+.ss-world-ic { font-size: 26px; }
+.ss-world strong, .ss-card strong { display: block; font-size: 15px; color: var(--text); }
+.ss-world small, .ss-card small { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.5; }
+.ss-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.ss-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 16px; text-align: left; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow); animation: fade-up 0.45s var(--ease) 0.08s both; }
+button.ss-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.ss-new input { width: 100%; }
+.ss-new .primary { align-self: stretch; }

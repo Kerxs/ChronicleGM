@@ -21,6 +21,48 @@ use crate::error::{CoreError, Result};
 use crate::world::World;
 
 pub const PARTY: &str = "party";
+
+thread_local! {
+    /// 这一回合在行动的玩家（规则引擎里的行动者）。单人模式一直是 `party`；联机时每个玩家是 `player:<编号>`，
+    /// 由服务端在执行这名玩家的回合前用 [`with_actor`] 设置（回合在同一个线程里执行完）。
+    static ACTOR: std::cell::RefCell<String> = std::cell::RefCell::new(PARTY.to_string());
+}
+
+/// 当前行动的玩家（默认 `party`）。
+pub fn actor() -> String {
+    ACTOR.with(|a| a.borrow().clone())
+}
+
+/// 以某个玩家的身份执行 `f`（结束后恢复原来的行动者，出错或 panic 也恢复）。
+pub fn with_actor<T>(actor: &str, f: impl FnOnce() -> T) -> T {
+    struct Restore(String);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let old = std::mem::take(&mut self.0);
+            ACTOR.with(|a| *a.borrow_mut() = old);
+        }
+    }
+    let old = ACTOR.with(|a| std::mem::replace(&mut *a.borrow_mut(), actor.to_string()));
+    let _restore = Restore(old);
+    f()
+}
+
+/// 是不是玩家角色（单人的 `party`，或联机的 `player:<编号>`）。
+pub fn is_player_actor(a: &str) -> bool {
+    a == PARTY || a.starts_with("player:")
+}
+
+/// 联机房间的全部玩家角色（`party.members` 变量，服务端在玩家加入时维护）；单人只有当前行动者。
+pub fn party_members(conn: &Connection, campaign_id: &str) -> Vec<String> {
+    let me = actor();
+    let mut v: Vec<String> = match (CampaignView { conn, campaign_id }).var("party.members") {
+        Some(Value::Array(a)) => a.into_iter().filter_map(|x| x.as_str().map(str::to_string)).filter(|x| is_player_actor(x)).collect(),
+        _ => vec![],
+    };
+    v.retain(|x| x != &me);
+    v.insert(0, me);
+    v
+}
 /// 原来固定的六项属性（没有属性方案时使用）。属性方案见 `RuleSet::attributes` / `attr_defs`。
 pub const ATTRS: [(&str, &str); 6] = [("str", "力量"), ("dex", "敏捷"), ("con", "体质"), ("int", "智力"), ("wis", "感知"), ("cha", "魅力")];
 pub use crate::profile::{AttrDef, CheckRules};
@@ -486,8 +528,9 @@ pub fn sheet(conn: &Connection, campaign_id: &str, actor: &str) -> Result<Sheet>
         return Ok(s);
     }
     let r = rules(conn, campaign_id);
-    if actor == PARTY {
+    if is_player_actor(actor) {
         let mut s = default_party("玩家角色");
+        s.actor = actor.to_string();
         adapt_attrs(&mut s, &r);
         return Ok(s);
     }
@@ -586,6 +629,30 @@ pub fn skill_attr(r: &RuleSet, skill: &str) -> String {
     role_attr(r, legacy_skill_role(skill))
 }
 
+/// 玩家行动里的关键词 → 通用技能名与属性作用。用来纠正"窃听却用野外生存检定"这类明显不贴切的技能。
+pub const ACTION_SKILLS: &[(&[&str], &str, &str)] = &[
+    (&["窃听", "偷听", "监听", "倾听", "聆听"], "聆听", "insight"),
+    (&["潜行", "溜进", "躲藏", "藏身", "悄悄", "蹑手蹑脚", "偷偷", "不注意", "不被发现", "溜过"], "潜行", "agility"),
+    (&["撬锁", "开锁", "撬开"], "开锁", "agility"),
+    (&["扒窃", "顺手牵羊", "偷走", "偷取"], "巧手", "agility"),
+    (&["攀爬", "爬上", "爬到", "往上爬", "爬下", "翻墙", "翻过", "跳过去", "跃过"], "攀爬", "might"),
+    (&["游过", "游泳", "潜水"], "游泳", "might"),
+    (&["说服", "劝说", "劝他", "劝她", "游说"], "说服", "presence"),
+    (&["欺骗", "撒谎", "骗他", "骗她", "伪装成", "冒充"], "欺瞒", "presence"),
+    (&["威胁", "恐吓", "威吓", "逼问"], "威吓", "presence"),
+    (&["讨价还价", "砍价", "谈判"], "谈判", "presence"),
+    (&["察言观色", "看穿", "判断他是否", "判断她是否"], "洞察", "insight"),
+    (&["搜查", "搜索", "翻找", "检查"], "调查", "mind"),
+    (&["包扎", "急救", "治疗", "止血"], "医疗", "insight"),
+    (&["追踪", "跟踪", "循着"], "追踪", "insight"),
+    (&["瞄准", "开枪", "射击", "放箭"], "射击", "agility"),
+];
+
+/// 从玩家的话里找出行动对应的通用技能（第一个匹配）。
+pub fn action_skill(text: &str) -> Option<(&'static str, &'static str)> {
+    ACTION_SKILLS.iter().find(|(ws, _, _)| ws.iter().any(|w| text.contains(w))).map(|(_, s, role)| (*s, *role))
+}
+
 /// 默认技能表：技能名里的关键词 → 属性作用。
 fn legacy_skill_role(skill: &str) -> &'static str {
     let table: [(&[&str], &str); 6] = [
@@ -600,6 +667,40 @@ fn legacy_skill_role(skill: &str) -> &'static str {
 }
 
 /// 检定修正 = 旧的技能变量 + 角色卡技能 + 对应属性修正 + 装备加成 + 状态修正 − 伤势惩罚。
+/// 检定加值的明细：（来源，数值）。合计等于 [`check_modifier`]。检定结果 = D20 + 这些加值。
+pub fn check_parts(conn: &Connection, campaign_id: &str, actor: &str, skill: &str) -> Vec<(String, i64)> {
+    let view = CampaignView { conn, campaign_id };
+    let legacy = view.var(&format!("skill.{actor}.{skill}")).and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut out: Vec<(String, i64)> = vec![];
+    let Ok(s) = sheet(conn, campaign_id, actor) else {
+        if legacy != 0 {
+            out.push((format!("技能 {skill}"), legacy));
+        }
+        return out;
+    };
+    let r = rules(conn, campaign_id);
+    let attr = skill_attr(&r, skill);
+    let attr_name = r.attributes.iter().find(|a| a.key == attr).map(|a| a.name.clone()).unwrap_or_else(|| attr.clone());
+    out.push((format!("属性 {attr_name}"), s.modv(&attr)));
+    let sk = s.skills.get(skill).copied().unwrap_or(0) + legacy;
+    if sk != 0 {
+        out.push((format!("技能 {skill}"), sk));
+    }
+    let equip_bonus: i64 = equipped_items(conn, campaign_id, actor).iter().map(|i| i.bonuses.get(skill).copied().unwrap_or(0) + i.bonuses.get(&attr).copied().unwrap_or(0)).sum();
+    if equip_bonus != 0 {
+        out.push(("装备".into(), equip_bonus));
+    }
+    let status: i64 = s.statuses.iter().map(|x| x.modifier).sum();
+    if status != 0 {
+        out.push(("状态".into(), status));
+    }
+    let wounds: i64 = s.wounds.iter().filter(|w| w.attr.is_empty() || w.attr == attr).map(|w| w.penalty).sum();
+    if wounds != 0 {
+        out.push(("伤势".into(), -wounds));
+    }
+    out
+}
+
 pub fn check_modifier(conn: &Connection, campaign_id: &str, actor: &str, skill: &str) -> i64 {
     let view = CampaignView { conn, campaign_id };
     let legacy = view.var(&format!("skill.{actor}.{skill}")).and_then(|v| v.as_i64()).unwrap_or(0);
@@ -796,8 +897,11 @@ pub struct ItemInfo {
     /// 命中时附带的状态。
     pub on_hit: Option<Status>,
     pub recipe: Option<Recipe>,
-    /// 来自世界树（world）还是剧本（script）。
+    /// 来自世界树（world）、剧本（script）还是本战役（campaign，例如角色的初始装备）。
     pub origin: String,
+    /// 这件武器用的弹药（弹药物品的名字）；空 = 不用弹药。
+    #[serde(default)]
+    pub ammo: String,
 }
 
 const ITEM_KEYS: [&str; 10] = ["value", "price", "rarity", "slot", "damage", "range", "armor", "bonuses", "heal", "recipe"];
@@ -867,6 +971,7 @@ fn item_from(id: &str, title: &str, description: &str, p: &Value, origin: &str) 
         recipe: p.get("recipe").and_then(|b| serde_json::from_value(b.clone()).ok()),
         slot,
         origin: origin.into(),
+        ammo: s("ammo"),
     }
 }
 
@@ -882,7 +987,116 @@ pub fn item_info(conn: &Connection, id: &str) -> Result<Option<ItemInfo>> {
     {
         return Ok(Some(item_from(&n.id, &n.title, if n.summary.is_empty() { &n.player_text } else { &n.summary }, &n.payload, "world")));
     }
+    // 本战役里的物品（角色的初始装备）：记在战役记录 item_def 里，随时间线一起回溯。
+    if id.starts_with(KIT_PREFIX)
+        && let Ok(data) = conn.query_row("SELECT data FROM campaign_records WHERE kind = 'item_def' AND id = ?1 LIMIT 1", [id], |r| r.get::<_, String>(0))
+        && let Ok(v) = serde_json::from_str::<Value>(&data)
+    {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        return Ok(Some(item_from(id, &s("title"), &s("description"), &v, "campaign")));
+    }
     Ok(None)
+}
+
+/// 初始装备的物品 ID 前缀。
+pub const KIT_PREFIX: &str = "kit-";
+
+/// 发放初始装备：物品定义写进本战役，放进玩家背包，第一件武器 / 护甲自动装备。返回说明。
+/// 程序检查每件物品（名字、数量、伤害骰、栏位），不合格的跳过并写明原因。
+pub fn grant_start_kit(world: &mut World, campaign_id: &str, items: &[crate::pc::StartItem]) -> Result<Vec<String>> {
+    grant_start_kit_for(world, campaign_id, &actor(), items)
+}
+
+/// 同 [`grant_start_kit`]，发给指定的持有人（联机时每个玩家各有一个 actor）。
+pub fn grant_start_kit_for(world: &mut World, campaign_id: &str, holder: &str, items: &[crate::pc::StartItem]) -> Result<Vec<String>> {
+    let mut eff: Vec<Effect> = vec![];
+    let mut notes: Vec<String> = vec![];
+    let mut eq = equipment(world.conn(), campaign_id, holder);
+    let items = crate::pc::normalize_kit(items);
+    // 钱不是物品：「铜币 ×12」按本战役的货币进位换成钱放进钱包（实测模型把铜币列成了一件装备）。
+    let r = rules(world.conn(), campaign_id);
+    let coin_rate = |name: &str| -> Option<i64> {
+        let n = name.trim();
+        r.currency.iter().position(|c| !c.is_empty() && (n == c || n.trim_end_matches(['袋', '枚', '个']) == c)).map(|i| r.currency_rates.get(i).copied().unwrap_or(1).max(1)).or_else(|| ["钱袋", "钱币", "硬币", "铜钱", "铜板", "零钱"].contains(&n).then_some(1))
+    };
+    let mut coins = 0i64;
+    for it in items.iter().take(10) {
+        let name: String = it.name.trim().chars().take(20).collect();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(rate) = coin_rate(&name) {
+            coins += it.qty.clamp(1, 1000) * rate;
+            notes.push(format!("{name} ×{}（放进钱包）", it.qty.clamp(1, 1000)));
+            continue;
+        }
+        let slot = if SLOTS.iter().any(|(k, _)| *k == it.slot) { it.slot.clone() } else { String::new() };
+        let rarity = if RARITIES.iter().any(|(k, _)| *k == it.rarity) { it.rarity.clone() } else { "common".into() };
+        let mut payload = json!({
+            "title": name,
+            "description": it.description.trim().chars().take(200).collect::<String>(),
+            "slot": slot,
+            "rarity": rarity,
+            "ammo": it.ammo.trim().chars().take(20).collect::<String>(),
+        });
+        if slot == "weapon" {
+            payload["damage"] = json!(if it.damage.trim().is_empty() { "1d6".to_string() } else { it.damage.trim().to_string() });
+            payload["range"] = json!(it.range.clamp(1, 30));
+        }
+        if matches!(slot.as_str(), "armor" | "shield") && it.armor > 0 {
+            payload["armor"] = json!(it.armor.clamp(0, 8));
+        }
+        if let Err(e) = validate_item_payload(&payload) {
+            notes.push(format!("「{name}」没有发放：{e}"));
+            continue;
+        }
+        let id = format!("{KIT_PREFIX}{}", crate::util::new_id());
+        let qty = it.qty.clamp(1, 200);
+        eff.push(Effect::UpsertRecord { kind: "item_def".into(), id: id.clone(), data: payload });
+        eff.push(Effect::GiveItem { holder: holder.into(), item: id.clone(), qty });
+        eff.push(source_effect(holder, &id, "初始装备"));
+        if !slot.is_empty() && !eq.contains_key(&slot) {
+            eq.insert(slot.clone(), id.clone());
+        }
+        notes.push(if qty > 1 { format!("{name} ×{qty}") } else { name });
+    }
+    if !eff.is_empty() {
+        eff.push(Effect::UpsertRecord { kind: "equip".into(), id: holder.into(), data: json!(eq) });
+        campaign::apply_effects(world, campaign_id, &eff, "初始装备")?;
+    }
+    if coins > 0 {
+        change_money(world, campaign_id, holder, coins, "初始随身的钱")?;
+    }
+    Ok(notes)
+}
+
+/// 武器剩下的弹药：背包里名字和武器的 `ammo` 相同的物品的数量。不用弹药的武器返回 None。
+pub fn ammo_left(conn: &Connection, campaign_id: &str, holder: &str, it: &ItemInfo) -> Option<(String, i64, i64)> {
+    let ammo = it.ammo.trim();
+    if ammo.is_empty() {
+        return None;
+    }
+    let mut total = 0;
+    let mut first = String::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT item, qty FROM inventory WHERE campaign_id = ?1 AND holder = ?2 AND qty > 0") {
+        let rows: Vec<(String, i64)> = stmt.query_map([campaign_id, holder], |r| Ok((r.get(0)?, r.get(1)?))).map(|m| m.filter_map(|x| x.ok()).collect()).unwrap_or_default();
+        for (id, q) in rows {
+            if item_info(conn, &id).ok().flatten().is_some_and(|i| i.title == ammo) {
+                if first.is_empty() {
+                    first = id;
+                }
+                total += q;
+            }
+        }
+    }
+    Some((ammo.to_string(), total, if first.is_empty() { 0 } else { 1 }))
+}
+
+/// 一叠可以扣减的弹药（物品 ID 与数量）。
+pub fn ammo_stack(conn: &Connection, campaign_id: &str, holder: &str, ammo_name: &str) -> Option<(String, i64)> {
+    let mut stmt = conn.prepare("SELECT item, qty FROM inventory WHERE campaign_id = ?1 AND holder = ?2 AND qty > 0 ORDER BY item").ok()?;
+    let rows: Vec<(String, i64)> = stmt.query_map([campaign_id, holder], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.filter_map(|x| x.ok()).collect();
+    rows.into_iter().find(|(id, _)| item_info(conn, id).ok().flatten().is_some_and(|i| i.title == ammo_name.trim()))
 }
 
 /// 表示"拿出来用"的动词：玩家的话里有这些词，提到的物品才需要在背包里。
@@ -903,7 +1117,7 @@ pub fn missing_items(conn: &Connection, campaign_id: &str, script_id: Option<&st
         named.extend(stmt.query_map([sid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.filter_map(|x| x.ok()));
     }
     let view = CampaignView { conn, campaign_id };
-    let held: Vec<String> = inventory(conn, campaign_id, PARTY)?.into_iter().map(|i| i.item.title).collect();
+    let held: Vec<String> = inventory(conn, campaign_id, &actor())?.into_iter().map(|i| i.item.title).collect();
     let mut out: Vec<String> = vec![];
     for (id, title) in named {
         let t = title.trim();
@@ -911,7 +1125,7 @@ pub fn missing_items(conn: &Connection, campaign_id: &str, script_id: Option<&st
             continue;
         }
         // 同名的另一件物品在背包里也算有。
-        if view.item_qty(PARTY, &id) > 0 || held.iter().any(|h| h == t) {
+        if view.item_qty(&actor(), &id) > 0 || held.iter().any(|h| h == t) {
             continue;
         }
         out.push(t.to_string());
@@ -931,6 +1145,12 @@ pub struct InvItem {
     /// 来源（购买、制作、战利品、剧情……）。
     pub source: String,
     pub equipped: bool,
+    /// 品质（按题材的稀有度叫法，例如「普通」「精良」）。
+    #[serde(default)]
+    pub quality: String,
+    /// 用弹药的武器：背包里剩下的弹药数。
+    #[serde(default)]
+    pub ammo_left: Option<i64>,
 }
 
 fn item_source(conn: &Connection, campaign_id: &str, holder: &str, item: &str) -> String {
@@ -948,7 +1168,9 @@ pub fn inventory(conn: &Connection, campaign_id: &str, holder: &str) -> Result<V
     let mut out = vec![];
     for (id, qty) in rows {
         let item = item_info(conn, &id)?.unwrap_or_else(|| item_from(&id, &id, "", &Value::Null, "unknown"));
-        out.push(InvItem { source: item_source(conn, campaign_id, holder, &id), equipped: eq.values().any(|v| *v == id), item, qty });
+        let quality = rarity_label(&rules(conn, campaign_id), &item.rarity);
+        let ammo_left = ammo_left(conn, campaign_id, holder, &item).map(|(_, n, _)| n);
+        out.push(InvItem { source: item_source(conn, campaign_id, holder, &id), equipped: eq.values().any(|v| *v == id), item, qty, quality, ammo_left });
     }
     Ok(out)
 }
@@ -980,7 +1202,7 @@ pub fn equip(world: &mut World, campaign_id: &str, holder: &str, item: &str) -> 
 
 /// 拿到可装备的物品时，如果对应栏位是空的就自动装备（实测：模型常常忘了写"装备"，导致买了剑却徒手作战）。
 fn auto_equip_effect(conn: &Connection, campaign_id: &str, holder: &str, it: &ItemInfo) -> Option<Effect> {
-    if it.slot.is_empty() || holder != PARTY {
+    if it.slot.is_empty() || !is_player_actor(holder) {
         return None;
     }
     let mut eq = equipment(conn, campaign_id, holder);
@@ -1149,7 +1371,7 @@ fn ensure_shop_stocked(world: &mut World, campaign_id: &str, merchant: &str, cfg
 }
 
 fn discount(conn: &Connection, campaign_id: &str, merchant: &str) -> f64 {
-    let trust = (CampaignView { conn, campaign_id }).bond(merchant, PARTY).map(|(_, b)| b.trust).unwrap_or(0);
+    let trust = (CampaignView { conn, campaign_id }).bond(merchant, &actor()).map(|(_, b)| b.trust).unwrap_or(0);
     (trust.clamp(0, 100) as f64) / 1000.0
 }
 
@@ -1242,12 +1464,12 @@ pub fn barter(world: &mut World, campaign_id: &str, merchant: &str, give: &[(Str
     for (item, qty) in give {
         let qty = (*qty).max(1);
         let it = require_item(world.conn(), item)?;
-        if view.item_qty(PARTY, item) < qty {
+        if view.item_qty(&actor(), item) < qty {
             return Err(CoreError::Invalid(format!("没有那么多「{}」", it.title)));
         }
         give_value += sell_price(&it, cfg.buy_rate) * qty;
         give_names.push(format!("「{}」×{qty}", it.title));
-        eff.push(Effect::TakeItem { holder: PARTY.into(), item: item.clone(), qty });
+        eff.push(Effect::TakeItem { holder: actor(), item: item.clone(), qty });
         if cfg.stock.iter().any(|(i, q)| i == item && q.is_some()) {
             eff.push(Effect::GiveItem { holder: merchant.into(), item: item.clone(), qty });
         }
@@ -1263,11 +1485,11 @@ pub fn barter(world: &mut World, campaign_id: &str, merchant: &str, give: &[(Str
         if si.stock.is_some() {
             eff.push(Effect::TakeItem { holder: merchant.into(), item: item.clone(), qty });
         }
-        eff.push(Effect::GiveItem { holder: PARTY.into(), item: item.clone(), qty });
-        eff.push(source_effect(PARTY, item, &format!("以物易物：{name}")));
+        eff.push(Effect::GiveItem { holder: actor(), item: item.clone(), qty });
+        eff.push(source_effect(&actor(), item, &format!("以物易物：{name}")));
     }
     let diff = get_value - give_value;
-    let (mine, theirs) = (money(world.conn(), campaign_id, PARTY), money(world.conn(), campaign_id, merchant));
+    let (mine, theirs) = (money(world.conn(), campaign_id, &actor()), money(world.conn(), campaign_id, merchant));
     if diff > 0 && mine < diff {
         return Err(CoreError::Invalid(format!("还要补 {}，钱不够（现有 {}）", format_money(&r, diff), format_money(&r, mine))));
     }
@@ -1275,7 +1497,7 @@ pub fn barter(world: &mut World, campaign_id: &str, merchant: &str, give: &[(Str
         return Err(CoreError::Invalid(format!("{name}要找你 {}，但他只有 {}", format_money(&r, -diff), format_money(&r, theirs))));
     }
     if diff != 0 {
-        eff.push(money_effect(PARTY, mine - diff));
+        eff.push(money_effect(&actor(), mine - diff));
         eff.push(money_effect(merchant, theirs + diff));
     }
     let text = format!(
@@ -1308,21 +1530,21 @@ pub fn buy(world: &mut World, campaign_id: &str, merchant: &str, item: &str, qty
     }
     let r = rules(world.conn(), campaign_id);
     let total = si.buy_price * qty;
-    let mine = money(world.conn(), campaign_id, PARTY);
+    let mine = money(world.conn(), campaign_id, &actor());
     if mine < total {
         return Err(CoreError::Invalid(format!("钱不够：需要 {}，现有 {}", format_money(&r, total), format_money(&r, mine))));
     }
-    let mut eff = vec![money_effect(PARTY, mine - total), money_effect(merchant, sh.merchant_money + total)];
+    let mut eff = vec![money_effect(&actor(), mine - total), money_effect(merchant, sh.merchant_money + total)];
     if si.stock.is_some() {
         eff.push(Effect::TakeItem { holder: merchant.into(), item: item.into(), qty });
     }
-    eff.push(Effect::GiveItem { holder: PARTY.into(), item: item.into(), qty });
-    eff.push(source_effect(PARTY, item, &format!("购买：{name}")));
-    let auto = auto_equip_effect(world.conn(), campaign_id, PARTY, &si.item);
+    eff.push(Effect::GiveItem { holder: actor(), item: item.into(), qty });
+    eff.push(source_effect(&actor(), item, &format!("购买：{name}")));
+    let auto = auto_equip_effect(world.conn(), campaign_id, &actor(), &si.item);
     let text = format!("从{name}那里买了 {qty} 个「{}」，花了 {}{}", si.item.title, format_money(&r, total), if auto.is_some() { "（已装备）" } else { "" });
     eff.extend(auto);
     campaign::apply_effects(world, campaign_id, &eff, &text)?;
-    crate::combat::refresh_unit(world, campaign_id, PARTY)?;
+    crate::combat::refresh_unit(world, campaign_id, &actor())?;
     Ok(text)
 }
 
@@ -1333,7 +1555,7 @@ pub fn sell(world: &mut World, campaign_id: &str, merchant: &str, item: &str, qt
     ensure_shop_stocked(world, campaign_id, merchant, &cfg)?;
     let it = require_item(world.conn(), item)?;
     let view = CampaignView { conn: world.conn(), campaign_id };
-    if view.item_qty(PARTY, item) < qty {
+    if view.item_qty(&actor(), item) < qty {
         return Err(CoreError::Invalid(format!("没有那么多「{}」", it.title)));
     }
     let r = rules(world.conn(), campaign_id);
@@ -1342,16 +1564,16 @@ pub fn sell(world: &mut World, campaign_id: &str, merchant: &str, item: &str, qt
     if theirs < total {
         return Err(CoreError::Invalid(format!("{name}的钱不够（只有 {}）", format_money(&r, theirs))));
     }
-    let mine = money(world.conn(), campaign_id, PARTY);
-    let mut eff = vec![Effect::TakeItem { holder: PARTY.into(), item: item.into(), qty }, money_effect(PARTY, mine + total), money_effect(merchant, theirs - total)];
+    let mine = money(world.conn(), campaign_id, &actor());
+    let mut eff = vec![Effect::TakeItem { holder: actor(), item: item.into(), qty }, money_effect(&actor(), mine + total), money_effect(merchant, theirs - total)];
     if cfg.stock.iter().any(|(i, q)| i == item && q.is_some()) {
         eff.push(Effect::GiveItem { holder: merchant.into(), item: item.into(), qty });
     }
     // 卖掉的装备自动卸下。
-    let mut eq = equipment(world.conn(), campaign_id, PARTY);
-    if view.item_qty(PARTY, item) == qty && eq.values().any(|v| v == item) {
+    let mut eq = equipment(world.conn(), campaign_id, &actor());
+    if view.item_qty(&actor(), item) == qty && eq.values().any(|v| v == item) {
         eq.retain(|_, v| v != item);
-        eff.push(Effect::UpsertRecord { kind: "equip".into(), id: PARTY.into(), data: json!(eq) });
+        eff.push(Effect::UpsertRecord { kind: "equip".into(), id: actor(), data: json!(eq) });
     }
     let text = format!("把 {qty} 个「{}」卖给{name}，得到 {}", it.title, format_money(&r, total));
     campaign::apply_effects(world, campaign_id, &eff, &text)?;

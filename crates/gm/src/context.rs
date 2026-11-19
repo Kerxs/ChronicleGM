@@ -553,14 +553,14 @@ fn rpg_context(world: &World, campaign_id: &str, npcs: &[NpcCard], ctx: &mut Con
     use chronicle_core::{combat, rpg};
     let conn = world.conn();
     let r = rpg::rules(conn, campaign_id);
-    let s = rpg::sheet(conn, campaign_id, rpg::PARTY)?;
+    let s = rpg::sheet(conn, campaign_id, &rpg::actor())?;
     let attrs: Vec<String> = rpg::attr_defs(&r).iter().map(|a| format!("{}{}({:+})", a.name, s.attr(&a.key), s.modv(&a.key))).collect();
     let skills: Vec<String> = s.skills.iter().map(|(k, v)| format!("{k}+{v}")).collect();
     let (wname, wdmg, wrange, _) = rpg::weapon(conn, campaign_id, &s);
     let mut lines = vec![
         format!("{}：{} 级（经验 {}/{}），生命 {}/{}，防御 {}，武器 {wname}（{wdmg}，射程 {wrange}）", s.name, s.level, s.xp, rpg::xp_for_level(&r, s.level + 1), s.hp, s.max_hp, rpg::armor_class(conn, campaign_id, &s)),
         format!("属性：{}；技能：{}", attrs.join(" "), if skills.is_empty() { "无".into() } else { skills.join("、") }),
-        format!("金钱：{}", rpg::format_money(&r, rpg::money(conn, campaign_id, rpg::PARTY))),
+        format!("金钱：{}", rpg::format_money(&r, rpg::money(conn, campaign_id, &rpg::actor()))),
     ];
     if !s.statuses.is_empty() || !s.wounds.is_empty() {
         lines.push(format!("状态与伤势：{}", s.statuses.iter().map(|x| x.name.clone()).chain(s.wounds.iter().map(|w| format!("{}（检定 -{}）", w.name, w.penalty))).collect::<Vec<_>>().join("、")));
@@ -568,7 +568,7 @@ fn rpg_context(world: &World, campaign_id: &str, npcs: &[NpcCard], ctx: &mut Con
     if s.hp <= 0 {
         lines.push("玩家已经倒下，无法行动，需要休息或救治。".into());
     }
-    let inv = rpg::inventory(conn, campaign_id, rpg::PARTY)?;
+    let inv = rpg::inventory(conn, campaign_id, &rpg::actor())?;
     if !inv.is_empty() {
         let mut bag = vec![];
         for (i, it) in inv.iter().enumerate().take(30) {
@@ -584,6 +584,12 @@ fn rpg_context(world: &World, campaign_id: &str, npcs: &[NpcCard], ctx: &mut Con
             }
             if !it.item.damage.is_empty() {
                 tags.push(format!("伤害 {}", it.item.damage));
+            }
+            if !it.item.slot.is_empty() && !it.quality.is_empty() {
+                tags.push(format!("品质 {}", it.quality));
+            }
+            if let Some(n) = it.ammo_left {
+                tags.push(format!("弹药 {}：剩 {n}", it.item.ammo));
             }
             bag.push(format!("{code} {}×{}{}", it.item.title, it.qty, if tags.is_empty() { String::new() } else { format!("（{}）", tags.join("，")) }));
         }
@@ -617,7 +623,7 @@ fn rpg_context(world: &World, campaign_id: &str, npcs: &[NpcCard], ctx: &mut Con
         ctx.push("在场商人（买卖写在 trade，价格由程序计算）", shop_lines.join("
 "), 1);
     }
-    let rc = rpg::recipes(conn, campaign_id, rpg::PARTY)?;
+    let rc = rpg::recipes(conn, campaign_id, &rpg::actor())?;
     if !rc.is_empty() {
         let lines: Vec<String> = rc
             .iter()
@@ -636,9 +642,18 @@ fn rpg_context(world: &World, campaign_id: &str, npcs: &[NpcCard], ctx: &mut Con
     if let Some(c) = combat::active(conn, campaign_id) {
         ctx.push(
             "战斗进行中（玩家的行动写在 combat_action；命中、伤害、敌人的行动全部由程序计算，不要自己决定结果）",
-            format!("{}最近：
-{}", combat::summary(&c), c.log.iter().rev().take(6).rev().cloned().collect::<Vec<_>>().join("
-")),
+            {
+                let r = chronicle_core::rpg::rules(conn, campaign_id);
+                let skills: Vec<String> = combat::skills(&r).iter().map(|s| format!("{}（{} 行动点）", s.name, s.ap)).collect();
+                let props: Vec<String> = c.props.iter().filter(|p| !p.used).map(|p| format!("{}（位置 {},{}：{}）", p.name, p.x, p.y, p.desc)).collect();
+                format!(
+                    "{}可用技能：{}\n战场物件：{}\n最近：\n{}",
+                    combat::summary(&c),
+                    skills.join("、"),
+                    if props.is_empty() { "无".to_string() } else { props.join("；") },
+                    c.log.iter().rev().take(6).rev().cloned().collect::<Vec<_>>().join("\n")
+                )
+            },
             0,
         );
     }

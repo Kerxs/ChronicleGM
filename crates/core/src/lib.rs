@@ -15,6 +15,7 @@ pub mod db;
 pub mod demo;
 pub mod director;
 pub mod entity;
+pub mod gamestate;
 pub mod error;
 pub mod images;
 pub mod integrity;

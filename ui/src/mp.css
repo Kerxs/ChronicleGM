@@ -1,0 +1,47 @@
+/* 联机页（2.0） */
+.mp-page { height: 100%; display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; box-sizing: border-box; overflow: hidden; }
+.mp-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.mp-head h2 { margin: 0; font-size: 20px; }
+.mp-setup { width: min(520px, 100%); margin: 0 auto; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+.mp-setup input, .mp-setup select, .mp-gmset input, .mp-gmset select { min-width: 0; flex: 0 1 60%; }
+.mp-recent { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.mp-room { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px 1fr 250px; gap: 12px; }
+.mp-side { display: flex; flex-direction: column; gap: 10px; overflow: auto; min-height: 0; }
+.mp-main { display: flex; flex-direction: column; min-height: 0; gap: 8px; }
+.mp-feed { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--radius); background: rgba(255, 255, 255, 0.7); box-shadow: var(--shadow); }
+.mp-line { display: flex; flex-direction: column; gap: 2px; white-space: pre-wrap; line-height: 1.6; animation: rise-spring var(--dur-spring, 0.45s) var(--spring-soft, ease) both; }
+.mp-line b { font-size: 12px; color: var(--muted); font-weight: 600; }
+.mp-line.k-narration { font-size: 15px; color: var(--text); }
+.mp-line.k-npc span { color: var(--gm); }
+.mp-line.k-player { align-self: flex-end; max-width: 80%; padding: 6px 10px; border-radius: 12px; background: var(--accent-soft); }
+.mp-line.k-roll, .mp-line.k-combat { font-size: 13px; color: var(--text-2); padding-left: 8px; border-left: 2px solid var(--border-strong); }
+.mp-line.k-chat span { color: var(--text-2); }
+.mp-line.k-whisper { padding: 4px 8px; border-radius: 8px; background: rgba(175, 82, 222, 0.08); }
+.mp-line.k-system { font-size: 12px; color: var(--muted); align-self: center; }
+.mp-line.k-error { font-size: 13px; color: var(--danger); }
+.mp-input { display: flex; gap: 8px; align-items: stretch; }
+.mp-input select { flex: 0 0 auto; max-width: 180px; }
+.mp-input textarea { flex: 1; resize: none; }
+.mp-status { font-size: 12px; align-self: flex-start; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); }
+.mp-status.st-online { color: var(--ok); }
+.mp-status.st-reconnecting, .mp-status.st-connecting { color: var(--warn); }
+.mp-status.st-closed { color: var(--danger); }
+.mp-players { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.mp-players i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--border-strong); }
+.mp-players li.on i { background: var(--ok); }
+.mp-gm { font-size: 12px; padding: 4px 8px; border-radius: 8px; background: var(--panel-2); }
+.mp-gm.ok { color: var(--ok); }
+.mp-gm.off { color: var(--warn); }
+.mp-bag { list-style: none; margin: 0; padding: 0; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+.mp-combat ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.mp-combat li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 6px; border-radius: 6px; }
+.mp-combat li.now { box-shadow: 0 0 0 2px var(--accent); }
+.mp-combat li.side-enemy { color: var(--danger); }
+.mp-combat li.out { opacity: 0.45; text-decoration: line-through; }
+.mp-fight { display: flex; gap: 6px; flex-wrap: wrap; }
+.mp-gmset summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 900px) {
+  .mp-room { grid-template-columns: 1fr; overflow: auto; }
+  .mp-main { min-height: 60vh; }
+}
+@media (prefers-reduced-motion: reduce) { .mp-line { animation: none; } }

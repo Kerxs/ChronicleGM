@@ -24,8 +24,12 @@ export default function PendingImages({ ctx }: { ctx: Ctx }) {
   useEffect(load, [ctx.worldId, ctx.tick]);
   useEffect(() => {
     let off: (() => void) | undefined;
-    void listen<{ world_id: string }>("pending-images", (e) => e.payload.world_id === ctx.worldId && load()).then((f) => (off = f));
-    return () => off?.();
+    let gone = false;
+    void listen<{ world_id: string }>("pending-images", (e) => e.payload.world_id === ctx.worldId && load()).then((f) => (gone ? f() : (off = f)));
+    return () => {
+      gone = true;
+      off?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.worldId]);
   if (!list.length) return null;

@@ -49,5 +49,35 @@ pub fn generate_pc(world: &Mutex<World>, client: &dyn LlmClient, templates: &Tem
         backstory: payload.get("backstory").cloned().unwrap_or_default(),
         link_to_plot: o.backstory.link_to_plot,
         source_item: None,
+        equipment: chronicle_core::pc::normalize_kit(&serde_json::from_value::<Vec<chronicle_core::pc::StartItem>>(serde_json::to_value(&o.equipment).unwrap_or_default()).unwrap_or_default()),
     })
+}
+
+/// 角色没有写初始装备（旧剧本、手动添加的角色）：按设定让 AI 列出随身装备，由程序检查后放进背包。
+/// 背包里已经有东西时不做。返回发放的物品说明。
+pub fn infer_start_kit(world: &Mutex<World>, client: &dyn LlmClient, templates: &Templates, opts: &GmOptions, campaign_id: &str, cancel: &CancelToken, logs: &mut Vec<chronicle_gen::RequestLog>) -> Result<Vec<String>> {
+    let (pc, setting) = {
+        let w = world.lock().map_err(|_| GmError::Input("世界文件被占用".into()))?;
+        let Some(pc) = chronicle_core::pc::get(w.conn(), campaign_id) else { return Ok(vec![]) };
+        if !pc.equipment.is_empty() || !chronicle_core::rpg::inventory(w.conn(), campaign_id, &chronicle_core::rpg::actor())?.is_empty() {
+            return Ok(vec![]);
+        }
+        let c = chronicle_core::campaign::get_campaign(w.conn(), campaign_id)?;
+        let setting = c
+            .script_id
+            .as_deref()
+            .and_then(|sid| scripts::get_script(w.conn(), sid).ok().flatten())
+            .map(|s| format!("《{}》 题材：{}；{}", s.title, s.genre, s.premise.chars().take(200).collect::<String>()))
+            .unwrap_or_else(|| "（自由沙盒）".into());
+        (pc, setting)
+    };
+    let user = templates.render("pc_kit", serde_json::json!({ "pc": chronicle_core::pc::context_text(&pc) + "\n介绍：" + &pc.intro, "setting": setting }))?;
+    let system = templates.render("system", serde_json::json!({ "schema_text": "" }))?;
+    let o = ask_limited::<chronicle_gen::outputs::KitOut>(client, &system, &user, opts, 1200, cancel, logs)?.value;
+    let items: Vec<chronicle_core::pc::StartItem> = serde_json::from_value(serde_json::to_value(&o.items).unwrap_or_default()).unwrap_or_default();
+    if items.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut w = world.lock().map_err(|_| GmError::Input("世界文件被占用".into()))?;
+    Ok(chronicle_core::rpg::grant_start_kit(&mut w, campaign_id, &items)?)
 }

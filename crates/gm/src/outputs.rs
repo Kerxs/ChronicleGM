@@ -104,7 +104,7 @@ pub struct EnemyOut {
 /// 战斗中玩家这一回合的行动（结果由程序计算）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CombatActionOut {
-    /// attack（攻击）/ move（移动靠近 target）/ defend（防御）/ use_item（使用物品）/ flee（逃跑）/ end_turn（结束回合）/ custom（自定义行动，名称写在 item）
+    /// attack（攻击）/ move（移动靠近 target）/ defend（防御）/ dodge（闪避，到下次行动前）/ skill（技能，技能名写在 item）/ use_item（使用物品）/ interact（场景交互，物件名写在 target）/ flee（撤退）/ end_turn（结束回合）
     pub kind: String,
     /// 目标参战者的名字。
     #[serde(default)]

@@ -1269,3 +1269,263 @@ fn broken_npc_reply_does_not_abort_the_turn() {
     let log = campaign::events(w.conn(), &fx.campaign, 0, 1000).unwrap();
     assert!(log.iter().any(|x| x.kind == "turn_end") && !log.iter().any(|x| x.kind == "turn_aborted"));
 }
+
+#[test]
+fn manual_dice_hook_supplies_the_roll_and_world_stays_usable_while_waiting() {
+    let fx: &'static Fx = Box::leak(Box::new(fixture()));
+    let gm = Router::new(json!({"intent": "搜查", "narration": "你开始搜查。", "checks": [{"skill": "察觉", "dc": 15, "reason": "搜查"}]}));
+    let asked = std::sync::Arc::new(Mutex::new(vec![]));
+    let a2 = asked.clone();
+    let mut o = opts();
+    o.dice = Some(chronicle_gm::ManualDice(std::sync::Arc::new(move |ask: &chronicle_core::checks::DiceAsk| {
+        // 等待玩家期间世界锁是放开的（界面这时还会读状态）。
+        assert!(fx.world.try_lock().is_ok(), "等玩家掷骰时不能占着世界锁");
+        a2.lock().unwrap().push(ask.clone());
+        Some(vec![vec![20]])
+    })));
+    let r = run_turn(&fx.world, &Engine { gm: &gm, npc: &gm, templates: &Templates::builtin(), opts: &o }, &fx.campaign, "我搜查房间", &CancelToken::new()).unwrap();
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].count, asked[0].sides, asked[0].rolls), (1, 20, 1));
+    assert!(asked[0].reason.starts_with("调查"), "「搜查」纠正为调查：{}", asked[0].reason);
+    assert_eq!(r.checks[0].roll, 20, "用了玩家掷出的点数");
+    assert!(r.checks[0].detail.as_ref().unwrap().explain.contains("亲手"));
+    // 玩家跳过（返回 None）：程序照常掷。
+    let mut o2 = opts();
+    o2.dice = Some(chronicle_gm::ManualDice(std::sync::Arc::new(|_: &chronicle_core::checks::DiceAsk| None)));
+    let r = run_turn(&fx.world, &Engine { gm: &gm, npc: &gm, templates: &Templates::builtin(), opts: &o2 }, &fx.campaign, "我再搜查一遍", &CancelToken::new()).unwrap();
+    assert!((1..=20).contains(&r.checks[0].roll) && !r.checks[0].detail.as_ref().unwrap().explain.contains("亲手"));
+}
+
+#[test]
+fn naming_an_npc_when_talking_makes_that_npc_answer() {
+    let fx = fixture();
+    // 模型没有把被问话的村长放进 npc_speakers。
+    let gm = Router::new(json!({"intent": "询问", "narration": "你转向铁匠铺。", "npc_speakers": []}));
+    let elder = { let w = fx.world.lock().unwrap(); chronicle_core::nodes::get_node(w.conn(), &fx.elder).unwrap().unwrap().title };
+    let r = run_turn(&fx.world, &Engine { gm: &gm, npc: &gm, templates: &Templates::builtin(), opts: &opts() }, &fx.campaign, &format!("我问{elder}遗迹在哪"), &CancelToken::new()).unwrap();
+    assert!(r.npc_lines.iter().any(|n| n.npc_id == fx.elder), "{:?}", r.npc_lines);
+}
+
+fn elder_name(fx: &Fx) -> String {
+    let w = fx.world.lock().unwrap();
+    chronicle_core::nodes::get_node(w.conn(), &fx.elder).unwrap().unwrap().title
+}
+
+fn eng<'a>(gm: &'a Router, o: &'a GmOptions, t: &'a Templates) -> Engine<'a> {
+    Engine { gm, npc: gm, templates: t, opts: o }
+}
+
+#[test]
+fn repeated_narration_is_rewritten_once() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    let same = "海风呼啸着卷过码头，带着咸腥的冷意。远处灯塔依旧是一片死寂的漆黑，像是一只失去了眼睛的巨兽。";
+    let gm = Router::new(json!({"intent": "闲逛", "npc_speakers": [], "narration": same}));
+    let r1 = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "我在码头上走走", &CancelToken::new()).unwrap();
+    assert_eq!(r1.narration, same);
+    let r2 = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "我继续发呆", &CancelToken::new()).unwrap();
+    assert_ne!(r2.narration, same, "和上一回合一样的叙述被重写");
+    assert!(gm.prompts("narrate").last().unwrap().contains("和你上一回合写的一模一样"));
+}
+
+#[test]
+fn npc_who_keeps_butting_in_sits_out_the_third_turn() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    // 每回合换一句台词（同一句会被当成重复略过）。
+    let lines = ["今天风真大。", "船队还没回来吗？", "我去看看渔网。", "遗迹在村北的山谷里。"];
+    let n = std::cell::Cell::new(0usize);
+    let spoke = |input: &str| {
+        let mut gm = Router::new(json!({"intent": "闲逛", "npc_speakers": ["N1"], "narration": format!("你四处看看（{input}）。")}));
+        gm.npc = json!({"reply": lines[n.get() % lines.len()], "attitude_change": 0, "remember": []}).to_string();
+        n.set(n.get() + 1);
+        run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, input, &CancelToken::new()).unwrap().npc_lines.len()
+    };
+    assert_eq!(spoke("我看看天色"), 1);
+    assert_eq!(spoke("我数一数船"), 1);
+    assert_eq!(spoke("我在码头踱步"), 0, "连续两回合插话后这回合歇一歇");
+    // 玩家点名找他照样回答。
+    let name = elder_name(&fx);
+    assert_eq!(spoke(&format!("我问{name}遗迹的事")), 1);
+}
+
+#[test]
+fn checking_own_pockets_gets_the_real_inventory_and_never_fights_yourself() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    {
+        let mut w = fx.world.lock().unwrap();
+        let pc = chronicle_core::pc::PlayerCharacter { name: "苇生".into(), identity: "学徒船匠".into(), equipment: vec![chronicle_core::pc::StartItem { name: "铜锤".into(), qty: 1, ..Default::default() }], ..Default::default() };
+        chronicle_core::pc::set(&mut w, &fx.campaign, &pc).unwrap();
+    }
+    // 模型把玩家自己当成了敌人。
+    let gm = Router::new(json!({"intent": "翻口袋", "npc_speakers": [], "narration": "你摸了摸口袋。", "combat_start": [{"name": "苇生", "npc": "", "level": 1, "count": 1}]}));
+    let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "我翻翻自己的口袋，看看身上都带了什么", &CancelToken::new()).unwrap();
+    assert!(r.combat.is_none() && !r.rpg_updates.iter().any(|u| u.contains("战斗开始")), "{:?}", r.rpg_updates);
+    let p = gm.prompts("plan").pop().unwrap();
+    assert!(p.contains("玩家身上只有：铜锤×1"), "背包事实交给 GM");
+}
+
+#[test]
+fn asking_an_npc_a_question_needs_no_perception_check() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    let gm = Router::new(json!({"intent": "提问", "npc_speakers": [], "narration": "你转向他。", "checks": [{"skill": "聆听", "dc": 15, "reason": "听清"}]}));
+    let name = elder_name(&fx);
+    let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, &format!("{name}，你觉得遗迹里有什么？"), &CancelToken::new()).unwrap();
+    assert!(r.checks.is_empty(), "{:?}", r.checks.iter().map(|c| &c.skill).collect::<Vec<_>>());
+    assert!(r.conflicts.iter().any(|c| c.contains("去掉了察觉")));
+}
+
+#[test]
+fn attack_words_in_combat_are_settled_even_without_a_combat_action() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    let gm = Router::new(json!({}));
+    *gm.plan.lock().unwrap() = vec![
+        json!({"intent": "遭遇", "npc_speakers": [], "narration": "……", "combat_start": [{"name": "野狼", "npc": "", "level": 3, "count": 1}]}).to_string(),
+        json!({"intent": "攻击", "npc_speakers": [], "narration": "你又出手了。"}).to_string(),
+    ];
+    let r1 = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "一头野狼从林子里窜出来", &CancelToken::new()).unwrap();
+    assert!(r1.combat.is_some());
+    let mut settled = false;
+    for _ in 0..4 {
+        let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "我再砍它一刀", &CancelToken::new()).unwrap();
+        if r.rpg_updates.iter().any(|u| u.contains("攻击野狼")) {
+            settled = true;
+            break;
+        }
+        if r.combat.as_ref().is_none_or(|c| c.status != "active") {
+            break;
+        }
+    }
+    assert!(settled, "没有战斗动作也按攻击结算");
+}
+
+#[test]
+fn second_npc_parroting_the_first_is_dropped() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    // 两个人物的回答一字不差（Router 对所有 NPC 都给同一句）。
+    let gm = Router::new(json!({"intent": "问话", "npc_speakers": ["N1", "N2"], "narration": "你看向他们两个。"}));
+    let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "你们觉得遗迹里有什么", &CancelToken::new()).unwrap();
+    assert_eq!(r.npc_lines.len(), 1, "{:?}", r.npc_lines.iter().map(|l| &l.name).collect::<Vec<_>>());
+    assert!(r.conflicts.iter().any(|c| c.contains("重复")));
+}
+
+#[test]
+fn narration_that_was_only_npc_lines_is_regenerated() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    let name = elder_name(&fx);
+    let gm = Router::new(json!({"intent": "问弹药", "npc_speakers": [], "narration": format!("{name}：你那点东西早用光了。")}));
+    let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "我身上还剩什么？", &CancelToken::new()).unwrap();
+    assert!(!r.narration.trim().is_empty(), "摘掉台词后重新要了一段叙述");
+    assert!(gm.prompts("narrate").last().unwrap().contains("不要写任何人物的台词"));
+}
+
+#[test]
+fn narration_contradicting_the_settlement_is_rewritten() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    let mut gm = Router::new(json!({}));
+    *gm.plan.lock().unwrap() = vec![
+        json!({"intent": "遭遇", "npc_speakers": [], "narration": "……", "combat_start": [{"name": "野兔", "npc": "", "level": 1, "count": 1}]}).to_string(),
+        json!({"intent": "攻击", "npc_speakers": [], "narration": "……", "combat_action": {"kind": "attack", "target": "野兔", "item": ""}}).to_string(),
+    ];
+    // 叙述总说"一击毙命"：没打中或野兔还活着时和结算不符。
+    gm.narration = json!({"narration": "你一刀砍中野兔的要害，它当场倒地不起，彻底没了声息。"}).to_string();
+    run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "一只野兔窜了出来", &CancelToken::new()).unwrap();
+    let mut rewrote = false;
+    for i in 0..8 {
+        let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, &format!("我砍向野兔（第 {i} 刀）"), &CancelToken::new()).unwrap();
+        if gm.prompts("narrate").iter().any(|p| p.contains("和程序结算不符")) {
+            rewrote = true;
+            assert!(r.conflicts.iter().any(|c| c.contains("叙述")), "重写后仍不符就留着提示：{:?}", r.conflicts);
+            break;
+        }
+        if r.combat.as_ref().is_none_or(|c| c.status != "active") {
+            break;
+        }
+    }
+    assert!(rewrote, "出现不符时按结算重写");
+}
+
+#[test]
+fn idle_player_never_fights_present_npcs_and_self_checks_roll_nothing() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    let name = elder_name(&fx);
+    let gm = Router::new(json!({"intent": "闲逛", "npc_speakers": [], "narration": "你在村里走走。", "combat_start": [{"name": name, "npc": "N1", "level": 2, "count": 1}]}));
+    let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "我还是在村里闲逛", &CancelToken::new()).unwrap();
+    assert!(r.combat.is_none(), "{:?}", r.rpg_updates);
+    let gm2 = Router::new(json!({"intent": "查看", "npc_speakers": [], "narration": "你看了看。", "checks": [{"skill": "射击", "dc": 10, "reason": "检查"}]}));
+    let r2 = run_turn(&fx.world, &eng(&gm2, &o, &t), &fx.campaign, "我检查一下身上还剩什么", &CancelToken::new()).unwrap();
+    assert!(r2.checks.is_empty());
+}
+
+#[test]
+fn empty_gun_outside_combat_just_clicks() {
+    let fx = fixture();
+    let (o, t) = (opts(), Templates::builtin());
+    {
+        let mut w = fx.world.lock().unwrap();
+        // 发一把猎枪和 1 发铅弹，再把铅弹用掉（真实的"打空了"；弹药必须是装备里真有的物品）。
+        let kit = vec![
+            chronicle_core::pc::StartItem { name: "猎枪".into(), qty: 1, slot: "weapon".into(), damage: "1d10".into(), range: 8, ammo: "猎枪铅弹".into(), ..Default::default() },
+            chronicle_core::pc::StartItem { name: "猎枪铅弹".into(), qty: 1, ..Default::default() },
+        ];
+        chronicle_core::rpg::grant_start_kit(&mut w, &fx.campaign, &kit).unwrap();
+        let (stack, _) = chronicle_core::rpg::ammo_stack(w.conn(), &fx.campaign, chronicle_core::rpg::PARTY, "猎枪铅弹").unwrap();
+        campaign::apply_effects(&mut w, &fx.campaign, &[chronicle_core::rules::Effect::TakeItem { holder: chronicle_core::rpg::PARTY.into(), item: stack, qty: 1 }], "打空").unwrap();
+    }
+    let gm = Router::new(json!({"intent": "射击", "npc_speakers": [], "narration": "你开了一枪。", "checks": [{"skill": "猎枪射击", "dc": 15, "reason": "打野狗"}]}));
+    let r = run_turn(&fx.world, &eng(&gm, &o, &t), &fx.campaign, "我再开一枪", &CancelToken::new()).unwrap();
+    assert!(r.checks.is_empty());
+    assert!(r.rpg_updates.iter().any(|u| u.contains("打不响")), "{:?}", r.rpg_updates);
+    assert!(gm.prompts("narrate").last().unwrap().contains("打不响"), "结算交给叙述");
+}
+
+#[test]
+fn program_adds_a_check_for_risky_actions_when_the_model_forgets() {
+    let fx = fixture();
+    let gm = Router::new(json!({"intent": "攀爬", "npc_speakers": [], "narration": "你顺着铁梯往上爬。", "checks": []}));
+    let r = run_turn(&fx.world, &Engine { gm: &gm, npc: &gm, templates: &Templates::builtin(), opts: &opts() }, &fx.campaign, "我顺着生锈的铁梯往上爬", &CancelToken::new()).unwrap();
+    assert_eq!(r.checks.len(), 1, "程序补了一次检定");
+    assert_eq!(r.checks[0].skill, "攀爬");
+    assert!(r.conflicts.iter().any(|c| c.contains("程序按动作补了")), "{:?}", r.conflicts);
+    // 普通对话不补。
+    let gm2 = Router::new(json!({"intent": "对话", "npc_speakers": [], "narration": "你打了个招呼。", "checks": []}));
+    let r = run_turn(&fx.world, &Engine { gm: &gm2, npc: &gm2, templates: &Templates::builtin(), opts: &opts() }, &fx.campaign, "我向大家打招呼", &CancelToken::new()).unwrap();
+    assert!(r.checks.is_empty());
+}
+
+#[test]
+fn downed_player_must_rest_before_acting() {
+    let fx = fixture();
+    {
+        let mut w = fx.world.lock().unwrap();
+        let mut s = chronicle_core::rpg::sheet(w.conn(), &fx.campaign, chronicle_core::rpg::PARTY).unwrap();
+        s.hp = 0;
+        campaign::apply_effects(&mut w, &fx.campaign, &[chronicle_core::rpg::sheet_effect(&s)], "战败倒地").unwrap();
+    }
+    let gm = Router::new(json!({"intent": "行动", "npc_speakers": [], "narration": "你慢慢醒来。", "checks": []}));
+    let players = |w: &World| campaign::recent_events(w.conn(), &fx.campaign, &["player"], 50).unwrap().len();
+    let before = players(&fx.world.lock().unwrap());
+    // 倒地时去别处、动手：程序拦下，不调用模型、不记录回合。
+    let e = run_turn(&fx.world, &Engine { gm: &gm, npc: &gm, templates: &Templates::builtin(), opts: &opts() }, &fx.campaign, "我去码头看看", &CancelToken::new()).unwrap_err();
+    assert!(e.to_string().contains("先休息"), "{e}");
+    assert!(gm.requests().is_empty(), "被拦下的行动不请求模型");
+    assert_eq!(players(&fx.world.lock().unwrap()), before, "不记录这次行动");
+    // 休息：程序推进时间、按规则恢复到能站起来，再交给 GM 讲述。
+    let t0 = chronicle_core::schedule::clock(fx.world.lock().unwrap().conn(), &fx.campaign);
+    let r = run_turn(&fx.world, &Engine { gm: &gm, npc: &gm, templates: &Templates::builtin(), opts: &opts() }, &fx.campaign, "我躺下休息，养一养伤", &CancelToken::new()).unwrap();
+    assert!(r.rpg_updates.iter().any(|u| u.contains("休息了") && u.contains("生命恢复到")), "{:?}", r.rpg_updates);
+    let w = fx.world.lock().unwrap();
+    assert!(chronicle_core::rpg::sheet(w.conn(), &fx.campaign, chronicle_core::rpg::PARTY).unwrap().hp >= 1);
+    assert!(chronicle_core::schedule::clock(w.conn(), &fx.campaign) >= t0 + 60, "故事时间至少过了 1 小时");
+    drop(w);
+    // 站起来以后照常行动。
+    assert!(run_turn(&fx.world, &Engine { gm: &gm, npc: &gm, templates: &Templates::builtin(), opts: &opts() }, &fx.campaign, "我去码头看看", &CancelToken::new()).is_ok());
+}

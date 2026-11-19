@@ -95,6 +95,7 @@ pub fn pc_payload(pc: &PcOutline) -> serde_json::Value {
             "key_events": pc.backstory.key_events,
             "relations": pc.backstory.relations,
         },
+        "equipment": pc.equipment,
     })
 }
 

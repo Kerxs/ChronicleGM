@@ -5,4 +5,12 @@ export type InvItem = { item: ItemInfo, qty: number,
 /**
  * 来源（购买、制作、战利品、剧情……）。
  */
-source: string, equipped: boolean, };
+source: string, equipped: boolean, 
+/**
+ * 品质（按题材的稀有度叫法，例如「普通」「精良」）。
+ */
+quality: string, 
+/**
+ * 用弹药的武器：背包里剩下的弹药数。
+ */
+ammo_left: number | null, };

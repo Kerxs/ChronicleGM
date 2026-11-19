@@ -53,7 +53,7 @@ export function InvestigationPanel({ ctx, campaignId, gmView, ended, refreshKey 
                 {c.related.length > 0 && <>相关人物：{c.related.join("、")}</>}
               </div>
             )}
-            {gmView && c.gm_note && <div className="gm">主持人：{c.gm_note}</div>}
+            {gmView && c.gm_note && <div className="gm">GM 笔记：{c.gm_note}</div>}
             {c.source === "player" && !ended && <button className="link danger" onClick={() => run(() => api.boardRemoveNote(ctx.worldId, campaignId, c.id))}>删除</button>}
           </li>
         ))}
@@ -414,7 +414,7 @@ export function NpcPanel({ ctx, campaignId, gmView, ended, refreshKey, onChanged
           </li>
         ))}
       </ul>
-      {!gmView && <p className="hint">打开"主持人视角"可以看到人物的情绪与对玩家的关系。</p>}
+      {!gmView && <p className="hint">打开剧透模式可以看到人物的情绪与对玩家的关系。</p>}
     </div>
   );
 }
@@ -510,7 +510,7 @@ export function WorldPanel({ ctx, campaignId, gmView, ended, refreshKey, onChang
         {env.bad_weather && <p className="hint">恶劣天气：户外活动的人物会待在家里，势力暂停作战。</p>}
         {gmView && !ended && (
           <div className="row wrap">
-            <span className="hint">主持人指定今天的天气：</span>
+            <span className="hint">GM 指定今天的天气：</span>
             <select defaultValue="" onChange={(e) => void api.setWeatherToday(ctx.worldId, campaignId, e.target.value).then(onChanged).catch(fail)}>
               <option value="">（按季节随机）</option>
               {WEATHERS.map((w) => (
@@ -551,7 +551,7 @@ export function WorldPanel({ ctx, campaignId, gmView, ended, refreshKey, onChang
         ) : mapMode === "map" ? (
           <>
             <MapView places={ov.map.places} roads={ov.map.roads} onPick={(id) => !ended && preview(id)} />
-            <p className="hint">实心：去过；虚线：听说过；半透明：玩家还不知道（只在主持人视角）。点地点查看路线。</p>
+            <p className="hint">实心：去过；虚线：听说过；半透明：玩家还不知道（只在剧透模式）。点地点查看路线。</p>
           </>
         ) : (
           <ul className="list plain">{children(null).map((p) => placeRow(p, 0))}</ul>

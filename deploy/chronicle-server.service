@@ -1,0 +1,35 @@
+# /etc/systemd/system/chronicle-server.service
+# Chronicle GM 联机服务端（单进程，SQLite 存档，只监听本机，由 Nginx 反代 TLS / WebSocket）。
+[Unit]
+Description=Chronicle GM multiplayer server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chronicle
+Group=chronicle
+EnvironmentFile=/etc/chronicle/server.env
+ExecStart=/opt/chronicle/chronicle-server --bind 127.0.0.1:7788 --data /var/lib/chronicle
+Restart=always
+RestartSec=3
+# 2C2G：给进程一个硬上限，超过时由 systemd 重启（已提交的状态都在 SQLite 里）。
+MemoryHigh=700M
+MemoryMax=900M
+TasksMax=256
+LimitNOFILE=4096
+# 加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/chronicle
+
+[Install]
+WantedBy=multi-user.target

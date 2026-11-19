@@ -1,0 +1,210 @@
+/* =====================================================================
+   统一界面：一套设计变量 + 所有卡片、按钮、输入框、分段标签、标签、弹出层都用它。
+   之前 styles / shell / reform / 各页面各写各的（圆角 8–20px、四五种阴影、三种标签页、弹簧和减速两套动画），
+   这一层放在最后加载，把它们统一起来。改风格只改这里的变量。
+   ===================================================================== */
+:root {
+  /* 圆角 */
+  --r-xl: 20px;
+  --r-lg: 16px;
+  --r-md: 12px;
+  --r-sm: 9px;
+  --r-pill: 999px;
+  /* 表面：半透明毛玻璃白 */
+  --surface: rgba(255, 255, 255, 0.84);
+  --surface-strong: rgba(255, 255, 255, 0.96);
+  --surface-sunken: rgba(118, 118, 128, 0.1);
+  --hairline: rgba(15, 23, 42, 0.08);
+  --hairline-strong: rgba(15, 23, 42, 0.14);
+  --glass: blur(18px) saturate(1.4);
+  /* 阴影：三档 */
+  --sh-1: 0 1px 2px rgba(15, 30, 60, 0.05);
+  --sh-2: 0 1px 2px rgba(15, 30, 60, 0.04), 0 8px 24px rgba(15, 30, 60, 0.07);
+  --sh-3: 0 18px 48px rgba(15, 30, 60, 0.16), 0 2px 6px rgba(15, 30, 60, 0.06);
+  /* 动画：一条减速曲线 + 三档时长；循环和进度用 linear */
+  --ease-ui: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-1: 0.18s;
+  --t-2: 0.3s;
+  --t-3: 0.45s;
+  /* 旧变量指向新值，旧代码自动跟着统一 */
+  --radius: var(--r-lg);
+  --radius-sm: var(--r-sm);
+  --shadow: var(--sh-2);
+  --shadow-lg: var(--sh-3);
+  --ease: var(--ease-ui);
+  --ease-out-soft: var(--ease-ui);
+  --spring-soft: var(--ease-ui);
+  --spring-snappy: var(--ease-ui);
+  --spring-bouncy: var(--ease-ui);
+  --dur: var(--t-2);
+  --dur-fast: var(--t-1);
+  --dur-spring: var(--t-3);
+}
+
+/* ---------- 卡片：所有"一块内容"都是同一种卡片 ---------- */
+.card, .lobby-card, .gs-card, .lm-card, .ss-card, .ss-world, .scene, .opening-cta, .gm-col, .mp-feed, .story-card, .after-card {
+  background: var(--surface);
+  backdrop-filter: var(--glass);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-2);
+}
+.gm-col { border-radius: var(--r-xl); }
+/* 卡片里套卡片：里面的那层去掉外观，避免一圈套一圈 */
+.lobby-card .card, .card:not(.transcript) .card, .gs-card .card, .lm-card .card, .play-drawer .card, .detail.side-pop .card {
+  background: transparent; backdrop-filter: none; border: 0; box-shadow: none; padding: 0; margin: 0;
+}
+.play-drawer .card + .card, .detail.side-pop .card + .card { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hairline); border-radius: 0; }
+/* 可点击的卡片：悬停上浮、按下缩小，节奏一致 */
+.lobby-script, .lobby-recent-item, .lobby-nav-btn, .ss-world, button.ss-card, .lm-result, .pc-card, .lobby-world, .mp-recent .lobby-recent-item {
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); box-shadow: var(--sh-1);
+  transition: transform var(--t-1) var(--ease-ui), box-shadow var(--t-2) var(--ease-ui), border-color var(--t-1), background var(--t-1);
+}
+.lobby-script:hover, .lobby-recent-item:hover, .lobby-nav-btn:hover, .ss-world:hover, button.ss-card:hover, .lm-result:hover, .pc-card:hover, .lobby-world:hover {
+  transform: translateY(-2px); box-shadow: var(--sh-2); border-color: var(--hairline-strong); background: var(--surface-strong);
+}
+.lobby-script.on, .pc-card.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--sh-1); background: var(--surface-strong); }
+
+/* 剧情区只是容器，不是卡片（它铺满游戏区，套上毛玻璃会把背景点阵糊成色块） */
+.transcript.card { background: transparent; backdrop-filter: none; border: 0; box-shadow: none; }
+.transcript .lines { overflow-x: hidden; }
+.transcript .pc-picker.card { background: var(--surface); backdrop-filter: var(--glass); border: 1px solid var(--hairline); box-shadow: var(--sh-2); padding: 18px 20px; }
+
+/* ---------- 按钮：默认 / 主要 / 危险 / 链接 / 小号 ---------- */
+button {
+  border-radius: var(--r-sm); border: 1px solid var(--hairline-strong);
+  background: var(--surface-strong); color: var(--text); box-shadow: var(--sh-1); font-weight: 500;
+  transition: transform var(--t-1) var(--ease-ui), background var(--t-1), box-shadow var(--t-2) var(--ease-ui), color var(--t-1), border-color var(--t-1), opacity var(--t-1);
+}
+/* 通用的悬停 / 按下用 :where 降到最低优先级：自带颜色的按钮（收起、主要按钮、标签……）保持自己的颜色 */
+button:where(:hover:not(:disabled)) { background: #fff; box-shadow: var(--sh-2); }
+button:where(:active:not(:disabled)) { transform: scale(0.97); }
+button.primary { background: var(--accent); color: #fff; border-color: transparent; box-shadow: 0 2px 10px rgba(0, 122, 255, 0.28); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: #0a6fe6; box-shadow: 0 6px 18px rgba(0, 122, 255, 0.32); }
+button.danger { color: var(--danger); }
+button.danger:hover:not(:disabled) { background: rgba(255, 59, 48, 0.08); border-color: rgba(255, 59, 48, 0.3); }
+button.link { padding: 2px 4px; border: 0; background: none; box-shadow: none; color: var(--accent); }
+button.link:hover:not(:disabled) { background: none; box-shadow: none; text-decoration: none; opacity: 0.75; }
+button.small { padding: 3px 10px; border-radius: 8px; }
+button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft), var(--sh-1); }
+/* 图标类、分段控件、图谱控件、玻璃球里的按钮不要默认按钮的外观 */
+.segmented button, .lobby-tabs button, .play-rail > button, .play-settings-btn, .tabs button, .lobby-del, .tb-world-btn, .nav button, .read-nav button,
+.react-flow button, .gm button, .speak, .tb-ctl, .titlebar button { box-shadow: none; }
+
+/* ---------- 输入框、下拉框、多行文字 ---------- */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea {
+  padding: 7px 12px; border-radius: var(--r-sm); border: 1px solid var(--hairline-strong);
+  background: var(--surface-strong); color: var(--text); box-shadow: inset 0 1px 2px rgba(15, 30, 60, 0.03);
+  transition: border-color var(--t-1), box-shadow var(--t-2) var(--ease-ui), background var(--t-1);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):hover, select:hover, textarea:hover { border-color: rgba(15, 23, 42, 0.22); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: #fff; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 16px; height: 16px; }
+/* 游戏输入栏里的输入框不要边框（整条栏就是输入框） */
+.transcript.immersive .input-row textarea, .transcript.immersive .input-row textarea:focus { border: 0; box-shadow: none; background: transparent; }
+
+/* ---------- 分段标签：创作模式页签、本地模型、大厅、联机都用同一种 ---------- */
+.segmented, .lobby-tabs {
+  display: inline-flex; gap: 2px; padding: 4px; border-radius: var(--r-md); background: var(--surface-sunken);
+}
+.lobby-tabs { display: flex; }
+.segmented button, .lobby-tabs button {
+  border: 0; background: transparent; color: var(--text-2); padding: 7px 18px; border-radius: 9px; font-size: 14px;
+  transition: color var(--t-1), background var(--t-2) var(--ease-ui), box-shadow var(--t-2) var(--ease-ui);
+}
+.segmented button:hover, .lobby-tabs button:hover:not(.on) { color: var(--text); background: rgba(255, 255, 255, 0.45); }
+.lobby-tabs button.on, .segmented button.active { color: var(--text); font-weight: 600; }
+.lobby-tabs button.on { background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 3px 8px rgba(0, 0, 0, 0.05); }
+.seg-thumb { border-radius: 9px; top: 4px; bottom: 4px; background: #fff; transition: transform var(--t-2) var(--ease-ui), width var(--t-2) var(--ease-ui); }
+/* 游戏面板里的页签（创作模式旧布局）也换成分段样式 */
+.detail .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 4px; border-radius: var(--r-md); background: var(--surface-sunken); }
+.detail .tabs button { border: 0; background: transparent; padding: 6px 12px; border-radius: 9px; }
+.detail .tabs button.active { background: #fff; font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+
+/* ---------- 小标签（状态、来源、云端……） ---------- */
+.badge, .lm-tag, .svc, .mp-status, .mp-gm {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: var(--r-pill); font-size: 12px; font-weight: 500;
+  background: var(--surface-sunken); color: var(--text-2); border: 0;
+}
+
+/* ---------- 弹出层：菜单、设置、教程气泡、游戏面板 ---------- */
+.tb-menu, .play-settings-pop, .tour-bubble, .detail.side-pop, .play-drawer, .mp-gmset[open] {
+  background: var(--surface-strong); backdrop-filter: var(--glass); border: 1px solid var(--hairline); border-radius: var(--r-lg); box-shadow: var(--sh-3);
+}
+.play-rail { background: var(--surface); backdrop-filter: var(--glass); border: 1px solid var(--hairline); box-shadow: var(--sh-2); }
+.panel-fab { background: var(--surface-strong); border: 1px solid var(--hairline); box-shadow: var(--sh-3); }
+.panel-fab.on { background: var(--accent); border-color: transparent; color: #fff; }
+.panel-fab.on:hover { background: #0a6fe6; color: #fff; }
+.panel-fab:not(.on):hover { background: #fff; }
+
+/* ---------- 文字层级 ---------- */
+main h2, .lm-page h2, .mp-head h2 { font-weight: 700; letter-spacing: -0.3px; }
+.lobby-left h3, .studio-start h3, .mp-recent > small { font-size: 12.5px; font-weight: 600; letter-spacing: 1px; color: var(--muted); text-transform: none; margin: 6px 2px 2px; }
+.card h3, .gs-card h3, .lm-card h3, .lobby-card h3, .pc-picker h3 { font-size: 15.5px; font-weight: 650; margin: 0 0 10px; }
+
+/* ---------- 统一动画 ---------- */
+/* 一条曲线、三档时长：进场 0.45s 上移 12px；侧面板左右平移；弹出层 0.22s 缩放淡入；悬停 0.18s。 */
+@keyframes ui-in { from { opacity: 0; transform: translateY(12px); } }
+@keyframes ui-in-left { from { opacity: 0; transform: translateX(-16px); } }
+@keyframes ui-in-right { from { opacity: 0; transform: translateX(16px); } }
+@keyframes ui-pop { from { opacity: 0; transform: scale(0.97) translateY(4px); } }
+@keyframes ui-fade { from { opacity: 0; } }
+:root:not(.low-power) .card, :root:not(.low-power) .lobby-card, :root:not(.low-power) .gs-card, :root:not(.low-power) .lm-card,
+:root:not(.low-power) .ss-card, :root:not(.low-power) .ss-world, :root:not(.low-power) .opening-cta, :root:not(.low-power) .pc-picker, :root:not(.low-power) .scene {
+  animation: ui-in var(--t-3) var(--ease-ui) both;
+}
+:root:not(.low-power) .pc-card { animation: ui-pop var(--t-2) var(--ease-ui) both; }
+:root:not(.low-power) .tb-menu, :root:not(.low-power) .play-settings-pop, :root:not(.low-power) .tour-bubble, :root:not(.low-power) .mp-gmset[open] { animation: ui-pop 0.22s var(--ease-ui) both; }
+:root:not(.low-power) .page-anim { animation: ui-fade var(--t-2) var(--ease-ui) both; }
+:root:not(.low-power) .lobby-left, :root:not(.low-power) .play-layout > .transcript { animation: ui-in-left var(--t-3) var(--ease-ui) both; }
+:root:not(.low-power) .lobby-right, :root:not(.low-power) .table-body > .gm-col, :root:not(.low-power) .play-layout > .play-rail { animation: ui-in-right var(--t-3) var(--ease-ui) both; }
+:root:not(.low-power) .bubble-row.enter.from-player { animation: ui-in-right var(--t-2) var(--ease-ui) both; }
+:root:not(.low-power) .bubble-row.enter.from-npc { animation: ui-in-left var(--t-2) var(--ease-ui) both; }
+:root:not(.low-power) .story-card.enter, :root:not(.low-power) .choice, :root:not(.low-power) .lm-task, :root:not(.low-power) .mp-line { animation: ui-in var(--t-2) var(--ease-ui) both; }
+/* 页签切换：内容淡入上移 */
+:root:not(.low-power) .lm-page > :not(.segmented), :root:not(.low-power) .tabbed-body { animation: ui-in var(--t-2) var(--ease-ui) both; }
+/* 抽屉、面板：同一节奏 */
+.play-drawer, .detail.side-pop { transition: transform var(--t-2) var(--ease-ui), opacity var(--t-1) linear, visibility 0s linear var(--t-2); }
+.play-layout.drawer-open .play-drawer, .detail.side-pop.open { transition: transform var(--t-2) var(--ease-ui), opacity var(--t-1) linear; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001s !important; transition-duration: 0.001s !important; }
+}
+.lm-page > .segmented { align-self: flex-start; }
+
+/* 删除按钮：鼠标移到一行上才出现（世界菜单、创作模式开始页） */
+.tb-world-row, .ss-world-row { position: relative; display: flex; }
+.tb-world-row > button:first-child, .ss-world-row > .ss-world { flex: 1; min-width: 0; }
+.ss-world-row > .ss-world { padding-right: 46px; }
+.tb-world-row > button:first-child { padding-right: 38px; }
+.row-del {
+  position: absolute; right: 8px; top: 50%; width: 28px; height: 28px; margin-top: -14px; padding: 0; border: 0; border-radius: 8px;
+  background: transparent; box-shadow: none; font-size: 14px; opacity: 0; transform: translateX(4px);
+  transition: opacity var(--t-1), transform var(--t-2) var(--ease-ui), background var(--t-1);
+}
+.tb-world-row:hover .row-del, .ss-world-row:hover .row-del, .row-del:focus-visible { opacity: 0.75; transform: none; }
+.row-del:hover { opacity: 1 !important; background: rgba(255, 59, 48, 0.1) !important; }
+
+/* 游戏面板里的关系图谱：抽屉只有 460px 宽，整页的「图 + 右侧说明」两栏改成上下排；标题和抽屉标题重复，去掉 */
+.relations-embed { height: auto !important; overflow: visible; }
+.relations-embed .network-page > h2 { display: none; }
+.relations-embed .network-page .network-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; }
+.relations-embed .graph.big { height: 52vh; min-height: 320px; margin: 0; }
+.relations-embed .network-page .side { max-height: none; }
+.relations-embed .network-page .row.wrap { gap: 8px; }
+
+/* =====================================================================
+   游戏面板（右侧抽屉，约 460px 宽）里的内容：这些面板原来是给创作模式宽侧栏写的，这里统一适配窄容器。
+   ===================================================================== */
+.play-drawer { overflow-x: hidden; }
+.play-drawer .grid2, .play-drawer .stats, .play-drawer .world-body, .play-drawer .review-body, .play-drawer .editor-body, .play-drawer .arg-row { grid-template-columns: minmax(0, 1fr) !important; }
+.play-drawer .stats { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+.play-drawer .row { flex-wrap: wrap; }
+.play-drawer input:not([type="checkbox"]):not([type="radio"]), .play-drawer select, .play-drawer textarea { min-width: 0; max-width: 100%; }
+.play-drawer table { display: block; max-width: 100%; overflow-x: auto; }
+.play-drawer img, .play-drawer svg, .play-drawer canvas, .play-drawer .world-map, .play-drawer .battlefield { max-width: 100%; height: auto; }
+.play-drawer .img-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+.play-drawer h2 { font-size: 18px; margin: 0 0 8px; }
+.play-drawer .card h3 { font-size: 15px; }
+.play-drawer .list li, .play-drawer .bs-row { overflow-wrap: anywhere; }
+.play-drawer .bs-row { grid-template-columns: 4.5em minmax(0, 1fr); }

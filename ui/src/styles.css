@@ -599,3 +599,15 @@ table.data th, table.kv th { color: var(--muted); }
 .network-page .gnode { font-size: 14px; min-width: 120px; padding: 10px 14px; line-height: 1.4; }
 .network-page .gnode.has-pic { padding: 8px 12px; min-width: 160px; }
 .network-page .gnode-pic { gap: 10px; }
+
+/* 设置 → 通用 */
+.gs-page { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
+.gs-card { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px; border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+.gs-card h3 { margin: 0 0 6px; font-size: 15px; }
+.gs-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.gs-row:last-of-type { border-bottom: 0; }
+.gs-label { font-size: 14px; }
+.gs-hint { font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.gs-ctl { flex: none; display: flex; align-items: center; gap: 8px; }
+.gs-ctl select { min-width: 170px; }
+.gs-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 8px; }

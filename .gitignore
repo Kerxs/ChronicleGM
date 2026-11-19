@@ -14,3 +14,7 @@ docs/img/
 docs/launch-and-images/*.png
 docs/image-input/*.png
 !docs/image-input/test-map.png
+
+# 打包输出
+release/
+crates/installer/gen/

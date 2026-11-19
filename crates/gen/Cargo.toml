@@ -6,10 +6,11 @@ license.workspace = true
 publish = false
 
 [dependencies]
-chronicle-core = { version = "0.0.5", path = "../core" }
-chronicle-llm = { version = "0.0.5", path = "../llm" }
+chronicle-core = { version = "0.0.6", path = "../core" }
+chronicle-llm = { version = "0.0.6", path = "../llm" }
 minijinja = { version = "3.1.0", features = ["serde"] }
 schemars = "1.2.3"
+sha2 = "0.10.9"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 thiserror = "2.0.21"

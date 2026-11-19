@@ -7,13 +7,13 @@ publish = false
 
 [dependencies]
 base64 = "0.23.1"
-chronicle-core = { version = "0.0.6", path = "../crates/core" }
-chronicle-gen = { version = "0.0.6", path = "../crates/gen" }
-chronicle-gm = { version = "0.0.6", path = "../crates/gm" }
-chronicle-llm = { version = "0.0.6", path = "../crates/llm" }
-chronicle-runtime = { version = "0.0.6", path = "../crates/runtime" }
-chronicle-server = { version = "0.0.6", path = "../crates/server" }
-chronicle-models = { version = "0.0.6", path = "../crates/models" }
+chronicle-core = { version = "0.0.7", path = "../crates/core" }
+chronicle-gen = { version = "0.0.7", path = "../crates/gen" }
+chronicle-gm = { version = "0.0.7", path = "../crates/gm" }
+chronicle-llm = { version = "0.0.7", path = "../crates/llm" }
+chronicle-runtime = { version = "0.0.7", path = "../crates/runtime" }
+chronicle-server = { version = "0.0.7", path = "../crates/server" }
+chronicle-models = { version = "0.0.7", path = "../crates/models" }
 ureq = "3.5.2"
 keyring = { version = "4.2.0", default-features = false, features = ["v1", "windows-native-keyring-store"] }
 serde = { version = "1.0.229", features = ["derive"] }

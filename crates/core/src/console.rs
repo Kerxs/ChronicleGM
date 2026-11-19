@@ -136,6 +136,12 @@ pub struct GmConsole {
     pub consequences: Vec<crate::story::Consequence>,
     #[serde(default)]
     pub foreshadows: Vec<crate::story::Foreshadow>,
+    /// 剧情事件的动态状态（反剧情纠正）。
+    #[serde(default)]
+    pub events: Vec<crate::events::PlotEvent>,
+    /// 玩家当前的目标。
+    #[serde(default)]
+    pub player_goal: Option<crate::events::PlayerGoal>,
 }
 
 fn list_field(v: &Value, k: &str) -> Vec<String> {
@@ -336,6 +342,8 @@ pub fn console(conn: &Connection, campaign_id: &str) -> Result<GmConsole> {
         .collect();
 
     Ok(GmConsole {
+        events: crate::events::events(conn, campaign_id)?,
+        player_goal: crate::events::player_goal(conn, campaign_id),
         scene,
         time: crate::schedule::format_clock(crate::schedule::clock(conn, campaign_id)),
         environment: crate::worldsim::environment(conn, campaign_id)?,

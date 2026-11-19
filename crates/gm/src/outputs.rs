@@ -104,8 +104,11 @@ pub struct EnemyOut {
 /// 战斗中玩家这一回合的行动（结果由程序计算）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CombatActionOut {
-    /// attack（攻击）/ move（移动靠近 target）/ defend（防御）/ dodge（闪避，到下次行动前）/ skill（技能，技能名写在 item）/ use_item（使用物品）/ interact（场景交互，物件名写在 target）/ flee（撤退）/ end_turn（结束回合）
+    /// attack（攻击）/ move（移动靠近 target）/ defend（防御）/ dodge（闪避，到下次行动前）/ skill（技能，技能名写在 item）/ use_item（使用物品）/ interact（场景交互，物件名写在 target）/ destroy（砸毁掩体等物件，物件名写在 target）/ surrender（投降）/ flee（撤退）/ end_turn（结束回合）
     pub kind: String,
+    /// 玩家说了打哪里时：head / arms / legs；没说留空。
+    #[serde(default)]
+    pub part: String,
     /// 目标参战者的名字。
     #[serde(default)]
     pub target: String,
@@ -153,6 +156,68 @@ pub struct RpgIntentOut {
     pub combat_start: Vec<EnemyOut>,
 }
 
+/// GM 提出的互动（玩家亲自操作；结果由程序结算）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct InteractionOut {
+    /// lock（开锁）/ investigate（调查）/ item_use（使用物品）/ puzzle（机关谜题）/ social（交涉）/ combine（物品组合）/ stealth（潜行）/ medical（医疗）/ survival（生存）/ ritual（仪式）
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// 对象编号（O1）、人物编号（N1）或名字；潜行、生存留空。
+    #[serde(default)]
+    pub target: String,
+    /// 给玩家看的标题（例如"撬开地窖的铁门"）。
+    #[serde(default)]
+    pub title: String,
+    /// 为什么现在要玩家亲自来（一句话）。
+    #[serde(default)]
+    pub reason: String,
+    /// 场景里合理存在、但「这里可以互动的东西」没有列出的对象（例如墙角的旧木箱）。只写名字和样子，不能凭空放进物品或线索。
+    #[serde(default)]
+    pub new_object: Option<NewObjectOut>,
+    /// 只有情况真的紧迫（炸弹倒计时、有人马上要离开）时才写：real（真实秒数）/ game（故事分钟）/ actions（行动次数）。
+    #[serde(default)]
+    pub timeout_kind: String,
+    #[serde(default)]
+    pub timeout_amount: i64,
+    /// 为什么限时（必须写明，否则不限时）。
+    #[serde(default)]
+    pub timeout_reason: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NewObjectOut {
+    pub name: String,
+    /// door / container / mechanism / furniture / document / body / device / other
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub description: String,
+    /// 锁：""（没锁）/ key / pick / code / electronic / bar
+    #[serde(default)]
+    pub lock: String,
+    /// 撬锁或破解难度（8–20）。
+    #[serde(default)]
+    pub dc: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ObjectChangeOut {
+    pub target: String,
+    pub change: String,
+}
+
+/// 事件 / 任务状态变化。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct EventUpdateOut {
+    /// 事件编号（V1）或任务编号（Q1、G1）。
+    pub event: String,
+    /// refused（玩家明确拒绝委托）/ bypassed（玩家走了别的路、放弃了）/ changed（玩家用剧本没有的方式改写了它）/ invalid（失去成立条件）/ done / failed
+    pub status: String,
+    /// 一句话原因（引用这一回合发生的事）。
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// GM 对玩家行动的处理方案（由程序校验与执行）。
 /// 字段顺序即生成顺序：先决定谁说话、要做哪些判定，最后才写叙述（实测模型先写叙述时会替 NPC 说话）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -165,6 +230,21 @@ pub struct GmPlan {
     /// 玩家做了剧本没有预设的事。
     #[serde(default)]
     pub off_script: bool,
+    /// 玩家明确说出或改变了自己想做的事时，用一句话写下他现在的目标；没有变化留空。
+    #[serde(default)]
+    pub player_goal: String,
+    /// 因为玩家的行动，潜在事件或任务的状态变了（拒绝、绕过、改写、失去成立条件、完成、失败），最多 3 条。
+    #[serde(default)]
+    pub event_updates: Vec<EventUpdateOut>,
+    /// 这一回合被彻底毁掉的物品编号（如 B1、I1）：烧掉、砸碎、扔进海里。只写真的不复存在的东西。
+    #[serde(default)]
+    pub destroy_items: Vec<String>,
+    /// 玩家用自己的办法（不是互动卡片）改变了场景对象时写：target 填 O 编号，change 填 open（打开）/ break（砸坏）/ search（搜过）。只有这一回合有检定时程序才会执行，成败按检定结果。
+    #[serde(default)]
+    pub object_changes: Vec<ObjectChangeOut>,
+    /// 需要玩家亲自操作时提出一个互动（开锁、调查某处、用物品、机关、交涉、潜行、医疗……）；不需要就留空。提出后不要写结果。
+    #[serde(default)]
+    pub interaction: Option<InteractionOut>,
     /// 如果要推进剧情：引用玩家原话说明他明确做出了哪个选择；玩家只是询问、观察或犹豫时留空。
     /// （实测：模型会在玩家只是提问时就推进剧情；先写理由再填编号可以减少误判。）
     #[serde(default)]
@@ -251,8 +331,8 @@ pub struct GmPlan {
     pub choices: Vec<String>,
 }
 
-const PLAN_KEYS: [&str; 32] = [
-    "intent", "npc_speakers", "off_script", "transition_reason", "transition_edge", "checks",
+const PLAN_KEYS: &[&str] = &[
+    "intent", "npc_speakers", "off_script", "player_goal", "event_updates", "destroy_items", "object_changes", "interaction", "transition_reason", "transition_edge", "checks",
     "effects", "effects_on_success", "effects_on_failure", "new_entities", "discoveries", "new_quests", "quest_notes",
     "combat_start", "combat_no_escape", "combat_allies", "combat_action", "trade", "item_use", "craft", "rewards", "travel_to", "places_heard", "time_passes_minutes", "remember", "based_on", "consequences", "consequences_done", "foreshadow", "payoffs", "web_search", "choices",
 ];
@@ -280,7 +360,7 @@ pub fn strip_leaked_fields(text: &str, keys: &[&str]) -> Option<(String, serde_j
 impl GmPlan {
     /// 截掉叙述里的字段尾巴，并把能解析出的字段补回空着的字段。返回是否做了修正。
     pub fn salvage_leaked_fields(&mut self) -> bool {
-        let Some((narration, m)) = strip_leaked_fields(&self.narration, &PLAN_KEYS) else { return false };
+        let Some((narration, m)) = strip_leaked_fields(&self.narration, PLAN_KEYS) else { return false };
         self.narration = narration;
         if self.npc_speakers.is_empty()
             && let Some(v) = m.get("npc_speakers").and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -397,8 +477,8 @@ mod tests {
 }
 
 
-const RPG_EFFECT_TYPES: [&str; 21] = [
-    "check", "skill_check", "roll",
+const RPG_EFFECT_TYPES: [&str; 23] = [
+    "check", "skill_check", "roll", "object_changes", "object_change",
     "trade", "buy", "sell", "purchase", "combat_start", "start_combat", "encounter", "combat", "combat_action", "attack", "craft", "item_use", "use_item", "equip", "reward", "rewards", "award_xp", "give_money",
 ];
 
@@ -423,6 +503,14 @@ impl GmPlan {
                 let ty = m.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
                 match ty.as_str() {
                     // 实测：模型把检定写成了效果（{"type":"check",...}），移到 checks 里，由程序掷骰。
+                    // 实测：模型把 object_changes 写成了效果。移到对应字段（成败仍按检定）。
+                    "object_changes" | "object_change" => {
+                        let target = s_of(&m, &["target", "object", "id"]);
+                        let change = s_of(&m, &["change", "state", "action"]);
+                        if !target.is_empty() && !change.is_empty() && self.object_changes.len() < 2 {
+                            self.object_changes.push(ObjectChangeOut { target, change });
+                        }
+                    }
                     "check" | "skill_check" | "roll" => {
                         let skill = s_of(&m, &["skill", "ability", "name"]);
                         let dc = i_of(&m, &["dc", "difficulty", "target"]);
@@ -463,7 +551,7 @@ impl GmPlan {
                     "combat_action" | "attack" => {
                         if self.combat_action.is_none() {
                             let kind = if ty == "attack" { "attack".to_string() } else { s_of(&m, &["kind", "action"]) };
-                            self.combat_action = Some(CombatActionOut { kind: if kind.is_empty() { "attack".into() } else { kind }, target: s_of(&m, &["target", "enemy"]), item: s_of(&m, &["item"]) });
+                            self.combat_action = Some(CombatActionOut { kind: if kind.is_empty() { "attack".into() } else { kind }, target: s_of(&m, &["target", "enemy"]), item: s_of(&m, &["item"]), part: s_of(&m, &["part"]) });
                         }
                     }
                     "craft" => {

@@ -159,10 +159,12 @@ impl CheckRules {
     }
     /// 给提示词看的说明。
     pub fn describe(&self) -> String {
-        let base = match self.mode.as_str() {
-            "roll_under" => format!("{} 掷出 ≤ 目标值为成功（目标值 = 难度 + 修正）", self.die),
+        let std = "dc 一律写标准难度：简单 8、普通 12、困难 15、极难 20（程序会换算成本战役的骰子）";
+        let base = match crate::checks::effective_mode(self) {
+            "roll_under" => format!("百分骰：{} 掷出 ≤ 目标值为成功，目标值由程序按难度和修正换算成百分比；{std}", self.die),
             "pool" => format!("掷 {}+修正 个 d{}，每个 ≥ {} 算一个成功，成功数 ≥ 难度为成功（难度一般 1–4）", self.pool_base, self.pool_sides, self.pool_success_on),
-            _ => format!("{} + 修正 ≥ 难度为成功", self.die),
+            _ if self.die.trim() != "1d20" => format!("{} + 修正 ≥ 难度为成功；{std}", self.die),
+            _ => format!("{} + 修正 ≥ 难度为成功（简单 8、普通 12、困难 15、极难 20）", self.die),
         };
         let mut s = base;
         if self.partial_band > 0 {

@@ -6,8 +6,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-chronicle-core = { version = "0.0.6", path = "../core" }
-chronicle-llm = { version = "0.0.6", path = "../llm" }
+chronicle-core = { version = "0.0.7", path = "../core" }
+chronicle-llm = { version = "0.0.7", path = "../llm" }
 minijinja = { version = "3.1.0", features = ["serde"] }
 schemars = "1.2.3"
 sha2 = "0.10.9"

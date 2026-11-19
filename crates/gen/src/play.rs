@@ -62,6 +62,11 @@ pub fn profile_from_play(p: &PlayOut, genre: &str, tone: &str, premise: &str) ->
             if !p.die.trim().is_empty() && (CheckRules { die: p.die.trim().to_string(), ..Default::default() }).validate().is_ok() {
                 check.die = p.die.trim().to_string();
             }
+            // 写了百分骰却没写 roll_under：按百分骰规则判定（不然 d100 会和 d20 一样"掷骰 + 修正 ≥ 难度"）。
+            if chronicle_core::checks::is_percentile(&check.die) {
+                check.mode = "roll_under".into();
+                check.die = "1d100".into();
+            }
         }
     }
     // 货币与稀有度叫法：模型给的不完整（数量对不上、进位不对）就按题材推断。

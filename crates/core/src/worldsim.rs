@@ -1025,6 +1025,10 @@ fn fire_triggers(world: &mut World, campaign_id: &str, day: i64, notes: &mut Vec
         if once && view.record("trigger_fired", &id).is_some() {
             continue;
         }
+        // 已经失效 / 被绕过 / 被玩家改变的事件不再触发（反剧情纠正：旧剧情不能覆盖新状态）。
+        if crate::events::get(world.conn(), campaign_id, &id).is_some_and(|e| e.status.terminal()) {
+            continue;
+        }
         let Ok(cond) = serde_json::from_value::<Condition>(p["when"].clone()) else { continue };
         if !matches!(cond.preview(&view), Ok(Tri::True)) {
             continue;

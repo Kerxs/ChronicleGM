@@ -131,6 +131,12 @@ import type { TransitionOutcome } from "./bindings/TransitionOutcome";
 import type { Condition } from "./bindings/Condition";
 import type { Effect } from "./bindings/Effect";
 import type { TurnResult } from "./bindings/TurnResult";
+import type { Interaction } from "./bindings/Interaction";
+import type { ObjectView } from "./bindings/ObjectView";
+import type { Alert } from "./bindings/Alert";
+import type { OpenRequest } from "./bindings/OpenRequest";
+import type { PlayerOp } from "./bindings/PlayerOp";
+import type { ActResult } from "./bindings/ActResult";
 import type { SessionSummary } from "./bindings/SessionSummary";
 import type { CampaignEntity } from "./bindings/CampaignEntity";
 
@@ -372,6 +378,14 @@ export const api = {
   rpgSetRules: (worldId: string, campaignId: string, rules: RuleSet) => call<void>("rpg_set_rules", { worldId, campaignId, rules }),
   combatStart: (worldId: string, campaignId: string, enemies: EnemySpec[], allies: string[], reason: string) => call<CombatReport>("combat_start", { worldId, campaignId, enemies, allies, reason }),
   combatAct: (worldId: string, campaignId: string, action: CombatAction) => call<CombatReport>("combat_act", { worldId, campaignId, action }),
+  interactionView: (worldId: string, campaignId: string) =>
+    call<{ pending: Interaction[]; recent: Interaction[]; objects: ObjectView[]; alert: Alert; survival: [number, number] | null }>("interaction_view", { worldId, campaignId }),
+  interactionOpen: (worldId: string, campaignId: string, req: Partial<OpenRequest> & { type: string }) => call<Interaction>("interaction_open", { worldId, campaignId, req: { target: "", title: "", reason: "", skill: "", dc: 0, timeout: null, new_object: null, puzzle: null, ...req } }),
+  interactionAct: (worldId: string, campaignId: string, id: string, op: Partial<PlayerOp> & { action: string }) => call<ActResult>("interaction_act", { worldId, campaignId, id, op: { input: null, dice: null, performance: null, ...op } }),
+  interactionAbandon: (worldId: string, campaignId: string, id: string) => call<void>("interaction_abandon", { worldId, campaignId, id }),
+  audioList: () => call<string[]>("audio_list"),
+  audioGet: (name: string) => call<string>("audio_get", { name }),
+  audioOpenFolder: () => call<void>("audio_open_folder"),
   combatAbort: (worldId: string, campaignId: string, reason: string) => call<CombatReport>("combat_abort", { worldId, campaignId, reason }),
   worldSimOverview: (worldId: string, campaignId: string, gmView: boolean) => call<WorldSimOverview>("world_sim_overview", { worldId, campaignId, gmView }),
   planTravel: (worldId: string, campaignId: string, to: string) => call<TravelPlan>("plan_travel", { worldId, campaignId, to }),

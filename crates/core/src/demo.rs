@@ -170,6 +170,30 @@ pub fn populate(w: &mut World) -> Result<String> {
     edge(w, &p1, &p2, "答应帮忙，去灯塔看看", json!([{"type": "set_quest_state", "quest": quest, "state": "active"}]))?;
     edge(w, &p2, &p3, "去潮洞取备用灯芯石", json!([]))?;
     edge(w, &p3, &p4, "带着灯芯石回到灯室", json!([{"type": "set_quest_state", "quest": quest, "state": "done"}]))?;
-    let _ = lamp;
+    // 场景里能亲手互动的东西（沉浸式互动）：灯室的门、透镜机关、潮洞里的石台和暗格。
+    let objects = |w: &mut World, id: &str, objs: serde_json::Value| -> Result<()> {
+        w.write(&Author::User, "示例世界", |x| x.update_node(id, NodePatch { payload: Some(json!({ "objects": objs })), ..Default::default() }, None))?;
+        Ok(())
+    };
+    objects(
+        w,
+        &tower,
+        json!([
+            { "id": "door", "name": "灯室的铁门", "kind": "door", "description": "通往灯室的窄铁门，锁眼里生了锈。", "lock": { "kind": "pick", "dc": 11, "break_dc": 15, "alt_entry": "塔身外侧有一道检修用的铁梯，能爬到灯室的窗口" } },
+            { "id": "lens", "name": "透镜转盘", "kind": "mechanism", "description": "三圈刻着潮汐符号的铜环，要对准才能把光聚到海上。",
+              "mechanism": { "kind": "dials", "labels": ["外环", "中环", "内环"], "symbols": ["退潮", "平潮", "涨潮"], "modulo": 3, "start": [0, 2, 1], "goal": [1, 1, 1],
+                "ops": [ { "id": "outer", "label": "转外环", "add": [1, 1, 0] }, { "id": "middle", "label": "转中环", "add": [0, 1, 0] }, { "id": "inner", "label": "转内环", "add": [0, 1, 1] } ],
+                "hint": "三圈都对准「平潮」" } },
+            { "id": "logbook", "name": "守塔日志", "kind": "document", "description": "桌上摊开的旧日志，最后几页被海水泡皱了。", "search_dc": 10 }
+        ]),
+    )?;
+    objects(
+        w,
+        &cave,
+        json!([
+            { "id": "altar", "name": "发光的石台", "kind": "altar", "description": "石台上的凹槽里透出蓝光。", "search_dc": 12 },
+            { "id": "niche", "name": "礁石里的暗格", "kind": "container", "description": "藏在礁石缝里的小暗格。", "hidden": true, "find_dc": 13, "contents": [ { "item": lamp, "qty": 1 } ] }
+        ]),
+    )?;
     Ok(sid)
 }

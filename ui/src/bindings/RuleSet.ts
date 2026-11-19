@@ -70,4 +70,8 @@ attributes: Array<AttrDef>,
 /**
  * 检定规则：主骰、成功等级、优势劣势、骰池。
  */
-check: CheckRules, };
+check: CheckRules, 
+/**
+ * 生存规则：食物、饮水随故事时间消耗（荒野、末日题材打开）。
+ */
+survival: boolean, };

@@ -1860,6 +1860,118 @@ fn combat_abort(app: AppHandle, state: State<AppState>, world_id: String, campai
     Ok(r)
 }
 
+// ===================== 沉浸式互动 =====================
+
+#[derive(serde::Serialize)]
+struct InteractionView {
+    pending: Vec<chronicle_core::interaction::Interaction>,
+    recent: Vec<chronicle_core::interaction::Interaction>,
+    objects: Vec<chronicle_core::interaction::ObjectView>,
+    alert: chronicle_core::interaction::Alert,
+    survival: Option<(i64, i64)>,
+}
+
+#[tauri::command]
+fn interaction_view(state: State<AppState>, world_id: String, campaign_id: String) -> Res<InteractionView> {
+    let w = state.world(&world_id)?;
+    let w = lock(&w)?;
+    let conn = w.conn();
+    let gm = spoiler_on(&state);
+    let loc = chronicle_core::worldsim::party_location(conn, &campaign_id).map_err(err)?.unwrap_or_default();
+    let survival = chronicle_core::rpg::rules(conn, &campaign_id).survival.then(|| {
+        use chronicle_core::rules::StateView;
+        let v = chronicle_core::campaign::CampaignView { conn, campaign_id: &campaign_id };
+        let g = |k: &str| v.var(k).and_then(|x| x.as_i64()).unwrap_or(80);
+        (g(chronicle_core::interaction::FOOD_VAR), g(chronicle_core::interaction::WATER_VAR))
+    });
+    Ok(InteractionView {
+        pending: chronicle_core::interaction::pending(conn, &campaign_id).map_err(err)?,
+        recent: chronicle_core::interaction::recent(conn, &campaign_id, 12).map_err(err)?,
+        objects: chronicle_core::interaction::objects_here(conn, &campaign_id, gm).map_err(err)?,
+        alert: chronicle_core::interaction::alert(conn, &campaign_id, &loc),
+        survival,
+    })
+}
+
+/// 玩家在界面上点场景对象发起互动（不经过 GM）。
+#[tauri::command]
+fn interaction_open(state: State<AppState>, world_id: String, campaign_id: String, req: chronicle_core::interaction::OpenRequest) -> Res<chronicle_core::interaction::Interaction> {
+    let w = state.world(&world_id)?;
+    let mut w = lock(&w)?;
+    chronicle_core::campaign::ensure_active(w.conn(), &campaign_id).map_err(err)?;
+    chronicle_core::interaction::open(&mut w, &campaign_id, &req).map_err(err)
+}
+
+#[tauri::command]
+fn interaction_act(app: AppHandle, state: State<AppState>, world_id: String, campaign_id: String, id: String, op: chronicle_core::interaction::PlayerOp) -> Res<chronicle_core::interaction::ActResult> {
+    let w = state.world(&world_id)?;
+    let mut w = lock(&w)?;
+    let r = chronicle_core::interaction::act(&mut w, &campaign_id, &id, &op).map_err(err)?;
+    sync_game_state(&app, &mut w, &campaign_id);
+    Ok(r)
+}
+
+#[tauri::command]
+fn interaction_abandon(state: State<AppState>, world_id: String, campaign_id: String, id: String) -> Res<()> {
+    let w = state.world(&world_id)?;
+    let mut w = lock(&w)?;
+    chronicle_core::interaction::abandon(&mut w, &campaign_id, &id, "玩家放弃了").map_err(err)
+}
+
+/// 用户自己的音效 / 音乐（数据目录 audio/ 里同名的文件替换程序合成的声音）：返回有哪些。
+#[tauri::command]
+fn audio_list() -> Res<Vec<String>> {
+    let dir = data_dir().join("audio");
+    let _ = std::fs::create_dir_all(&dir);
+    let mut v = vec![];
+    for e in std::fs::read_dir(&dir).map_err(err)?.flatten() {
+        let p = e.path();
+        if matches!(p.extension().and_then(|x| x.to_str()).map(|x| x.to_ascii_lowercase()).as_deref(), Some("mp3" | "ogg" | "wav" | "m4a")) {
+            v.push(p.file_name().unwrap_or_default().to_string_lossy().into_owned());
+        }
+    }
+    v.sort();
+    Ok(v)
+}
+
+/// 读一个用户音频文件（data URL）。只能读 audio/ 里的文件。
+#[tauri::command]
+fn audio_get(name: String) -> Res<String> {
+    use base64::Engine as _;
+    if name.contains(['/', '\\']) || name.contains("..") {
+        return Err("文件名不对".into());
+    }
+    let p = data_dir().join("audio").join(&name);
+    let bytes = std::fs::read(&p).map_err(err)?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("音频文件太大（超过 20 MB）".into());
+    }
+    let mime = match p.extension().and_then(|x| x.to_str()).map(|x| x.to_ascii_lowercase()).as_deref() {
+        Some("ogg") => "audio/ogg",
+        Some("wav") => "audio/wav",
+        Some("m4a") => "audio/mp4",
+        _ => "audio/mpeg",
+    };
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// 打开音频文件夹（放自己的音效和音乐）。
+#[tauri::command]
+fn audio_open_folder() -> Res<()> {
+    let dir = data_dir().join("audio");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    std::fs::write(dir.join("说明.txt"), "把自己的音效或音乐放进这个文件夹，文件名和下面的名字一样就会替换程序合成的声音（mp3 / ogg / wav / m4a）：
+
+音效：dice、click、unlock、fail、success、discover、item、clue、npc、place、battle、heartbeat、turning、prologue、ending
+音乐：bgm_opening、bgm_explore、bgm_combat、bgm_ending
+环境音：amb_wind、amb_rain、amb_town、amb_cave、amb_sea
+
+例如 unlock.mp3 会替换开锁的声音。").map_err(err)?;
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    std::process::Command::new(opener).arg(&dir).spawn().map_err(err)?;
+    Ok(())
+}
+
 // ===================== 游戏状态机 =====================
 
 /// 按事实同步游戏状态并推送 `game-state` 事件（界面据此切换大厅 / 游戏 / 战斗场景）。失败只记日志。
@@ -3358,6 +3470,14 @@ pub fn run() {
             prompts::prompt_update_check,
             prompts::prompt_set_auto,
             prompts::prompt_reset,
+            prompts::prompt_reload,
+            interaction_view,
+            interaction_open,
+            interaction_act,
+            interaction_abandon,
+            audio_list,
+            audio_get,
+            audio_open_folder,
             system::sys_settings,
             system::sys_set_close_to_tray,
             system::sys_set_autostart,

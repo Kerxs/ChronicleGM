@@ -10,7 +10,7 @@ import type { Chronicle } from "../bindings/Chronicle";
 import type { EventHit } from "../bindings/EventHit";
 import type { CampaignCheck } from "../bindings/CampaignCheck";
 
-const QUEST: Record<string, string> = { "": "未开始", active: "进行中", done: "已完成", failed: "已失败" };
+const QUEST: Record<string, string> = { "": "未开始", active: "进行中", done: "已完成", failed: "已失败", refused: "已拒绝", bypassed: "已绕过", invalid: "已失效", changed: "被玩家改变" };
 const COMBAT: Record<string, string> = { victory: "胜利", defeat: "失败", fled: "撤退", ended: "中止", active: "进行中" };
 const KIND: Record<string, string> = {
   player: "玩家行动",

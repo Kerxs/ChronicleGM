@@ -180,6 +180,9 @@ pub struct RuleSet {
     pub attributes: Vec<AttrDef>,
     /// 检定规则：主骰、成功等级、优势劣势、骰池。
     pub check: CheckRules,
+    /// 生存规则：食物、饮水随故事时间消耗（荒野、末日题材打开）。
+    #[serde(default)]
+    pub survival: bool,
 }
 
 impl Default for RuleSet {
@@ -207,6 +210,7 @@ impl Default for RuleSet {
             custom_actions: vec![],
             attributes: vec![],
             check: CheckRules::default(),
+            survival: false,
         }
     }
 }
@@ -633,6 +637,7 @@ pub fn skill_attr(r: &RuleSet, skill: &str) -> String {
 pub const ACTION_SKILLS: &[(&[&str], &str, &str)] = &[
     (&["窃听", "偷听", "监听", "倾听", "聆听"], "聆听", "insight"),
     (&["潜行", "溜进", "躲藏", "藏身", "悄悄", "蹑手蹑脚", "偷偷", "不注意", "不被发现", "溜过"], "潜行", "agility"),
+    (&["撞开", "撞门", "砸开", "踹开", "破门", "砸烂", "掰开"], "运动", "might"),
     (&["撬锁", "开锁", "撬开"], "开锁", "agility"),
     (&["扒窃", "顺手牵羊", "偷走", "偷取"], "巧手", "agility"),
     (&["攀爬", "爬上", "爬到", "往上爬", "爬下", "翻墙", "翻过", "跳过去", "跃过"], "攀爬", "might"),
@@ -650,7 +655,25 @@ pub const ACTION_SKILLS: &[(&[&str], &str, &str)] = &[
 
 /// 从玩家的话里找出行动对应的通用技能（第一个匹配）。
 pub fn action_skill(text: &str) -> Option<(&'static str, &'static str)> {
-    ACTION_SKILLS.iter().find(|(ws, _, _)| ws.iter().any(|w| text.contains(w))).map(|(_, s, role)| (*s, *role))
+    ACTION_SKILLS.iter().find(|(ws, _, _)| ws.iter().any(|w| says(text, w))).map(|(_, s, role)| (*s, *role))
+}
+
+/// 玩家真的要做这件事（不算"不撬锁""别偷听""没有说服"这种否定）。
+fn says(text: &str, w: &str) -> bool {
+    text.match_indices(w).any(|(i, _)| {
+        let before: String = text[..i].chars().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect();
+        !["不", "没", "别", "未", "甭"].iter().any(|n| before.ends_with(n) || before.starts_with(n) && before.chars().nth(1).is_some_and(|c| "用要去想会".contains(c)))
+    })
+}
+
+#[cfg(test)]
+mod says_tests {
+    #[test]
+    fn negation_is_ignored() {
+        assert_eq!(super::action_skill("我不用钥匙也不撬锁，我用桌腿把门撞开").map(|x| x.0), Some("运动"));
+        assert_eq!(super::action_skill("我撬锁").map(|x| x.0), Some("开锁"));
+        assert_eq!(super::action_skill("我不撬锁，翻墙进去").map(|x| x.0), Some("攀爬"));
+    }
 }
 
 /// 默认技能表：技能名里的关键词 → 属性作用。
@@ -902,6 +925,15 @@ pub struct ItemInfo {
     /// 这件武器用的弹药（弹药物品的名字）；空 = 不用弹药。
     #[serde(default)]
     pub ammo: String,
+    /// 能打开的锁 / 对象（场景对象 ID 或名字，例如某扇门）。钥匙用。
+    #[serde(default)]
+    pub unlocks: Vec<String>,
+    /// 可以用在哪些对象上（对象 ID、名字或种类，例如 door、mechanism）。
+    #[serde(default)]
+    pub uses_on: Vec<String>,
+    /// 工具标签：lockpick（撬锁）、bandage（包扎）、tweezers（取异物）、medkit、hacking（破解）、light、rope、food、water……
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 const ITEM_KEYS: [&str; 10] = ["value", "price", "rarity", "slot", "damage", "range", "armor", "bonuses", "heal", "recipe"];
@@ -951,6 +983,14 @@ pub fn validate_item_payload(v: &Value) -> Result<()> {
     Ok(())
 }
 
+fn strs_of(p: &Value, k: &str) -> Vec<String> {
+    match p.get(k) {
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).filter(|s| !s.is_empty()).collect(),
+        Some(Value::String(s)) if !s.is_empty() => s.split(['、', ',', '，']).map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+        _ => vec![],
+    }
+}
+
 fn item_from(id: &str, title: &str, description: &str, p: &Value, origin: &str) -> ItemInfo {
     let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     let i = |k: &str| p.get(k).and_then(Value::as_i64);
@@ -972,6 +1012,9 @@ fn item_from(id: &str, title: &str, description: &str, p: &Value, origin: &str) 
         slot,
         origin: origin.into(),
         ammo: s("ammo"),
+        unlocks: strs_of(p, "unlocks"),
+        uses_on: strs_of(p, "uses_on"),
+        tags: strs_of(p, "tags"),
     }
 }
 

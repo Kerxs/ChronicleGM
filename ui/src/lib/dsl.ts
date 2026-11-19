@@ -16,6 +16,7 @@ export const COND_LABEL: Record<CondType, string> = {
   quest_state: "任务状态",
   has_item: "持有物品",
   clue_known: "已知线索",
+  alive: "人物还活着",
   relation: "存在关系",
   visited: "到过节点",
   check: "技能检定（程序掷骰）",
@@ -64,6 +65,8 @@ export function defaultCondition(t: CondType): Condition {
       return { type: "has_item", holder: "party", item: "", min_qty: 1 };
     case "clue_known":
       return { type: "clue_known", clue: "" };
+    case "alive":
+      return { type: "alive", entity: "" };
     case "relation":
       return { type: "relation", a: "party", b: "", rel_type: "trusts" };
     case "visited":
@@ -111,7 +114,7 @@ export function defaultEffect(t: EffType): Effect {
 /** 把 ID 显示成名称；找不到时原样显示。 */
 export type Names = (id: string) => string;
 
-const QUEST_STATE: Record<string, string> = { active: "进行中", done: "已完成", failed: "已失败" };
+const QUEST_STATE: Record<string, string> = { active: "进行中", done: "已完成", failed: "已失败", refused: "已拒绝", bypassed: "已绕过", invalid: "已失效", changed: "被玩家改变" };
 
 export function describeCondition(c: Condition | null, name: Names): string {
   if (!c) return "总是可走";
@@ -134,6 +137,8 @@ export function describeCondition(c: Condition | null, name: Names): string {
       return `${c.holder === "party" ? "队伍" : name(c.holder)}持有「${name(c.item)}」×${c.min_qty}`;
     case "clue_known":
       return `已知线索「${name(c.clue)}」`;
+    case "alive":
+      return `「${name(c.entity)}」还活着`;
     case "relation":
       return `${c.a === "party" ? "队伍" : name(c.a)} 与 ${name(c.b)}：${c.rel_type}`;
     case "visited":

@@ -151,7 +151,7 @@ export function InvestigationPanel({ ctx, campaignId, gmView, ended, refreshKey 
 }
 
 const QTYPE: Record<string, string> = { main: "主线", side: "支线", hidden: "隐藏" };
-const QSTATUS: Record<string, string> = { "": "未开始", active: "进行中", done: "已完成", failed: "已失败" };
+const QSTATUS: Record<string, string> = { "": "未开始", active: "进行中", done: "已完成", failed: "已失败", refused: "已拒绝", bypassed: "已绕过", invalid: "已失效", changed: "被你改变" };
 
 type QuestMode = "current" | "all" | "hidden";
 const QMODES: [QuestMode, string][] = [
@@ -442,6 +442,13 @@ export function WorldPanel({ ctx, campaignId, gmView, ended, refreshKey, onChang
   const [busy, setBusy] = useState(false);
   const [marker, setMarker] = useState({ place: "", label: "", note: "" });
   const [mapMode, setMapMode] = useState<"map" | "list">("map");
+  const [mapFull, setMapFull] = useState(false);
+  useEffect(() => {
+    if (!mapFull) return;
+    const k = (e: KeyboardEvent) => e.key === "Escape" && setMapFull(false);
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [mapFull]);
   const load = () => api.worldSimOverview(ctx.worldId, campaignId, gmView).then(setOv).catch((e: Error) => ctx.notify(e.message, "error"));
   useEffect(() => {
     void load();
@@ -539,12 +546,13 @@ export function WorldPanel({ ctx, campaignId, gmView, ended, refreshKey, onChang
         </div>
       )}
 
-      <div className="card">
+      <div className={`card${mapFull ? " map-full" : ""}`}>
         <strong>地图</strong>
         <span className="hint">
           　
           <button className={`small link${mapMode === "map" ? " active" : ""}`} onClick={() => setMapMode("map")}>图形</button>
           <button className={`small link${mapMode === "list" ? " active" : ""}`} onClick={() => setMapMode("list")}>列表</button>
+          <button className="small link" onClick={() => setMapFull(!mapFull)} title="全屏查看地图（Esc 退出）">{mapFull ? "退出全屏" : "全屏"}</button>
         </span>
         {ov.map.places.length === 0 ? (
           <p className="hint">世界树里还没有区域、国家、城市或地点，或者玩家还没听说过任何地方。用"通往""接壤"关系连接地点，说明里写耗时（例如"2小时"）。</p>

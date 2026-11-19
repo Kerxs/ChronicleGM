@@ -380,7 +380,7 @@ export function CombatPanel({ ctx, campaignId, gmView, ended, refreshKey, onChan
   const run = (a: Partial<CombatAction>) => {
     setBusy(true);
     api
-      .combatAct(ctx.worldId, campaignId, { kind: "end_turn", target: "", item: "", x: null, y: null, custom: "", ...a })
+      .combatAct(ctx.worldId, campaignId, { kind: "end_turn", target: "", item: "", x: null, y: null, custom: "", part: "", ...a } as CombatAction)
       .then((r) => done(r.lines))
       .catch(fail)
       .finally(() => setBusy(false));

@@ -75,7 +75,7 @@ pub fn run_combat_intent(game: &GameRoom, a: &QueuedAction, ci: &CombatIntent) -
     let actor = actor_of(&a.player);
     rpg::with_actor(&actor, || {
         let mut w = game.world.lock().map_err(|_| "世界文件被占用".to_string())?;
-        let act = combat::CombatAction { kind: ci.kind.clone(), target: ci.target.clone(), item: ci.item.clone(), x: ci.x, y: ci.y, custom: ci.skill.clone() };
+        let act = combat::CombatAction { kind: ci.kind.clone(), target: ci.target.clone(), item: ci.item.clone(), x: ci.x, y: ci.y, custom: ci.skill.clone(), part: String::new() };
         let r = combat::act(&mut w, &game.campaign_id, &act).map_err(|e| e.to_string())?;
         let dice: Vec<Value> = r.dice.iter().map(|d| serde_json::to_value(d).unwrap_or(Value::Null)).collect();
         campaign::record(w.conn(), &game.campaign_id, "combat_log", &json!({ "player": a.player, "lines": r.lines, "dice": dice, "combat": public_combat(&r.combat) })).map_err(|e| e.to_string())?;

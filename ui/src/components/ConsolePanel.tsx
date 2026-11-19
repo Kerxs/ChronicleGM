@@ -27,7 +27,10 @@ function Section({ title, children, open = true }: { title: string; children: Re
     </div>
   );
 }
-
+
+
+const EVENT_STATUS: Record<string, string> = { pending: "未发生", available: "可触发", active: "进行中", done: "已完成", failed: "已失败", bypassed: "已绕过", invalid: "已失效", changed: "被玩家改变" };
+const EVENT_KIND: Record<string, string> = { quest: "任务", key_event: "关键事件", trigger: "触发器", twist: "转折", ending: "结局" };
 const DEV: Record<string, string> = { script: "偏离剧本", world: "世界观", character: "人物设定", event: "已发生事件" };
 
 export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onChanged }: { ctx: Ctx; campaignId: string; ended: boolean; refreshKey: number; choices: Choices; onChanged: () => void }) {
@@ -177,6 +180,29 @@ export function ConsolePanel({ ctx, campaignId, ended, refreshKey, choices, onCh
           ))}
       </Section>
 
+      <Section title={`剧情事件（${con.events.length}）`}>
+        <p className="hint">剧本里的任务、关键事件、转折和结局只是可能性：玩家可以拒绝、绕过或改写它们。已经结束的事件不会再变回去。</p>
+        {con.player_goal && (
+          <div>
+            <span className="badge">玩家目标</span> {con.player_goal.text}
+            <span className="hint">（第 {con.player_goal.turn} 回合）</span>
+          </div>
+        )}
+        {con.events.length === 0 && <p className="hint">这局没有剧本事件（自由沙盒）。</p>}
+        <ul className="list event-list">
+          {con.events.map((e) => (
+            <li key={e.event_id} className={`ev-${e.status}`}>
+              <span className="badge">{EVENT_STATUS[e.status] ?? e.status}</span> <strong>{e.title}</strong>
+              <span className="hint">
+                {" "}
+                · {EVENT_KIND[e.kind] ?? e.kind}
+                {e.reason && ` · ${e.reason}`}
+                {e.updated_turn > 0 && `（第 ${e.updated_turn} 回合）`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Section>
       <Section title={`因果与伏笔（${con.consequences.length + con.foreshadows.length}）`}>
         {con.consequences.length === 0 && con.foreshadows.length === 0 && <p className="hint">还没有记下的后果或伏笔。玩家做出重要决定时，GM 会记下后果（可以延迟发生）；已经发生的后果不能撤销。</p>}
         {con.consequences.length > 0 && (

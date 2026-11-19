@@ -5,7 +5,8 @@
  */
 export type Prop = { id: string, name: string, 
 /**
- * cover（躲到后面：防御 +2，两轮）/ fire（点燃：周围 2 格内的一个敌人受 1d6 伤害并灼烧）/ drop（推倒重物：旁边的敌人敏捷检定，失败倒地一轮）
+ * cover（躲到后面：防御 +2，两轮；也可以砸毁 destroy）/ fire（点燃：周围 2 格内的一个敌人受 1d6 伤害并灼烧）/ drop（推倒重物：旁边的敌人敏捷检定，失败倒地一轮）
+ * / mechanism（战场上的机关：拉动后周围 2 格的敌人检定，失败受 1d8 伤害）
  */
 kind: string, x: number, y: number, 
 /**

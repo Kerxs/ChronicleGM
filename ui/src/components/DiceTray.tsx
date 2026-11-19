@@ -1,10 +1,12 @@
 // 骰子托盘：把规则引擎给出的掷骰记录（DiceRecord）逐批演出。
-// 3D 物理骰子按需加载（第一次要掷骰时才下载 three.js / cannon-es）；低性能模式、不支持的面数（d2、d100）用平面骰子。
+// 3D 物理骰子按需加载（第一次要掷骰时才下载 three.js / cannon-es）；低性能模式、不支持的面数（d2 等）用平面骰子。
+// 百分骰（d100）用两颗 d10 演出：十位骰印 00–90，个位骰印 0–9。
 // 每颗骰子落地朝上的点数就是记录里的点数；旁边列出完整算式（骰面 + 各项加值 = 总值 ／ 目标 → 结果）。
 // 演出不阻塞游戏逻辑：结果早已写进存档，托盘只是在旁边播放。
 import { useEffect, useRef, useState } from "react";
 import type { DiceRecord } from "../bindings/DiceRecord";
 import type { DiceTable, DieSpec } from "../lib/dice3d";
+import { splitD100 } from "../lib/d100";
 
 const COLOR: Record<string, string> = { attack: "#d63b4a", damage: "#e8833a", check: "#2f6fe0", dodge: "#14a3a0", initiative: "#7b5be0", morale: "#8d6e63", effect: "#c2185b", other: "#5f6b7a" };
 const LABEL: Record<string, string> = { attack: "攻击检定", damage: "伤害", check: "检定", dodge: "闪避检定", initiative: "先攻", morale: "士气", effect: "效果", other: "掷骰" };
@@ -70,7 +72,15 @@ export default function DiceTray({ queue, lowPower, onDone }: { queue: DiceRecor
       }, 1500 + 250 * b.length);
     };
     const specs: DieSpec[] = [];
-    for (const r of b) r.dice.forEach((v, i) => SUPPORTED.has(r.sides[i]) && specs.push({ sides: r.sides[i], value: v, color: COLOR[r.category] ?? COLOR.other }));
+    for (const r of b)
+      r.dice.forEach((v, i) => {
+        const color = COLOR[r.category] ?? COLOR.other;
+        if (r.sides[i] === 100) {
+          // 百分骰：两颗 d10（十位 00–90，个位 0–9；100 是 00 + 0）。
+          const { tens, ones } = splitD100(v);
+          specs.push({ sides: 10, value: tens, color, tens: true }, { sides: 10, value: ones === 0 ? 10 : ones, color });
+        } else if (SUPPORTED.has(r.sides[i])) specs.push({ sides: r.sides[i], value: v, color });
+      });
     if (lowPower || failed3d || specs.length === 0) {
       window.setTimeout(finish, 450);
       return;
@@ -110,7 +120,7 @@ export default function DiceTray({ queue, lowPower, onDone }: { queue: DiceRecor
               {r.manual && <em> · 亲手掷</em>}
               <small>{r.purpose}</small>
             </span>
-            {(flat || r.sides.some((s) => !SUPPORTED.has(s))) && (
+            {(flat || r.sides.some((s) => !SUPPORTED.has(s) && s !== 100)) && (
               <span className="dr-flat">
                 {r.dice.map((d, j) => (
                   <b key={j} style={{ background: COLOR[r.category] ?? COLOR.other }}>

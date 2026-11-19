@@ -14,6 +14,8 @@ pub mod npcday;
 pub mod outputs;
 pub mod pcgen;
 pub mod questgen;
+pub mod railcheck;
+pub mod ritual;
 pub mod review;
 pub mod speech;
 pub mod turn;

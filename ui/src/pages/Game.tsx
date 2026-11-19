@@ -43,6 +43,12 @@ import { lazy, Suspense } from "react";
 // 关系图谱只在游戏空间里打开时才加载（图谱组件较大）。
 const NetworkEmbed = lazy(() => import("./Network"));
 import type { DiceAsk as DiceAskT } from "../bindings/DiceAsk";
+import type { Interaction } from "../bindings/Interaction";
+import type { RitualCue } from "../bindings/RitualCue";
+import InteractionHost, { resultLine } from "../components/interact/InteractionHost";
+import SceneBar from "../components/interact/SceneBar";
+import RitualLayer, { pickCues } from "../components/ritual/RitualLayer";
+import { ambientFor, fxSettings, startAmbient, startMusic, stopMusic } from "../lib/sfx";
 import { MentionThumbs, NodeGallery, ScenePictures, useIllustrated, type GalleryTarget } from "../components/SceneImages";
 
 const TRI: Record<string, string> = { true: "条件满足", false: "条件不满足", unknown: "需检定" };
@@ -377,6 +383,37 @@ function Table({
   const downed = !!party && party.hp <= 0 && party.rule === "downed";
   // 骰子托盘：检定与战斗里的每一次掷骰（结果来自规则引擎，动画只是演出）。
   const [tray, setTray] = useState<DiceRecord[]>([]);
+  // 沉浸式互动：等玩家亲自操作的互动（GM 提出或点场景对象）；仪式演出队列。
+  const [interactions, setInteractions] = useState<Interaction[]>([]);
+  const [rituals, setRituals] = useState<RitualCue[]>([]);
+  const [ixKey, setIxKey] = useState(0);
+  useEffect(() => {
+    api
+      .interactionView(ctx.worldId, campaignId)
+      .then((v) => setInteractions(v.pending))
+      .catch(() => {});
+  }, [ctx.worldId, campaignId, ctx.tick]);
+  // 背景乐与环境音（演出强度"完整"时）：战斗用战斗乐，平时按地点和天气放环境音。
+  useEffect(() => {
+    if (fxSettings.level !== "full" || lowPower) {
+      stopMusic();
+      void startAmbient("");
+      return;
+    }
+    void startMusic(game?.phase === "combat" ? "combat" : "explore");
+    return () => {
+      stopMusic();
+      void startAmbient("");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game?.phase, lowPower]);
+  useEffect(() => {
+    if (fxSettings.level !== "full" || lowPower) return;
+    api
+      .sceneView(ctx.worldId, campaignId)
+      .then((s) => void startAmbient(ambientFor(s.location?.title ?? "", "")))
+      .catch(() => {});
+  }, [ctx.worldId, campaignId, ctx.tick, lowPower]);
   /** 剧本的调查比重：0 时不显示「调查」页签（没有剧本时按 1）。 */
   const [investigation, setInvestigation] = useState(1);
   /** 正在查看图片的节点（地点、人物或叙述里提到的设定）。 */
@@ -636,6 +673,9 @@ function Table({
       else setUnread(false);
       if (autoRead) for (const n of r.npc_lines) voice.enqueue(n.npc_id, n.text);
       setLast(r);
+      if (r.interactions?.length) setInteractions((q) => [...q.filter((x) => !r.interactions.some((n) => n.target === x.target && n.type === x.type)), ...r.interactions]);
+      if (r.rituals?.length) setRituals((q) => [...q, ...pickCues(r.rituals, fxSettings.level)]);
+      setIxKey((k) => k + 1);
       if (!opening && text === undefined) setInput("");
       if (r.leaks.length || r.npc_lines.some((n) => n.leaks.length)) ctx.notify("本回合的文字中可能泄露了 GM 笔记里的秘密（打开剧透模式可查看）", "error");
       if (r.entities.some((e) => e.entity_id)) ctx.notify("AI 提议了新的人物或地点，已加入本战役，确认后才写入世界（见审阅台）");
@@ -928,6 +968,24 @@ function Table({
               </div>
             </div>
           )}
+          {interactions.map((ix) => (
+            <InteractionHost
+              key={ix.interaction_id}
+              ctx={ctx}
+              campaignId={campaignId}
+              interaction={ix}
+              onDice={(roll, label) => (lowPower ? setCheckQueue((q) => [...q, { skill: label, reason: "", detail: roll }]) : setTray((q) => [...q, checkToRecord(label, "", roll)]))}
+              onChanged={() => {
+                setIxKey((k) => k + 1);
+                ctx.bump();
+              }}
+              onFinished={(done) => {
+                setInteractions((q) => q.filter((x) => x.interaction_id !== done.interaction_id));
+                // 结果交给 GM 叙述（作为玩家这一回合的行动）；放弃的不用叙述。
+                if (done.status !== "abandoned") void send(resultLine(done));
+              }}
+            />
+          ))}
           {busy && <div className="line who-system">{diceAsk ? "轮到你掷骰：在右边的玻璃球里掷，或交给程序掷" : gmLocal ? "GM 正在构思，本地模型可能需要一段时间（可以点输入框旁的「取消」）" : "GM 正在构思（可以点输入框旁的「取消」）"}</div>}
           <div ref={bottom} />
         </div>
@@ -952,6 +1010,10 @@ function Table({
             ))}
           </div>
         )}
+        {!inBattle && !showPicker && status?.campaign.status !== "ended" && (
+          <SceneBar ctx={ctx} campaignId={campaignId} refreshKey={ixKey + ctx.tick} disabled={busy} onOpened={(i) => setInteractions((q) => [...q.filter((x) => x.interaction_id !== i.interaction_id), i])} />
+        )}
+        {rituals.length > 0 && <RitualLayer worldId={ctx.worldId} queue={rituals} lowPower={lowPower} onDone={(n) => setRituals((q) => q.slice(n))} />}
         <form
           className="row input-row"
           // 选角色时还不能行动：先藏起输入框，免得盖住「开始游戏」按钮。

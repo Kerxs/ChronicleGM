@@ -14,9 +14,9 @@ import type { DiceRecord } from "../bindings/DiceRecord";
 import type { GameState } from "../bindings/GameState";
 import type { InvItem } from "../bindings/InvItem";
 
-const PROP_ICON: Record<string, string> = { cover: "📦", fire: "🪔", drop: "🪨" };
+const PROP_ICON: Record<string, string> = { cover: "📦", fire: "🪔", drop: "🪨", mechanism: "⚙️" };
 const STATUS_TEXT: Record<string, string> = { victory: "胜利", defeat: "战败", fled: "撤退成功", ended: "战斗结束" };
-type Menu = null | "skill" | "item" | "prop";
+type Menu = null | "skill" | "item" | "prop" | "aim";
 
 export function dist(a: { x: number; y: number }, b: { x: number; y: number }): number {
   return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
@@ -113,7 +113,7 @@ export default function BattleScene({
     setMenu(null);
     setMoving(false);
     try {
-      const r = await api.combatAct(ctx.worldId, campaignId, { kind: "end_turn", target: "", item: "", x: null, y: null, custom: "", ...a });
+      const r = await api.combatAct(ctx.worldId, campaignId, { kind: "end_turn", target: "", item: "", x: null, y: null, custom: "", part: "", ...a });
       setCombat(r.combat);
       setFresh(r.lines);
       if (r.dice.length) onDice(r.dice);
@@ -132,11 +132,11 @@ export default function BattleScene({
     }
   }
 
-  const attack = () => {
+  const attack = (part = "") => {
     const t = tgt ?? (me ? [...foes].sort((a, b) => dist(me, a) - dist(me, b))[0] : undefined);
     if (!t) return;
     if (me && dist(me, t) > me.range) void act({ kind: "move", target: t.id });
-    else void act({ kind: "attack", target: t.id });
+    else void act({ kind: "attack", target: t.id, part });
   };
   const order = useMemo(() => (combat ? turnOrder(combat) : []), [combat]);
 
@@ -252,9 +252,27 @@ export default function BattleScene({
           {tgt && <span className="tgt">目标：{tgt.name}（生命 {tgt.hp}/{tgt.max_hp}，距离 {me ? dist(me, tgt) : "?"}）</span>}
         </div>
         <div className={`actions${myTurn && !busy ? "" : " waiting"}`}>
-          <button className={lowAp ? "" : "primary"} disabled={!myTurn || busy || !foes.length || lowAp} onClick={attack} title={lowAp ? `行动点不够攻击（需要 ${costs.attack}）` : tgt ? `攻击${tgt.name}（太远时先靠近）` : "攻击最近的敌人（点战场上的敌人可以换目标）"}>
+          <button className={lowAp ? "" : "primary"} disabled={!myTurn || busy || !foes.length || lowAp} onClick={() => attack()} title={lowAp ? `行动点不够攻击（需要 ${costs.attack}）` : tgt ? `攻击${tgt.name}（太远时先靠近）` : "攻击最近的敌人（点战场上的敌人可以换目标）"}>
             攻击
           </button>
+          <div className="act-menu">
+            <button disabled={!myTurn || busy || !foes.length || lowAp} onClick={() => setMenu(menu === "aim" ? null : "aim")} title="瞄准部位：更难打中，打中有额外效果">
+              瞄准 ▾
+            </button>
+            {menu === "aim" && (
+              <div className="pop">
+                <button onClick={() => attack("head")}>
+                  头部<small>命中 −3 · 伤害 +50%</small>
+                </button>
+                <button onClick={() => attack("arms")}>
+                  手臂<small>命中 −2 · 对方检定 −2 三轮</small>
+                </button>
+                <button onClick={() => attack("legs")}>
+                  腿<small>命中 −1 · 对方防御 −1、检定 −1 三轮</small>
+                </button>
+              </div>
+            )}
+          </div>
           <div className="act-menu">
             <button disabled={!myTurn || busy} onClick={() => setMenu(menu === "skill" ? null : "skill")}>
               技能 ▾
@@ -302,10 +320,17 @@ export default function BattleScene({
                   .map((p) => {
                     const d = me ? dist(me, p) : 99;
                     return (
-                      <button key={p.id} onClick={() => void act(d <= 1 ? { kind: "interact", target: p.id } : { kind: "move", x: p.x + (me && me.x < p.x ? -1 : 1), y: p.y })} title={p.desc}>
-                        {PROP_ICON[p.kind]} {p.name}
-                        <small>{d <= 1 ? p.desc : `距离 ${d} 格：先走过去`}</small>
-                      </button>
+                      <span key={p.id} className="prop-row">
+                        <button onClick={() => void act(d <= 1 ? { kind: "interact", target: p.id } : { kind: "move", x: p.x + (me && me.x < p.x ? -1 : 1), y: p.y })} title={p.desc}>
+                          {PROP_ICON[p.kind] ?? "⚙️"} {p.name}
+                          <small>{d <= 1 ? p.desc : `距离 ${d} 格：先走过去`}</small>
+                        </button>
+                        {p.kind === "cover" && (
+                          <button disabled={!me || me.ap < costs.attack} onClick={() => void act({ kind: "destroy", target: p.id })} title="砸毁它：躲在后面的人失去掩护">
+                            砸毁<small>{costs.attack} 行动点</small>
+                          </button>
+                        )}
+                      </span>
                     );
                   })}
               </div>
@@ -316,6 +341,9 @@ export default function BattleScene({
           </button>
           <button disabled={!myTurn || busy} onClick={() => void act({ kind: "flee" })} title={combat.no_escape ? `无法撤退：${combat.no_escape}` : "撤退：敏捷检定，旁边的敌人越多越难"}>
             撤退
+          </button>
+          <button disabled={!myTurn || busy} onClick={() => window.confirm("放下武器投降？接下来怎么样由对方决定。") && void act({ kind: "surrender" })} title="投降：战斗结束，接下来由对方决定">
+            投降
           </button>
           <button className={lowAp ? "primary" : "link"} disabled={!myTurn || busy} onClick={() => void act({ kind: "end_turn" })}>
             结束回合

@@ -611,3 +611,4 @@ table.data th, table.kv th { color: var(--muted); }
 .gs-ctl { flex: none; display: flex; align-items: center; gap: 8px; }
 .gs-ctl select { min-width: 170px; }
 .gs-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 8px; }
+.gs-actions.inline { padding-top: 0; justify-content: flex-end; }

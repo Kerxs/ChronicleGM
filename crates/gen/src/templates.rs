@@ -34,16 +34,19 @@ const BUILTIN: &[(&str, &str)] = &[
     ("npc_day", include_str!("../prompts/npc_day.j2")),
     ("npc_reply", include_str!("../prompts/npc_reply.j2")),
     ("session_summary", include_str!("../prompts/session_summary.j2")),
+    ("free_play", include_str!("../prompts/free_play.j2")),
+    ("rail_check", include_str!("../prompts/rail_check.j2")),
 ];
 
 /// 内置提示词的版本号：修改任何内置提示词（prompts/*.j2）时加 1，并更新 [`BUILTIN_DIGEST`]。
 /// 以前写死成 v1，提示词改了很多轮界面上还是 v1。
 /// v1：初版；v2：36 项需求、GM 教程与开场白（0.0.2–0.0.5）；v3：试玩反馈（初始装备、技能贴合、NPC 台词变短、节奏推进；真实试玩后：不重复描写、活着不能写死）；
 /// v4：全面改革（新增战斗描述 combat_narrate；战斗里的闪避、技能、场景交互）。
-pub const PROMPT_VERSION: u32 = 4;
+/// v5：反剧情纠正（free_play 规则、玩家目标、事件状态、rail_check 审查）与沉浸式互动（interaction）。
+pub const PROMPT_VERSION: u32 = 5;
 
 /// 内置提示词内容的摘要。测试会检查它和实际内容一致：改了提示词却没升版本号时测试失败。
-pub const BUILTIN_DIGEST: &str = "af67d086";
+pub const BUILTIN_DIGEST: &str = "db4806bd";
 
 /// 一组模板源码的摘要（FNV-1a，取低 32 位）。
 fn digest(all: &str) -> String {

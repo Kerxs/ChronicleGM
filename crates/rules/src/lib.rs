@@ -39,6 +39,10 @@ pub trait StateView {
     fn mood(&self, _npc: &str) -> Option<effect::Mood> {
         None
     }
+    /// 实体的生存状态（alive / dead / missing / destroyed）；没有记录时为 None（视为存活）。
+    fn life_status(&self, _entity: &str) -> Option<String> {
+        None
+    }
     /// 战役记录（调查板、动态任务等）。
     fn record(&self, _kind: &str, _id: &str) -> Option<Value> {
         None

@@ -118,7 +118,8 @@ pub struct Combat {
 pub struct Prop {
     pub id: String,
     pub name: String,
-    /// cover（躲到后面：防御 +2，两轮）/ fire（点燃：周围 2 格内的一个敌人受 1d6 伤害并灼烧）/ drop（推倒重物：旁边的敌人敏捷检定，失败倒地一轮）
+    /// cover（躲到后面：防御 +2，两轮；也可以砸毁 destroy）/ fire（点燃：周围 2 格内的一个敌人受 1d6 伤害并灼烧）/ drop（推倒重物：旁边的敌人敏捷检定，失败倒地一轮）
+    /// / mechanism（战场上的机关：拉动后周围 2 格的敌人检定，失败受 1d8 伤害）
     pub kind: String,
     pub x: i64,
     pub y: i64,
@@ -129,8 +130,9 @@ pub struct Prop {
 }
 
 /// 物件模板（按战役种子挑 1–3 个放到战场上）。
-const PROP_KINDS: [(&str, &str, &str); 3] = [
-    ("cover", "货箱", "躲到后面：防御 +2，持续两轮"),
+const PROP_KINDS: [(&str, &str, &str); 4] = [
+    ("cover", "货箱", "躲到后面：防御 +2，持续两轮；也可以砸毁它"),
+    ("mechanism", "生锈的机关杆", "拉动机关：周围 2 格内的敌人要过敏捷检定（难度 13），失败受到 1d8 伤害"),
     ("fire", "油灯", "打翻点燃：周围 2 格内的一个敌人受到 1d6 伤害并灼烧"),
     ("drop", "悬挂的重物", "割断绳子：旁边的敌人要过敏捷检定（难度 12），失败就倒地一轮"),
 ];
@@ -246,6 +248,9 @@ pub struct CombatAction {
     /// 自定义行动的名称。
     #[serde(default)]
     pub custom: String,
+    /// 攻击部位：head（头，命中 −3，伤害 +50%）/ arms（手臂，命中 −2，打中后对方检定 −2 三轮）/ legs（腿，命中 −1，打中后对方防御 −1、检定 −1 三轮）/ ""（不瞄准）
+    #[serde(default)]
+    pub part: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -842,7 +847,61 @@ fn act_inner(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<C
                 return Err(CoreError::Invalid(format!("{}太远了（距离 {d} 格，射程 {}），先移动过去", c.units[t].name, c.units[pi].range)));
             }
             c.units[pi].ap -= r.attack_cost;
+            // 瞄准部位：先加命中修正，打中后按部位附加效果（伤害 / 状态）。
+            let (aim, part_name) = match a.part.as_str() {
+                "head" => (-3, "头部"),
+                "arms" => (-2, "手臂"),
+                "legs" => (-1, "腿"),
+                _ => (0, ""),
+            };
+            if aim != 0 {
+                c.units[pi].statuses.push(Status { name: "瞄准部位".into(), rounds: Some(1), modifier: aim, ..Default::default() });
+            }
+            let hp_before = c.units[t].hp;
             attack(world, campaign_id, &mut c, &r, pi, t, &mut lines)?;
+            c.units[pi].statuses.retain(|s| s.name != "瞄准部位");
+            let dealt = hp_before - c.units[t].hp;
+            if aim != 0 && dealt > 0 && c.units[t].hp > 0 {
+                let (pn, tn) = (c.units[pi].name.clone(), c.units[t].name.clone());
+                match a.part.as_str() {
+                    "head" => {
+                        let extra = (dealt + 1) / 2;
+                        c.units[t].hp -= extra;
+                        c.push(&mut lines, format!("{pn}打中了{tn}的{part_name}，额外造成 {extra} 点伤害（{tn} 生命 {}/{}）", c.units[t].hp.max(0), c.units[t].max_hp));
+                        let m = now(world.conn(), campaign_id);
+                        knock_out(&mut c, t, &mut lines, m);
+                    }
+                    "arms" => apply_status(&mut c, t, Status { name: "手臂受伤".into(), rounds: Some(3), modifier: -2, ..Default::default() }, &pn, &mut lines),
+                    _ => apply_status(&mut c, t, Status { name: "腿伤".into(), rounds: Some(3), modifier: -1, ac: -1, ..Default::default() }, &pn, &mut lines),
+                }
+            } else if aim != 0 && dealt <= 0 {
+                let pn = c.units[pi].name.clone();
+                c.push(&mut lines, format!("（{pn}瞄准的是{part_name}）"));
+            }
+        }
+        "destroy" => {
+            // 破坏环境：砸毁掩体（站在后面的人失去掩护）。
+            need(r.attack_cost, &c)?;
+            let pidx = c.props.iter().position(|p| (p.id == a.target || p.name == a.target.trim()) && !p.used).ok_or_else(|| CoreError::Invalid(format!("战场上没有能破坏的物件：{}", a.target)))?;
+            let prop = c.props[pidx].clone();
+            let d = (prop.x - c.units[pi].x).abs().max((prop.y - c.units[pi].y).abs());
+            if d > c.units[pi].range.max(1) {
+                return Err(CoreError::Invalid(format!("「{}」太远（距离 {d} 格）", prop.name)));
+            }
+            c.units[pi].ap -= r.attack_cost;
+            c.props[pidx].used = true;
+            let pn = c.units[pi].name.clone();
+            c.push(&mut lines, format!("{pn}砸毁了{}", prop.name));
+            for u in c.units.iter_mut().filter(|u| u.active() && (u.x - prop.x).abs().max((u.y - prop.y).abs()) <= 1) {
+                u.statuses.retain(|s| s.name != "掩护");
+            }
+        }
+        "surrender" => {
+            // 投降：战斗结束，接下来怎么样由对方（GM 按人物和世界规则）决定。
+            let name = c.units[pi].name.clone();
+            c.status = "ended".into();
+            c.reason = format!("{name}投降了");
+            c.push(&mut lines, format!("{name}放下武器投降了，接下来怎么样由对方决定"));
         }
         "move" => {
             need(r.move_cost, &c)?;
@@ -937,6 +996,30 @@ fn act_inner(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<C
                         } else {
                             c.push(&mut lines, format!("{}砸下来，{tn}没躲开（{n}{sp:+}，难度 12），倒在地上", prop.name));
                             apply_status(&mut c, t, Status { name: "倒地".into(), rounds: Some(1), skip: true, ac: -2, ..Default::default() }, &pn, &mut lines);
+                        }
+                    }
+                }
+                "mechanism" => {
+                    c.props[pidx].used = true;
+                    let near: Vec<usize> = c.units.iter().enumerate().filter(|(_, u)| !u.friendly() && u.active() && (u.x - prop.x).abs().max((u.y - prop.y).abs()) <= 2).map(|(i, _)| i).collect();
+                    c.push(&mut lines, format!("{pn}拉动了{}", prop.name));
+                    if near.is_empty() {
+                        c.push(&mut lines, "机关启动了，但附近没有敌人".to_string());
+                    }
+                    for t in near {
+                        let (tn, sp) = (c.units[t].name.clone(), c.units[t].speed);
+                        let n = roll(world, campaign_id, "1d20", &format!("{tn} 躲开{}（敏捷检定）", prop.name))?;
+                        let ok = n + sp >= 13;
+                        campaign::annotate_last_roll("check", vec![("速度".into(), sp)], n + sp, Some(13), if ok { "躲开" } else { "被击中" });
+                        if ok {
+                            c.push(&mut lines, format!("{tn}躲开了机关（{n}{sp:+}，难度 13）"));
+                        } else {
+                            let dmg = roll(world, campaign_id, "1d8", &format!("{}对{tn}的伤害", prop.name))?.max(1);
+                            campaign::annotate_last_roll("damage", vec![], dmg, None, &format!("{dmg} 点伤害"));
+                            c.units[t].hp -= dmg;
+                            c.push(&mut lines, format!("机关击中{tn}，造成 {dmg} 点伤害（{tn} 生命 {}/{}）", c.units[t].hp.max(0), c.units[t].max_hp));
+                            let m = now(world.conn(), campaign_id);
+                            knock_out(&mut c, t, &mut lines, m);
                         }
                     }
                 }
@@ -1041,7 +1124,7 @@ fn act_inner(world: &mut World, campaign_id: &str, a: &CombatAction) -> Result<C
             end = true;
         }
         "end_turn" => end = true,
-        other => return Err(CoreError::Invalid(format!("未知的战斗行动：{other}（可用 attack/move/defend/dodge/skill/use_item/interact/flee/end_turn）"))),
+        other => return Err(CoreError::Invalid(format!("未知的战斗行动：{other}（可用 attack/move/defend/dodge/skill/use_item/interact/destroy/surrender/flee/end_turn）"))),
     }
     if !check_end(&mut c, &mut lines) && (end || c.units[pi].ap <= 0 || !c.units[pi].active()) {
         next_turn(world, campaign_id, &mut c, &r, &mut lines)?;

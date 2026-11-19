@@ -12,4 +12,8 @@ target: string, item: string, x: number | null, y: number | null,
 /**
  * 自定义行动的名称。
  */
-custom: string, };
+custom: string, 
+/**
+ * 攻击部位：head（头，命中 −3，伤害 +50%）/ arms（手臂，命中 −2，打中后对方检定 −2 三轮）/ legs（腿，命中 −1，打中后对方防御 −1、检定 −1 三轮）/ ""（不瞄准）
+ */
+part: string, };

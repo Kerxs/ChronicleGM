@@ -67,6 +67,8 @@ pub enum Condition {
         min_qty: i64,
     },
     ClueKnown { clue: String },
+    /// 人物（或其他实体）还活着：战役里没有被记为死亡 / 失踪。剧情事件常用它表达"这个人必须在"。
+    Alive { entity: String },
     Relation { a: String, b: String, rel_type: String },
     Visited {
         node: String,
@@ -286,6 +288,7 @@ impl Condition {
             }
             Condition::HasItem { holder, item, min_qty } => view.item_qty(holder, item) >= *min_qty,
             Condition::ClueKnown { clue } => view.clue_known(clue),
+            Condition::Alive { entity } => !matches!(view.life_status(entity).as_deref(), Some("dead" | "missing" | "destroyed")),
             Condition::Relation { a, b, rel_type } => view.relation(a, b, rel_type),
             Condition::Visited { node, min_count } => view.visit_count(node) >= *min_count,
             Condition::All { .. } | Condition::Any { .. } | Condition::Not { .. } | Condition::Check { .. } => {
@@ -302,6 +305,7 @@ impl Condition {
             Condition::QuestState { quest, .. } => out.push(("quest", quest.clone())),
             Condition::HasItem { item, .. } => out.push(("item", item.clone())),
             Condition::ClueKnown { clue } => out.push(("clue", clue.clone())),
+            Condition::Alive { entity } => out.push(("entity", entity.clone())),
             Condition::Visited { node, .. } => out.push(("plot_node", node.clone())),
             Condition::Relation { a, b, .. } => {
                 out.push(("entity", a.clone()));

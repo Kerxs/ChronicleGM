@@ -10,6 +10,7 @@ import "./reform.css";
 import "./anim.css";
 import "./sizing.css";
 import "./theme.css";
+import "./interact.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

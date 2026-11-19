@@ -12,10 +12,20 @@ import type { Environment } from "./Environment";
 import type { Foreshadow } from "./Foreshadow";
 import type { ManualEdit } from "./ManualEdit";
 import type { Pacing } from "./Pacing";
+import type { PlayerGoal } from "./PlayerGoal";
+import type { PlotEvent } from "./PlotEvent";
 import type { TurnTrace } from "./TurnTrace";
 
 export type GmConsole = { scene: ConsoleScene, time: string, environment: Environment, location: string, vars: { [key in string]: string }, npcs: Array<ConsoleNpc>, clues: Array<ConsoleClue>, conditions: Array<ConsoleCondition>, hidden: ConsoleHidden, pacing: Pacing, conflicts: Array<Conflict>, notes: Array<DirectorNote>, settings: DirectorSettings, traces: Array<TurnTrace>, manual_edits: Array<ManualEdit>, 
 /**
  * 因果链（决定 → 后果）与伏笔。
  */
-consequences: Array<Consequence>, foreshadows: Array<Foreshadow>, };
+consequences: Array<Consequence>, foreshadows: Array<Foreshadow>, 
+/**
+ * 剧情事件的动态状态（反剧情纠正）。
+ */
+events: Array<PlotEvent>, 
+/**
+ * 玩家当前的目标。
+ */
+player_goal: PlayerGoal | null, };

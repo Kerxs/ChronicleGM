@@ -42,7 +42,7 @@ pub struct DirectorSettings {
 
 impl Default for DirectorSettings {
     fn default() -> Self {
-        Self { auto_analyze: true, every_turns: 6, stall_turns: 4, auto_adopt_on_stall: true, guidance_turns: 4, pacing_level: 50, hint_only: false }
+        Self { auto_analyze: true, every_turns: 6, stall_turns: 4, auto_adopt_on_stall: false, guidance_turns: 4, pacing_level: 50, hint_only: true }
     }
 }
 
@@ -263,7 +263,7 @@ pub fn hooks(conn: &Connection, campaign_id: &str) -> Result<Vec<Hook>> {
         for it in crate::scripts::all_items(conn, sid)? {
             match it.kind {
                 ScriptItemKind::Clue if !view.clue_known(&it.id) => clue_hooks.push(Hook { kind: "clue".into(), id: it.id, title: it.title, note: it.player_text.chars().take(40).collect() }),
-                ScriptItemKind::Trigger | ScriptItemKind::KeyEvent if it.payload.get("when").is_some() && view.record("trigger_fired", &it.id).is_none() => {
+                ScriptItemKind::Trigger | ScriptItemKind::KeyEvent if it.payload.get("when").is_some() && view.record("trigger_fired", &it.id).is_none() && !crate::events::get(conn, campaign_id, &it.id).is_some_and(|e| e.status.terminal()) => {
                     out.push(Hook { kind: "trigger".into(), id: it.id, title: it.title, note: "还没有触发".into() })
                 }
                 _ => {}
@@ -283,7 +283,7 @@ pub fn hooks(conn: &Connection, campaign_id: &str) -> Result<Vec<Hook>> {
     }
     let spoken: HashSet<String> = campaign::recent_events(conn, campaign_id, &["npc"], 500)?.into_iter().filter_map(|e| e.payload["npc_id"].as_str().map(str::to_string)).collect();
     for n in crate::schedule::all_npc_status(conn, campaign_id)? {
-        if !spoken.contains(&n.npc_id) && n.life_status != "dead" {
+        if !spoken.contains(&n.npc_id) && n.life_status != "dead" && n.life_status != "missing" {
             out.push(Hook { kind: "npc".into(), id: n.npc_id, title: n.name, note: if n.activity.is_empty() { "还没打过交道".into() } else { format!("还没打过交道；此刻{}", n.activity) } });
         }
     }
@@ -422,7 +422,8 @@ pub fn pacing_preference(s: &DirectorSettings) -> String {
         61..=80 => "偏紧凑：事件来得更快，常有新的压力和时限",
         _ => "很紧凑：事情一件接一件，几乎每回合都有新的推进或威胁",
     };
-    let pull = if s.hint_only { "；玩家偏离剧本时只提示主持人，不要设法把玩家拉回主线，顺着玩家的选择发展" } else { "；玩家偏离主线太远时，可以自然地给出回到主线的机会（不强迫）" };
+    // 反剧情纠正：无论哪种设置都不把玩家拉回主线；区别只是剧本线索要不要在玩家自己寻找时更容易出现。
+    let pull = if s.hint_only { "；玩家决定故事走向：偏离剧本时只提示主持人，不要设法把玩家拉回主线，顺着玩家的选择发展" } else { "；玩家决定故事走向，不要把玩家拉回主线；玩家自己想回到原来的线索时，让路径清楚可见" };
     format!("剧情节奏偏好：{pace}{pull}")
 }
 

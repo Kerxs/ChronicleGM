@@ -148,6 +148,9 @@ export function ConditionEditor({ value, onChange, choices, depth = 0 }: { value
     case "clue_known":
       body = <Pick value={value.clue} options={choices.clues} onChange={(v) => set({ clue: v })} />;
       break;
+    case "alive":
+      body = <Pick value={value.entity} options={choices.people} onChange={(v) => set({ entity: v })} />;
+      break;
     case "relation":
       body = (
         <>

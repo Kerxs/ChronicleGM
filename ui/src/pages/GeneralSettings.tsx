@@ -5,6 +5,7 @@ import { api } from "../api";
 import { useLowPower, setLowPower } from "../lib/lowPower";
 import { checkUpdates, useUpdates } from "../lib/updates";
 import { applyZoom } from "../lib/zoom";
+import { fxSettings, play, reloadOverrides, type FxLevel } from "../lib/sfx";
 
 type Notify = (m: string, k?: "info" | "error") => void;
 type Sys = { close_to_tray: boolean; autostart: boolean; start_minimized: boolean; data_dir: string };
@@ -15,6 +16,9 @@ export default function GeneralSettings({ notify }: { notify: Notify }) {
   const [startPage, setStartPage] = useState("lobby");
   const [zoom, setZoom] = useState("1");
   const [autoUpdate, setAutoUpdate] = useState(true);
+  const [fxLevel, setFxLevel] = useState<FxLevel>(fxSettings.level);
+  const [sfxVol, setSfxVol] = useState(fxSettings.sfx);
+  const [bgmVol, setBgmVol] = useState(fxSettings.bgm);
   const [dice, setDice] = useState<"auto" | "click" | "physical">("auto");
   const [autoRead, setAutoRead] = useState(false);
   const [prompt, setPrompt] = useState<PromptInfo | null>(null);
@@ -189,10 +193,84 @@ export default function GeneralSettings({ notify }: { notify: Notify }) {
               改回自带版本
             </button>
           )}
-          <button className="link" onClick={() => void open("prompts")}>
-            打开自定义提示词文件夹
-          </button>
         </div>
+        <Row label="提示词文件夹" hint="里面有软件自带的全部提示词（参考）和说明。把要改的模板复制到文件夹这一层再修改，改完点「重新加载提示词」，下一回合起生效。">
+          <span className="gs-actions inline">
+            <button onClick={() => void open("prompts")}>打开提示词文件夹</button>
+            <button
+              onClick={() =>
+                void invoke<PromptInfo>("prompt_reload")
+                  .then((p) => {
+                    setPrompt(p);
+                    notify(p.overridden.length ? `已重新加载：${p.overridden.length} 个模板用了你自己的版本（${p.overridden.join("、")}）` : "已重新加载（没有自定义模板，用的是自带提示词）");
+                  })
+                  .catch(err)
+              }
+            >
+              重新加载提示词
+            </button>
+          </span>
+        </Row>
+      </section>
+
+      <section className="gs-card">
+        <h3>演出与声音</h3>
+        <Row label="演出强度" hint="重要时刻（进入新地点、人物登场、关键线索、战斗、转折、结局）的演出。省电模式只降低特效，不减少玩法。">
+          <select
+            value={fxLevel}
+            onChange={(e) => {
+              const v = e.target.value as FxLevel;
+              setFxLevel(v);
+              fxSettings.level = v;
+            }}
+          >
+            <option value="full">完整（转场、全屏演出、音乐、环境音）</option>
+            <option value="simple">简化（只有转场卡片和音效）</option>
+            <option value="off">关闭</option>
+          </select>
+        </Row>
+        <Row label="音效音量">
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={sfxVol}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setSfxVol(v);
+              fxSettings.sfx = v;
+            }}
+            onMouseUp={() => void play("success")}
+          />
+        </Row>
+        <Row label="音乐与环境音音量">
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={bgmVol}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setBgmVol(v);
+              fxSettings.bgm = v;
+            }}
+          />
+        </Row>
+        <Row label="自己的音效和音乐" hint="声音都由程序合成。把同名的 mp3 / ogg / wav 放进音频文件夹（例如 unlock.mp3、bgm_combat.ogg）就会替换，文件夹里有说明。">
+          <span className="gs-actions inline">
+            <button onClick={() => void api.audioOpenFolder().catch(err)}>打开音频文件夹</button>
+            <button
+              onClick={() => {
+                reloadOverrides();
+                notify("已重新读取音频文件夹");
+              }}
+            >
+              重新读取
+            </button>
+          </span>
+        </Row>
       </section>
 
       <section className="gs-card">

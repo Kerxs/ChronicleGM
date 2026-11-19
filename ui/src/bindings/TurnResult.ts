@@ -4,8 +4,10 @@ import type { Combat } from "./Combat";
 import type { DiceRecord } from "./DiceRecord";
 import type { Effect } from "./Effect";
 import type { EntityResult } from "./EntityResult";
+import type { Interaction } from "./Interaction";
 import type { NpcLine } from "./NpcLine";
 import type { RejectedEffect } from "./RejectedEffect";
+import type { RitualCue } from "./RitualCue";
 import type { TransitionOutcome } from "./TransitionOutcome";
 import type { JsonValue } from "./serde_json/JsonValue";
 
@@ -77,4 +79,12 @@ rpg_updates: Array<string>,
 /**
  * 这一回合涉及的战斗（进行中或刚结束）。
  */
-combat: Combat | null, };
+combat: Combat | null, 
+/**
+ * 这一回合 GM 提出、等玩家亲自操作的互动。
+ */
+interactions: Array<Interaction>, 
+/**
+ * 这一回合的仪式演出（程序根据发生的事判定等级和场景）。
+ */
+rituals: Array<RitualCue>, };

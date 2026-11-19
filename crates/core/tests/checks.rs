@@ -110,7 +110,7 @@ fn multi_die_crits_use_max_and_min_sum() {
         } else if r.natural == 2 {
             assert_eq!(r.degree, Degree::CritFailure);
         } else {
-            assert_eq!(r.degree, if r.total >= 8 { Degree::Success } else { Degree::Failure }, "没有部分成功");
+            assert_eq!(r.degree, if r.total >= r.dc { Degree::Success } else { Degree::Failure }, "没有部分成功（难度按 2d6 换算后比较）");
         }
     }
 }

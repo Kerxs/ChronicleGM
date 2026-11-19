@@ -837,7 +837,18 @@ fn phase7_citations_trace_guidance_and_director() {
         assert!(t.context["sections"].as_array().unwrap().iter().any(|s| s["title"].as_str().unwrap().starts_with("战役记忆")));
         assert_eq!(director::pacing(w.conn(), &fx.campaign).unwrap().curve.len(), 1, "每回合记录节拍");
     }
-    // 导演分析：停滞时自动采用第一条不需要确认的建议；改写核心设定的建议标为需要确认。
+    // 反剧情纠正：默认不再自动采用导演建议，也不设法把玩家拉回主线。
+    {
+        let w = fx.world.lock().unwrap();
+        let s = director::settings(w.conn(), &fx.campaign);
+        assert!(!s.auto_adopt_on_stall && s.hint_only, "默认不自动采用、只提示");
+    }
+    // 主持人自己打开"停滞时自动采用"后：自动采用第一条不需要确认的建议；改写核心设定的建议标为需要确认。
+    {
+        let mut w = fx.world.lock().unwrap();
+        let s = director::DirectorSettings { auto_adopt_on_stall: true, hint_only: false, ..Default::default() };
+        director::set_settings(&mut w, &fx.campaign, &s).unwrap();
+    }
     let mut d = Router::new(json!({}));
     d.director = json!({"assessment": "玩家在原地打转", "pacing": "raise", "suggestions": [
         {"kind": "twist", "text": "其实潮汐法则在满月也会失效", "why": "制造意外", "uses": ["W1"], "touches_canon": false},

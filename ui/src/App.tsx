@@ -400,6 +400,7 @@ export default function App() {
           onOpenSearch={worldId ? () => setSearching(true) : undefined}
           updateVersion={updates.info?.version ?? null}
           onOpenUpdate={openUpdate}
+          onOpenStudio={worldId && mode.name !== "mp" ? (p) => goStudio({ name: p } as Page) : undefined}
         />
         <UpdateDialog />
         {tourEl}

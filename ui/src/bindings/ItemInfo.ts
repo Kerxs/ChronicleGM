@@ -42,4 +42,16 @@ origin: string,
 /**
  * 这件武器用的弹药（弹药物品的名字）；空 = 不用弹药。
  */
-ammo: string, };
+ammo: string, 
+/**
+ * 能打开的锁 / 对象（场景对象 ID 或名字，例如某扇门）。钥匙用。
+ */
+unlocks: Array<string>, 
+/**
+ * 可以用在哪些对象上（对象 ID、名字或种类，例如 door、mechanism）。
+ */
+uses_on: Array<string>, 
+/**
+ * 工具标签：lockpick（撬锁）、bandage（包扎）、tweezers（取异物）、medkit、hacking（破解）、light、rope、food、water……
+ */
+tags: Array<string>, };

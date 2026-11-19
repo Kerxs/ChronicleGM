@@ -102,16 +102,27 @@ pub fn present_npcs_in(world: &World, campaign_id: &str, script: Option<&Script>
     let all = present_npcs(world, script, current)?;
     // 玩家所在地点：旅行到过的地点优先，否则是剧情节点的场景地点。
     let scene = chronicle_core::worldsim::party_location(world.conn(), campaign_id)?.or_else(|| current.and_then(|n| n.scene_ref.clone()));
+    // 玩家离开了剧情节点的场景（旅行到了别处）：没有日程的剧本人物不再"到处都在场"，只有住在 / 待在这里的才在。
+    let node_scene = current.and_then(|n| n.scene_ref.clone());
+    let traveled_away = matches!((&scene, &node_scene), (Some(a), Some(b)) if a != b)
+        || (node_scene.is_none() && CampaignView { conn: world.conn(), campaign_id }.var(chronicle_core::worldsim::PARTY_LOCATION_VAR).is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty())));
     let mut out = vec![];
     for n in all {
         let st = chronicle_core::schedule::npc_status(world.conn(), campaign_id, &n.node)?;
-        if st.life_status == "dead" {
+        // 死亡、失踪的人物不在场（不能被选为发言人）。
+        if st.life_status == "dead" || st.life_status == "missing" {
             continue;
         }
         if let (true, Some(sc)) = (st.has_schedule, &scene)
             && !chronicle_core::schedule::is_at(world.conn(), &st, sc)?
         {
             continue;
+        }
+        if !st.has_schedule && traveled_away {
+            let home = ["home", "location"].iter().find_map(|k| n.node.payload.get(*k).and_then(Value::as_str)).unwrap_or_default();
+            if !home.is_empty() && scene.as_deref() != Some(home) {
+                continue;
+            }
         }
         out.push(n);
     }
@@ -192,6 +203,16 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
             hidden.push(pc.link_to_plot.clone());
         }
     }
+    // 反剧情纠正：玩家现在想做的事放在最显眼的位置；已经确定的事实不能被叙事改写。
+    if let Some(g) = chronicle_core::events::player_goal(world.conn(), campaign_id) {
+        ctx.push("玩家当前的目标（围绕它回应；它可以和剧本主线无关）", format!("{}（第 {} 回合提出）", g.text, g.turn), 0);
+    }
+    let settled = chronicle_core::events::settled_facts(world.conn(), campaign_id)?;
+    if !settled.is_empty() {
+        ctx.push("已确定的事实（已经发生，不能被叙事改写或推翻）", settled.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("
+"), 0);
+    }
+    let closed_quests = chronicle_core::events::closed_quests(world.conn(), campaign_id)?;
     if let Some(s) = &script {
         ctx.push("剧本（含主持人信息）", script_meta(s), 0);
         if !s.core_setting.trim().is_empty() {
@@ -210,17 +231,21 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
             let n = counters.entry(prefix).or_insert(0);
             *n += 1;
             let short = format!("{prefix}{n}");
-            lines.push(format!("- {short} [{}] {}：{}", it.kind, it.title, it.player_text));
+            // 已经结束的任务（拒绝、绕过、失效……）和被摧毁的物品只保留编号映射，不再列给模型（免得再拿出来）。
+            let closed = closed_quests.contains_key(&it.id) || (prefix == "I" && chronicle_core::events::is_destroyed(world.conn(), campaign_id, &it.id));
+            if !closed {
+                lines.push(format!("- {short} [{}] {}：{}", it.kind, it.title, it.player_text));
+            }
             refs.insert(short, it.id.clone());
         }
-        ctx.push("可在效果中引用的任务（Q）、线索（C）、物品（I）——引用时填编号", lines.join("\n"), 0);
+        ctx.push("可在效果中引用的任务（Q）、线索（C）、物品（I）——引用时填编号；未开始的任务只是可能性", lines.join("\n"), 0);
         let mut plines = vec![];
         for (i, p) in plot::plot_nodes_of(world.conn(), &s.id)?.into_iter().enumerate() {
             let short = format!("P{}", i + 1);
             plines.push(format!("- {short} [{}] {}", p.kind, p.title));
             refs.insert(short, p.id);
         }
-        ctx.push("剧情节点（unlock_node 填编号）", plines.join("\n"), 3);
+        ctx.push("剧本里的剧情节点（潜在：尚未发生的内容，不是必须到达的目标；unlock_node 填编号）", plines.join("\n"), 3);
     }
     ctx.push("世界核心设定（不得违背）", core_canon(world, 30)?, 1);
     // 时间、环境、位置与世界动态（全部由程序计算）。
@@ -339,6 +364,19 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
         }
     }
     rpg_context(world, campaign_id, &npcs, &mut ctx, &mut refs, &mut names)?;
+    // 这里可以互动的东西（O 编号）、进行中的互动、警戒和生存状态（全部由程序维护）。
+    {
+        let (text, orefs) = chronicle_core::interaction::gm_text(world.conn(), campaign_id)?;
+        if chronicle_core::rpg::party_members(world.conn(), campaign_id).len() > 1 {
+            // 联机房间的界面还没有互动组件：不提出 interaction，需要判定时用 checks。
+            ctx.push("联机模式", "这是多人联机房间：不要提出 interaction（操作界面暂不支持联机），需要判定时在 checks 里提出检定。".into(), 0);
+        } else if !text.is_empty() {
+            for (code, key) in orefs {
+                refs.insert(code, key);
+            }
+            ctx.push("这里可以互动的东西（需要玩家亲自操作时在 interaction 里写对象编号 O1；隐藏的东西玩家还不知道，不要直接说出）", text, 1);
+        }
+    }
     // 任务：进行中的（含期限）与未开始的可见任务。
     {
         let qs = chronicle_core::quests::quests(world.conn(), campaign_id, true)?;
@@ -363,7 +401,7 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
             })
             .collect();
         if !lines.is_empty() {
-            ctx.push("任务（状态由程序根据条件与期限推进；变化写在 quest_notes）", lines.join("\n"), 1);
+            ctx.push("任务（未开始的只是潜在机会，玩家不接也没关系；状态由程序推进；变化写在 quest_notes，玩家拒绝或绕过写在 event_updates）", lines.join("\n"), 1);
         }
     }
     // 调查板：玩家掌握的线索与玩家自己的推理。
@@ -402,7 +440,24 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
             lines.push(format!("- {short}「{}」→ {}（{avail}；条件：{cond}）", o.edge.label, to));
             edges.push((short, o.edge.id.clone(), o.edge.label.clone()));
         }
-        ctx.push("可选分支（transition_edge 填编号，如 E1；由程序判定条件）", lines.join("\n"), 0);
+        ctx.push("剧本预设的分支（只是可能性：玩家明确做出对应选择时才填 transition_edge，如 E1；玩家走别的路完全可以，不要引导他走这些分支）", lines.join("\n"), 0);
+    }
+    // 潜在事件（主持人信息）：剧本里还没发生的关键事件、触发器、转折、结局。V 编号给 event_updates 用。
+    {
+        let pot = chronicle_core::events::potential(world.conn(), campaign_id)?;
+        if !pot.is_empty() {
+            let mut lines = vec![];
+            for (i, e) in pot.iter().enumerate().take(12) {
+                let short = format!("V{}", i + 1);
+                refs.insert(short.clone(), e.event_id.clone());
+                names.insert(e.event_id.clone(), e.title.clone());
+                if e.description.chars().count() >= 6 {
+                    hidden.push(e.description.clone());
+                }
+                lines.push(format!("- {short} [{}] {}（{}）：{}", e.kind, e.title, e.status.label(), e.description.chars().take(80).collect::<String>()));
+            }
+            ctx.push("潜在事件（尚未发生，只是可能性：条件成立才会发生，不能写成已经发生；失去成立条件或被玩家绕过时写在 event_updates）", lines.join("\n"), 2);
+        }
     }
 
     let st = campaign::campaign_state(world.conn(), campaign_id)?;
@@ -530,7 +585,7 @@ pub fn build_gm_context(world: &World, campaign_id: &str, input: &str, budget: u
             hidden.push(s.text.clone());
             trace.guidance.push(s.text.clone());
         }
-        ctx.push("导演建议（主持人信息，不要直接说出；在合适时自然地给玩家机会，不要强迫玩家选择，不要违背已确认的设定）", lines.join("\n"), 1);
+        ctx.push("导演建议（主持人信息，不要直接说出；只在有因果依据、并且和玩家当前的目标或处境相关时使用；不要强迫玩家，不要把玩家拉回主线，不要违背已确认的设定）", lines.join("\n"), 1);
     }
 
     let rendered = ctx.render(budget);
@@ -660,8 +715,8 @@ fn rpg_context(world: &World, campaign_id: &str, npcs: &[NpcCard], ctx: &mut Con
     Ok(())
 }
 
-/// 给模型看的短编号前缀：任务、线索、物品、人物、剧情节点、分支、G 新任务、地点、背包、商品、配方、记忆、设定。
-const KNOWN_CODE_PREFIXES: [char; 13] = ['Q', 'C', 'I', 'N', 'P', 'E', 'G', 'L', 'B', 'S', 'R', 'M', 'W'];
+/// 给模型看的短编号前缀：任务、线索、物品、人物、剧情节点、分支、G 新任务、地点、背包、商品、配方、记忆、设定、V 潜在事件。
+const KNOWN_CODE_PREFIXES: [char; 15] = ['Q', 'C', 'I', 'N', 'P', 'E', 'G', 'L', 'B', 'S', 'R', 'M', 'W', 'V', 'O'];
 
 /// NPC 的提示词变量。只包含该 NPC 本人的资料与玩家可见的信息。
 impl GmContext {
@@ -706,8 +761,14 @@ impl GmContext {
             out.push(c);
             i += 1;
         }
-        // 删掉编号后留下的空括号与多余的顿号。
+        // 删掉编号后留下的空括号与多余的顿号；"苏桦（N2）"换成名字后会变成"苏桦（苏桦）"，去掉重复的括号。
         let mut s = out;
+        for n in self.names.values().filter(|n| n.chars().count() >= 2) {
+            let dup = format!("{n}（{n}）");
+            while s.contains(&dup) {
+                s = s.replace(&dup, n);
+            }
+        }
         for (a, b) in [("（）", ""), ("()", ""), ("（、", "（"), ("、）", "）"), ("、、", "、"), ("：，", "："), ("  ", " ")] {
             while s.contains(a) {
                 s = s.replace(a, b);
@@ -865,6 +926,21 @@ pub fn build_npc_context(world: &World, campaign_id: &str, me: &NpcCard, all: &[
     {
         let env = chronicle_core::worldsim::environment(world.conn(), campaign_id)?;
         scene.push_str(&format!("\n时间：{}，{}季，天气{}", env.time, env.season, env.weather));
+    }
+    // 反剧情纠正：玩家拒绝了、放下了的事，NPC 可以有自己的看法，但不要一遍遍劝他回去做（实测：拒绝主线后三个 NPC 每回合都在念叨灯塔）。
+    {
+        let closed = chronicle_core::events::closed_quests(world.conn(), campaign_id)?;
+        let refused: Vec<String> = closed
+            .iter()
+            .filter(|(_, s)| matches!(s, chronicle_core::events::EventStatus::Bypassed))
+            .filter_map(|(id, _)| scripts::get_item(world.conn(), id).ok().flatten().map(|i| i.title))
+            .collect();
+        if !refused.is_empty() {
+            scene.push_str(&format!("\n玩家已经明确不做这些事：{}。你可以有自己的看法，但不要再劝他、催他或数落他，除非他自己提起", refused.join("、")));
+        }
+        if let Some(g) = chronicle_core::events::player_goal(world.conn(), campaign_id) {
+            scene.push_str(&format!("\n玩家现在想做的事：{}", g.text));
+        }
     }
     // 最近发生的事：只取玩家可见的叙述与对话。
     let recent = dialogue_lines(world, campaign_id, 4)?;

@@ -143,7 +143,7 @@ pub fn sys_open_folder(kind: String) -> Res<()> {
     let dir = match kind.as_str() {
         "data" => data_dir(),
         "logs" => data_dir().join("logs"),
-        "prompts" => data_dir().join("prompts"),
+        "prompts" => crate::prompts::prepare_dir()?,
         "models" => data_dir().join("models"),
         _ => return Err("未知的文件夹".into()),
     };

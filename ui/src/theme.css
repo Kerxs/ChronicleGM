@@ -184,6 +184,12 @@ main h2, .lm-page h2, .mp-head h2 { font-weight: 700; letter-spacing: -0.3px; }
 }
 .tb-world-row:hover .row-del, .ss-world-row:hover .row-del, .row-del:focus-visible { opacity: 0.75; transform: none; }
 .row-del:hover { opacity: 1 !important; background: rgba(255, 59, 48, 0.1) !important; }
+/* 世界菜单的列表沿用了 .worlds button 的整行宽度（width:100%），删除按钮会被撑满整行、盖住切换按钮：这里改回小按钮 */
+.tb-world-row > .row-del, .ss-world-row > .row-del { width: 28px; min-width: 0; padding: 0; margin: -14px 0 0; display: grid; place-items: center; justify-content: center; }
+/* 标题栏「创作」菜单 */
+.tb-studio-menu { width: 220px; }
+.tb-studio-menu .tb-menu-item { margin-top: 2px; padding: 8px 10px; border-radius: 8px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.tb-studio-menu .tb-menu-item .ic { width: 20px; text-align: center; }
 
 /* 游戏面板里的关系图谱：抽屉只有 460px 宽，整页的「图 + 右侧说明」两栏改成上下排；标题和抽屉标题重复，去掉 */
 .relations-embed { height: auto !important; overflow: visible; }

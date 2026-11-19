@@ -15,7 +15,11 @@ export interface DieSpec {
   value: number;
   /** 骰子颜色（不同用途不同颜色）。 */
   color: string;
+  /** 百分骰的十位骰：面上印 00、10……90（朝上那面印 value 对应的十位）。 */
+  tens?: boolean;
 }
+
+export { splitD100 } from "./d100";
 
 type Face = THREE.Vector3[];
 
@@ -290,12 +294,19 @@ export function labelFaces(sides: number, value: number, upFace: number, downFac
   return labels;
 }
 
+/** 十位骰的面：value 是 0–9（十位数），印成 00、10……90。 */
+export function labelTens(value: number, upFace: number): string[] {
+  const others = Array.from({ length: 10 }, (_, i) => i).filter((n) => n !== value);
+  let k = 0;
+  return Array.from({ length: 10 }, (_, f) => `${f === upFace ? value : others[k++ % others.length]}0`);
+}
+
 /** 只做物理与贴数字、不画（测试用）：返回每颗骰子最后朝上那面（d4 是朝下那面之外）印的数字。 */
 export function settleForTest(dice: DieSpec[]): { shown: string[]; flat: number }[] {
   const specs = dice.map((d) => ({ fs: faces(d.sides), scale: SCALE[d.sides] ?? 0.6 }));
   const sim = simulate(specs, { w: 5, h: 3 });
   return dice.map((d, i) => {
-    const labels = labelFaces(d.sides, d.value, sim.up[i], sim.down[i]);
+    const labels = d.tens ? labelTens(d.value, sim.up[i]) : labelFaces(d.sides, d.value, sim.up[i], sim.down[i]);
     return { shown: d.sides === 4 ? labels.filter((_, f) => f !== sim.down[i]) : [labels[sim.up[i]]], flat: sim.flat[i] };
   });
 }
@@ -352,7 +363,7 @@ export class DiceTable {
     const specs = dice.map((d) => ({ fs: faces(d.sides), scale: SCALE[d.sides] ?? 0.6 }));
     const sim = simulate(specs, this.bounds);
     dice.forEach((d, i) => {
-      const labels = labelFaces(d.sides, d.value, sim.up[i], sim.down[i]);
+      const labels = d.tens ? labelTens(d.value, sim.up[i]) : labelFaces(d.sides, d.value, sim.up[i], sim.down[i]);
       const mats = labels.map((l) => new THREE.MeshStandardMaterial({ map: faceTexture(l, d.color), roughness: 0.35, metalness: 0.05 }));
       const mesh = new THREE.Mesh(dieGeometry(specs[i].fs, specs[i].scale), mats);
       mesh.castShadow = true;

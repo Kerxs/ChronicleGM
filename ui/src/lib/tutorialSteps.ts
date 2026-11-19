@@ -113,6 +113,12 @@ export const TOUR: TourStep[] = [
     skipLabel: "先跳过",
   },
   {
+    id: "hands-on",
+    page: "game",
+    target: ["scene-bar"],
+    say: "输入框上面这一排是这里能亲手互动的东西：点一扇门可以开锁或撬锁，点箱子、桌子可以仔细调查，还有物品、组合、潜行、医疗。需要你亲自动手时我也会直接递给你一张操作卡片——成败由程序按规则结算。不想用这些也没关系，直接写你自己的办法就行。",
+  },
+  {
     id: "panels",
     page: "game",
     target: ["panel-fab"],

@@ -190,6 +190,12 @@ impl StateView for CampaignView<'_> {
             .ok()
             .flatten()
     }
+    fn life_status(&self, entity: &str) -> Option<String> {
+        if let Some(v) = entity_overrides(self.conn, self.campaign_id, entity).ok()?.get("life_status").and_then(|v| v.as_str().map(str::to_string)) {
+            return Some(v);
+        }
+        crate::nodes::get_node(self.conn, entity).ok().flatten().and_then(|n| n.payload.get("life_status").and_then(Value::as_str).map(str::to_string))
+    }
     fn record(&self, kind: &str, id: &str) -> Option<Value> {
         self.conn
             .query_row(

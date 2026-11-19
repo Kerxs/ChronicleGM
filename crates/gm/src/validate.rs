@@ -16,7 +16,7 @@ pub struct RejectedEffect {
 
 /// 由程序管理、AI 不得设置的变量前缀（技能修正、NPC 态度）。
 /// 由程序维护的变量：技能修正、NPC 态度、世界时钟、环境、玩家位置与状态（位置只能通过 travel_to 改变）、金钱、规则设置、战斗。
-pub const PROTECTED_VAR_PREFIXES: &[&str] = &["skill.", "attitude.", "time.", "env.", "party.", "money.", "rules.", "combat."];
+pub const PROTECTED_VAR_PREFIXES: &[&str] = &["skill.", "attitude.", "time.", "env.", "party.", "money.", "rules.", "combat.", "survival.", "stress."];
 
 fn script_item_kind(world: &World, script: Option<&str>, id: &str) -> Option<ScriptItemKind> {
     let it = scripts::get_item(world.conn(), id).ok().flatten()?;
@@ -129,6 +129,42 @@ pub fn validate_effects(world: &World, script: Option<&str>, raw: &[Map<String, 
     }
     if raw.len() > 12 {
         rejected.push(RejectedEffect { effect: Value::Null, reason: format!("一次最多 12 条效果，多出的 {} 条被忽略", raw.len() - 12) });
+    }
+    (ok, rejected)
+}
+
+/// 和战役事实有关的校验（反剧情纠正）：已经确定的事实不能被 GM 的效果推翻。
+/// - 已经结束的任务（拒绝、绕过、失效、被改变、完成、失败）不能改回未开始或进行中；
+/// - 已经死亡或失踪的人物不能被改成活着（除非人物设定 `can_revive: true`，例如亡灵、可复活的世界）；
+/// - 已经被摧毁的物品不能再给任何人（除非剧本物品 `repeatable: true`）。
+pub fn check_facts(world: &World, campaign_id: &str, effects: Vec<Effect>) -> (Vec<Effect>, Vec<RejectedEffect>) {
+    use chronicle_core::events;
+    use chronicle_core::rules::StateView;
+    let conn = world.conn();
+    let closed = events::closed_quests(conn, campaign_id).unwrap_or_default();
+    let view = chronicle_core::campaign::CampaignView { conn, campaign_id };
+    let mut ok = vec![];
+    let mut rejected = vec![];
+    for e in effects {
+        let why: Option<String> = match &e {
+            Effect::SetQuestState { quest, state } => closed
+                .get(quest)
+                .filter(|_| matches!(state.as_str(), "" | "active" | "available"))
+                .map(|s| format!("这个任务已经{}，不能改回去", s.label())),
+            Effect::SetEntityState { entity, field, value } if field == "life_status" => {
+                let now = view.life_status(entity).unwrap_or_default();
+                let to = value.as_str().unwrap_or_default();
+                let revive = nodes::get_node(conn, entity).ok().flatten().and_then(|n| n.payload.get("can_revive").and_then(Value::as_bool)).unwrap_or(false);
+                (matches!(now.as_str(), "dead" | "missing") && !matches!(to, "dead" | "missing") && !revive)
+                    .then(|| format!("这个人物已经{}，世界设定不允许复活或凭空回来", if now == "dead" { "死亡" } else { "失踪" }))
+            }
+            Effect::GiveItem { item, .. } => (events::is_destroyed(conn, campaign_id, item) && !events::repeatable(conn, item)).then(|| "这件物品已经被摧毁，世界上不再有它".to_string()),
+            _ => None,
+        };
+        match why {
+            Some(reason) => rejected.push(RejectedEffect { effect: serde_json::to_value(&e).unwrap_or(Value::Null), reason }),
+            None => ok.push(e),
+        }
     }
     (ok, rejected)
 }

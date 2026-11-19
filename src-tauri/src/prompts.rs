@@ -135,6 +135,38 @@ pub fn prompt_reset(state: State<AppState>) -> Res<()> {
     Ok(())
 }
 
+/// 自定义提示词文件夹：把软件自带的模板放进「自带模板（参考）」子文件夹（每次打开都刷新），并写一份说明。
+/// 只有直接放在 prompts 文件夹里的 `<名字>.j2` 才会覆盖自带模板，子文件夹里的只是参考，不会生效。
+pub fn prepare_dir() -> Res<PathBuf> {
+    let dir = data_dir().join("prompts");
+    let refdir = dir.join("自带模板（参考）");
+    std::fs::create_dir_all(&refdir).map_err(err)?;
+    for (name, src) in chronicle_gen::templates::builtin_sources() {
+        std::fs::write(refdir.join(format!("{name}.j2")), src).map_err(err)?;
+    }
+    let readme = format!(
+        "自定义提示词
+
+        1. 「自带模板（参考）」里是软件当前自带的全部提示词（v{PROMPT_VERSION}），每次打开这个文件夹都会刷新，改它们不会生效。
+        2. 想修改某个提示词：把它复制到这一层（和这份说明放在一起），再修改。文件名不要改，例如 gm_plan.j2。
+        3. 改完在「设置 → 通用 → 更新」里点「重新加载提示词」，下一回合起生效，不用重启。
+        4. 想恢复：删掉这一层里对应的 .j2 文件，再重新加载。
+        5. 模板有语法错误时软件会改用自带提示词，并在日志里写明原因。
+
+        常用：gm_plan（GM 理解行动、决定检定和效果）、gm_narrate（按结果写叙述）、npc_reply（NPC 回应）、director（剧情导演）、free_play（自由行动规则）。
+"
+    );
+    std::fs::write(dir.join("说明.txt"), readme).map_err(err)?;
+    Ok(dir)
+}
+
+/// 重新加载提示词（用户改了自定义模板后）。返回正在使用的版本和自定义的模板。
+#[tauri::command]
+pub fn prompt_reload(state: State<AppState>) -> Res<PromptInfo> {
+    reload(&state);
+    prompt_info(state)
+}
+
 /// 启动后：开着自动检查且距上次超过一天，就在后台检查一次。
 pub fn auto_check(app: &AppHandle) {
     let app = app.clone();

@@ -5,6 +5,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { formatTime } from "../api";
 import type { WorldInfo } from "../bindings/WorldInfo";
 
+export type StudioPage = "tree" | "graph" | "scripts" | "review" | "tools" | "archive";
+const STUDIO_PAGES: [StudioPage, string, string][] = [
+  ["tree", "🌳", "世界树"],
+  ["graph", "🕸️", "图谱"],
+  ["scripts", "📜", "剧本"],
+  ["review", "✅", "审阅与任务"],
+  ["tools", "🔧", "世界工具"],
+  ["archive", "🗄️", "战役档案馆"],
+];
+
 const win = (() => {
   try {
     return getCurrentWindow();
@@ -28,6 +38,7 @@ export default function TitleBar({
   onOpenSearch,
   updateVersion,
   onOpenUpdate,
+  onOpenStudio,
 }: {
   worlds: WorldInfo[];
   worldId: string | null;
@@ -44,7 +55,24 @@ export default function TitleBar({
   onOpenSearch?: () => void;
   updateVersion?: string | null;
   onOpenUpdate?: () => void;
+  /** 大厅 / 游戏空间里打开创作页面（世界树、剧本……）。 */
+  onOpenStudio?: (page: StudioPage) => void;
 }) {
+  const [studioOpen, setStudioOpen] = useState(false);
+  const studioRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!studioOpen) return;
+    const close = (e: MouseEvent) => {
+      if (studioRef.current && !studioRef.current.contains(e.target as Node)) setStudioOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setStudioOpen(false);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [studioOpen]);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [maxed, setMaxed] = useState(false);
@@ -159,6 +187,34 @@ export default function TitleBar({
       <span key={pageTitle} className="tb-page" data-tauri-drag-region>
         {pageTitle}
       </span>
+      {onOpenStudio && (
+        <div className="tb-world tb-studio" ref={studioRef}>
+          <button className={`tb-world-btn${studioOpen ? " open" : ""}`} onClick={() => setStudioOpen((x) => !x)} title="打开世界树、剧本、档案馆等创作页面">
+            <span className="tb-world-label">✏️ 创作</span>
+            <svg viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M3 4.5 6 7.5 9 4.5" />
+            </svg>
+          </button>
+          {studioOpen && (
+            <div className="tb-menu tb-studio-menu" role="menu">
+              <div className="tb-menu-label">创作</div>
+              {STUDIO_PAGES.map(([k, ic, label]) => (
+                <button
+                  key={k}
+                  className="tb-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setStudioOpen(false);
+                    onOpenStudio(k);
+                  }}
+                >
+                  <span className="ic">{ic}</span> {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="tb-fill" data-tauri-drag-region />
       {onOpenSearch && (
         <button className="tb-status tb-search" onClick={onOpenSearch} title="全局搜索（Ctrl+K）" data-tour="global-search">

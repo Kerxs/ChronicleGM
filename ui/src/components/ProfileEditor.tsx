@@ -148,7 +148,17 @@ export default function ProfileEditor({ ctx, scriptId, rev, onSaved }: { ctx: Ct
         {p.check.mode !== "pool" ? (
           <label>
             主骰
-            <input value={p.check.die} onChange={(e) => up((x) => ({ ...x, check: { ...x.check, die: e.target.value.trim() } }))} placeholder="1d20 / 2d6 / 1d100" />
+            <input
+              value={p.check.die}
+              onChange={(e) => {
+                const die = e.target.value.trim();
+                // 主骰写成百分骰时自动改用百分骰规则（d100 不该和 d20 一样"掷骰 + 修正 ≥ 难度"）。
+                const pct = /^1?d(100|%)$/i.test(die);
+                up((x) => ({ ...x, check: { ...x.check, die, mode: pct ? "roll_under" : x.check.mode } }));
+              }}
+              placeholder="1d20 / 2d6 / 1d100"
+            />
+            <small className="hint">GM 一律给标准难度（简单 8、普通 12、困难 15、极难 20），程序按这里的骰子换算：百分骰换成成功百分比，2d6 等按概率换算。</small>
           </label>
         ) : (
           <label>

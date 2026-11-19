@@ -97,7 +97,55 @@ pub struct DiceAsk {
     pub reason: String,
 }
 
+/// 标准难度（d20 刻度：简单 8、普通 12、困难 15、极难 20）的上限；超过的视为已经是本骰子上的数值
+/// （旧存档、主持人手写的百分比目标），不再换算。
+pub const STANDARD_DC_MAX: i64 = 30;
+
+/// 主骰是不是百分骰（1d100 / d%）。
+pub fn is_percentile(die: &str) -> bool {
+    let d = die.trim().to_ascii_lowercase();
+    d.ends_with("d%") || parse_dice(&d) == (1, 100)
+}
+
+/// 实际使用的检定方式：主骰是百分骰时一律按"掷出 ≤ 目标值"判定
+/// （以前剧本写了 1d100、检定方式却是 target，结果 d100 和 d20 一样"掷骰 + 修正 ≥ 难度"，几乎必成功）。
+pub fn effective_mode(rules: &CheckRules) -> &str {
+    if rules.mode == "target" && is_percentile(&rules.die) { "roll_under" } else { rules.mode.as_str() }
+}
+
+/// 把标准难度和修正换算到本战役的骰子上。
+/// - 百分骰（roll_under）：按 d20 的成功概率换成百分比目标值，例如难度 12、修正 +2 → 55%（掷出 ≤ 55 成功）；
+/// - 其他骰子（2d6、1d12……）：按均值和离散程度换算难度与修正，成功概率和 d20 接近；
+/// - d20：不变。
+///
+/// 返回（难度或目标值，修正，换算说明）。
+pub fn scale(rules: &CheckRules, dc: i64, modifier: i64) -> (i64, i64, String) {
+    let (n, m) = parse_dice(&rules.die);
+    match effective_mode(rules) {
+        "roll_under" => {
+            let max = (n as i64 * m as i64).max(2);
+            if dc > STANDARD_DC_MAX {
+                return ((dc + modifier).clamp(1, max), 0, String::new());
+            }
+            let chance = ((21 - dc + modifier) as f64 / 20.0).clamp(0.05, 0.95);
+            let target = ((max as f64) * chance).round() as i64;
+            (target.clamp(1, max), 0, format!("标准难度 {dc}、修正 {modifier:+} 换算成 {}%", (chance * 100.0).round() as i64))
+        }
+        "target" if (n, m) != (1, 20) && dc <= STANDARD_DC_MAX => {
+            let mean = n as f64 * (m as f64 + 1.0) / 2.0;
+            let sd = (n as f64 * ((m * m) as f64 - 1.0) / 12.0).sqrt();
+            let f = sd / 5.766;
+            let d = (mean + (dc as f64 - 10.5) * f).round() as i64;
+            let md = (modifier as f64 * f).round() as i64;
+            let d = d.clamp(n as i64 + 1, n as i64 * m as i64);
+            (d, md, format!("标准难度 {dc}、修正 {modifier:+} 换算成 {} 的难度 {d}、修正 {md:+}", rules.die))
+        }
+        _ => (dc, modifier, String::new()),
+    }
+}
+
 /// 这次检定要掷什么（不掷骰、不碰数据库）：先问玩家亲手掷，再把点数交给 [`perform_with`]。
+/// `dc`、`modifier` 是标准刻度，这里换算成本战役的骰子（界面显示的就是实际要比的数）。
 pub fn ask_for(rules: &CheckRules, modifier: i64, dc: i64, advantage: i8, reason: &str) -> DiceAsk {
     let adv = if rules.advantage { advantage.signum() } else { 0 };
     if rules.mode == "pool" {
@@ -106,7 +154,8 @@ pub fn ask_for(rules: &CheckRules, modifier: i64, dc: i64, advantage: i8, reason
         return DiceAsk { mode: "pool".into(), expr: format!("{count}d{sides}"), count: count as u32, sides: sides as u32, rolls: 1, advantage: adv, modifier, dc, reason: reason.to_string() };
     }
     let (count, sides) = parse_dice(&rules.die);
-    DiceAsk { mode: rules.mode.clone(), expr: rules.die.clone(), count, sides, rolls: if adv != 0 { 2 } else { 1 }, advantage: adv, modifier, dc, reason: reason.to_string() }
+    let (dc, modifier, _) = scale(rules, dc, modifier);
+    DiceAsk { mode: effective_mode(rules).to_string(), expr: rules.die.clone(), count, sides, rolls: if adv != 0 { 2 } else { 1 }, advantage: adv, modifier, dc, reason: reason.to_string() }
 }
 
 /// 检查玩家给的点数：组数、颗数对得上，每颗在 1..=面数 之内，否则不用（交给程序掷）。
@@ -149,7 +198,9 @@ pub fn perform_with(world: &mut World, campaign_id: &str, rules: &CheckRules, mo
             campaign::annotate_last_roll("check", vec![], hits, Some(need), degree.label());
             Ok(CheckRoll { mode: "pool".into(), expr, dice, other: vec![], advantage: adv, natural: hits, modifier, total: hits, dc: need, target: need, degree, explain })
         }
-        mode => {
+        _ => {
+            let mode = effective_mode(rules);
+            let (scaled_dc, scaled_mod, scale_note) = scale(rules, dc, modifier);
             let expr = rules.die.clone();
             let (n, sides) = parse_dice(&expr);
             let a = campaign::roll_with(world, campaign_id, &expr, reason, hand.as_ref().map(|h| h[0].as_slice()))?;
@@ -169,7 +220,7 @@ pub fn perform_with(world: &mut World, campaign_id: &str, rules: &CheckRules, mo
             let by_hand = if hand.is_some() { "（亲手掷）" } else { "" };
             let adv_txt = if adv != 0 { format!("（{}：{} / {}）", if adv > 0 { "优势" } else { "劣势" }, natural, other.iter().sum::<i64>()) } else { String::new() };
             if mode == "roll_under" {
-                let target = (dc + modifier).clamp(1, max.max(1));
+                let target = scaled_dc;
                 let crit_s = rules.crits && natural <= (max / 20).max(1);
                 let crit_f = rules.crits && natural > max - (max / 25).max(1);
                 let band = rules.partial_band * (sides as i64 / 20).max(1);
@@ -185,9 +236,15 @@ pub fn perform_with(world: &mut World, campaign_id: &str, rules: &CheckRules, mo
                     Degree::Failure
                 };
                 campaign::annotate_last_roll("check", vec![], natural, Some(target), degree.label());
-                let explain = format!("{expr}{by_hand} 掷出 {natural}{adv_txt}，目标 ≤ {target}（难度 {dc} + 修正 {modifier}）→ {}", degree.label());
+                let explain = if scale_note.is_empty() {
+                    format!("{expr}{by_hand} 掷出 {natural}{adv_txt}，目标 ≤ {target}（难度 {dc} + 修正 {modifier}）→ {}", degree.label())
+                } else {
+                    format!("{expr}{by_hand} 掷出 {natural}{adv_txt}，目标 ≤ {target}（{scale_note}）→ {}", degree.label())
+                };
                 return Ok(CheckRoll { mode: "roll_under".into(), expr, dice, other, advantage: adv, natural, modifier, total: natural, dc, target, degree, explain });
             }
+            // 非 d20 的骰子（2d6 等）：难度和修正换算到这种骰子上。
+            let (dc, modifier) = (scaled_dc, scaled_mod);
             let total = natural + modifier;
             let degree = if rules.crits && natural == max && max > min {
                 Degree::CritSuccess
@@ -201,8 +258,52 @@ pub fn perform_with(world: &mut World, campaign_id: &str, rules: &CheckRules, mo
                 Degree::Failure
             };
             campaign::annotate_last_roll("check", if modifier != 0 { vec![("修正".into(), modifier)] } else { vec![] }, total, Some(dc), degree.label());
-            let explain = format!("{expr}{by_hand} 掷出 {natural}{adv_txt} + 修正 {modifier} = {total}，难度 {dc} → {}", degree.label());
+            let explain = format!("{expr}{by_hand} 掷出 {natural}{adv_txt} + 修正 {modifier} = {total}，难度 {dc}{} → {}", if scale_note.is_empty() { String::new() } else { format!("（{scale_note}）") }, degree.label());
             Ok(CheckRoll { mode: "target".into(), expr, dice, other, advantage: adv, natural, modifier, total, dc, target: dc, degree, explain })
         }
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    fn rules(mode: &str, die: &str) -> CheckRules {
+        CheckRules { mode: mode.into(), die: die.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn d20_is_unchanged() {
+        assert_eq!(scale(&rules("target", "1d20"), 12, 2).0, 12);
+        assert_eq!(effective_mode(&rules("target", "1d20")), "target");
+    }
+
+    #[test]
+    fn d100_becomes_a_percentage() {
+        // 写成 target 的百分骰也按 roll_under。
+        assert_eq!(effective_mode(&rules("target", "1d100")), "roll_under");
+        let (t, m, note) = scale(&rules("roll_under", "1d100"), 12, 2);
+        assert_eq!((t, m), (55, 0), "难度 12、修正 +2：d20 成功率 55% → 掷出 ≤ 55");
+        assert!(note.contains("55%"));
+        // 难的检定百分比低，简单的高；概率夹在 5%–95%。
+        assert!(scale(&rules("roll_under", "1d100"), 20, 0).0 < scale(&rules("roll_under", "1d100"), 8, 0).0);
+        assert_eq!(scale(&rules("roll_under", "1d100"), 30, 0).0, 5);
+        // 已经是百分比的目标（旧存档）不再换算。
+        assert_eq!(scale(&rules("roll_under", "1d100"), 60, 5).0, 65);
+    }
+
+    #[test]
+    fn other_dice_keep_similar_odds() {
+        // 2d6：标准难度 12（d20 成功率 45%）→ 8（2d6 掷出 ≥ 8 的概率约 42%）。
+        let (d, _, _) = scale(&rules("target", "2d6"), 12, 0);
+        assert_eq!(d, 8);
+        let (_, md, _) = scale(&rules("target", "2d6"), 12, 5);
+        assert_eq!(md, 2, "修正也按比例缩小");
+    }
+
+    #[test]
+    fn ask_shows_the_real_target() {
+        let a = ask_for(&rules("target", "1d100"), 2, 12, 0, "测试");
+        assert_eq!((a.mode.as_str(), a.dc, a.modifier), ("roll_under", 55, 0));
     }
 }

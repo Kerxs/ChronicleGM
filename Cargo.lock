@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "base64 0.23.1",
  "chronicle-rules",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gen"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "base64 0.23.1",
  "chronicle-core",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gm"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "chronicle-core",
  "chronicle-gen",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-gm-app"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "base64 0.23.1",
  "chronicle-core",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-llm"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-models"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "chronicle-llm",
  "flate2",
@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-protocol"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-rules"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "proptest",
  "rand_chacha 0.10.0",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-runtime"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "chronicle-llm",
  "serde",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-server"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "axum",
  "chronicle-core",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "chronicle-setup"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "lzma-rs",
  "serde",

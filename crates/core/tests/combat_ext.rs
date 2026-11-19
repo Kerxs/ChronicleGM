@@ -118,7 +118,7 @@ fn skills_aim_and_bandage() {
 #[test]
 fn interact_with_props_needs_to_be_adjacent_and_follows_rules() {
     let mut done = std::collections::HashSet::new();
-    for seed in 1..80 {
+    for seed in 1..200 {
         let mut e = env();
         let c = camp(&mut e, seed);
         let cb = combat::start(&mut e.world, &c, &foes(1, 1), &[], "物件").unwrap().combat;
@@ -169,14 +169,49 @@ fn interact_with_props_needs_to_be_adjacent_and_follows_rules() {
                     assert!(rep.lines.iter().any(|l| l.contains("没躲开") || l.contains("躲开了")), "{:?}", rep.lines);
                     assert!(rep.dice.iter().any(|d| d.category == "check" && d.target == Some(12)));
                 }
+                "mechanism" => {
+                    assert!(rep.lines.iter().any(|l| l.contains("拉动了")), "{:?}", rep.lines);
+                    assert!(after.props.iter().find(|q| q.id == p.id).unwrap().used, "机关只能用一次");
+                }
                 _ => unreachable!(),
             }
             done.insert(p.kind.clone());
             break;
         }
-        if done.len() == 3 {
+        if done.len() == 4 {
             break;
         }
     }
-    assert_eq!(done.len(), 3, "三种物件都测到：{done:?}");
+    assert_eq!(done.len(), 4, "四种物件都测到：{done:?}");
+}
+
+/// 战斗互动：投降结束战斗；砸毁掩体让后面的人失去掩护；瞄准部位不影响已有的「瞄准」技能。
+#[test]
+fn surrender_destroy_and_aimed_attacks() {
+    let mut e = env();
+    let c = camp(&mut e, 3);
+    combat::start(&mut e.world, &c, &foes(1, 1), &[], "测试").unwrap();
+    if until_player(&mut e, &c).is_none() {
+        return;
+    }
+    // 瞄准头部：多一个命中修正，攻击后临时状态被清掉。
+    edit(&mut e, &c, |cb| {
+        let (fx, fy) = { let f = cb.units.iter().find(|u| u.side == "enemy").unwrap(); (f.x, f.y) };
+        let me = cb.units.iter_mut().find(|u| u.side == "party").unwrap();
+        (me.x, me.y, me.ap, me.range) = (fx - 1, fy, 6, 1);
+    });
+    let foe = combat::active(e.world.conn(), &c).unwrap().units.iter().find(|u| u.side == "enemy").unwrap().id.clone();
+    let rep = combat::act(&mut e.world, &c, &CombatAction { kind: "attack".into(), target: foe, part: "head".into(), ..Default::default() }).unwrap();
+    let after = combat::active(e.world.conn(), &c).unwrap_or(rep.combat.clone());
+    assert!(!after.units.iter().any(|u| u.statuses.iter().any(|s| s.name == "瞄准部位")), "临时的瞄准修正不会留下");
+    if after.status != "active" {
+        return;
+    }
+    // 投降：战斗结束。
+    if until_player(&mut e, &c).is_none() {
+        return;
+    }
+    let rep = combat::act(&mut e.world, &c, &CombatAction { kind: "surrender".into(), ..Default::default() }).unwrap();
+    assert_eq!(rep.combat.status, "ended");
+    assert!(rep.lines.iter().any(|l| l.contains("投降")));
 }
